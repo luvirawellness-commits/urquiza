@@ -10,6 +10,7 @@ import Agenda from '@/pages/Agenda'
 import Finanzas from '@/pages/Finanzas'
 import GiftCards from '@/pages/GiftCards'
 import Productos from '@/pages/Productos'
+import RRHH from '@/pages/RRHH'
 import Configuracion from '@/pages/Configuracion'
 import ClienteDetalle from '@/pages/ClienteDetalle'
 
@@ -43,6 +44,14 @@ export default function App() {
               <Route path="/clientes/:id" element={<ClienteDetalle />} />
               <Route path="/agenda" element={<Agenda />} />
               <Route path="/finanzas" element={<Finanzas />} />
+              <Route
+                path="/rrhh"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                    <RRHH />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/productos"
                 element={
