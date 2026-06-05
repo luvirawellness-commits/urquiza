@@ -52,7 +52,12 @@ export function useServices() {
   })
 }
 
-export type Therapist = { id: string; full_name: string; color_hex?: string }
+export type Therapist = {
+  id: string
+  full_name: string
+  color_hex?: string | null
+  schedule?: Record<string, { start: string; end: string }[]> | null
+}
 
 export function useTherapists() {
   return useQuery({
@@ -60,7 +65,7 @@ export function useTherapists() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('users')
-        .select('id, full_name, color_hex')
+        .select('id, full_name, color_hex, schedule')
         .eq('tenant_id', TENANT_ID)
         .eq('active', true)
         .in('role', ['therapist', 'partner_admin'])
@@ -72,8 +77,8 @@ export function useTherapists() {
 }
 
 type CreateAppointmentInput = {
-  client_id: string
-  service_id: string
+  client_id?: string | null
+  service_id?: string | null
   therapist_id: string
   scheduled_at: string
   duration_minutes: number
@@ -117,5 +122,79 @@ export function useUpdateAppointmentStatus() {
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['appointments'] }),
+  })
+}
+
+export interface ActiveMembership {
+  id: string
+  plan_name?: string
+  sessions_total?: number
+  sessions_used?: number
+  expires_at?: string
+}
+
+export function useActiveClientMembership(clientId: string | null) {
+  return useQuery({
+    queryKey: ['active-membership', clientId],
+    queryFn: async () => {
+      if (!clientId) return null
+      const { data } = await supabase
+        .from('client_memberships')
+        .select('id, plan_name, sessions_total, sessions_used, expires_at')
+        .eq('client_id', clientId)
+        .eq('tenant_id', TENANT_ID)
+        .eq('status', 'active')
+        .maybeSingle()
+      return data as ActiveMembership | null
+    },
+    enabled: !!clientId,
+    retry: 0,
+    throwOnError: false,
+  })
+}
+
+export function useUseMembershipSession() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (membershipId: string) => {
+      const { data, error: fetchErr } = await supabase
+        .from('client_memberships')
+        .select('sessions_used')
+        .eq('id', membershipId)
+        .single()
+      if (fetchErr) throw fetchErr
+      const { error } = await supabase
+        .from('client_memberships')
+        .update({ sessions_used: (data.sessions_used ?? 0) + 1 })
+        .eq('id', membershipId)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['active-membership'] }),
+  })
+}
+
+export function useUpdateClientAfterSession() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (clientId: string) => {
+      const { data, error: fetchErr } = await supabase
+        .from('clients')
+        .select('total_sessions')
+        .eq('id', clientId)
+        .single()
+      if (fetchErr) throw fetchErr
+      const { error } = await supabase
+        .from('clients')
+        .update({
+          last_visit_at: new Date().toISOString(),
+          total_sessions: (data.total_sessions ?? 0) + 1,
+        })
+        .eq('id', clientId)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['clients'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
+    },
   })
 }

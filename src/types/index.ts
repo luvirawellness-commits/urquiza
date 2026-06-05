@@ -27,14 +27,14 @@ export interface Client {
   created_at: string
 }
 
-export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'no_show'
+export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'no_show' | 'blocked'
 
 export interface Appointment {
   id: string
   tenant_id: string
-  client_id: string
+  client_id?: string | null
   therapist_id: string
-  service_id: string
+  service_id?: string | null
   scheduled_at: string
   duration_minutes: number
   box_number?: number
@@ -69,7 +69,11 @@ export interface Transaction {
   amount: number
   description: string
   date: string
-  created_by: string
+  user_id: string
+  payment_method?: string
+  status?: string
+  created_at?: string
+  appointment_id?: string
 }
 
 export interface DashboardMetrics {
@@ -77,4 +81,67 @@ export interface DashboardMetrics {
   appointmentsToday: number
   revenueThisMonth: number
   appointmentsThisWeek: number
+}
+
+export interface Supply {
+  id: string
+  tenant_id: string
+  code: string
+  name: string
+  brand?: string
+  supplier?: string
+  unit: string
+  unit_price: number
+  is_sellable: boolean
+  sale_price?: number
+  category: 'internal' | 'product'
+  active: boolean
+  notes?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface ServiceCostItem {
+  id: string
+  tenant_id: string
+  service_id: string
+  duration_minutes: 60 | 90
+  supply_id: string
+  quantity: number
+  created_at: string
+  supply?: { id: string; name: string; code: string; unit: string; unit_price: number } | null
+}
+
+export interface InventoryMovement {
+  id: string
+  tenant_id: string
+  supply_id: string
+  type: 'entry' | 'sale' | 'session' | 'adjustment' | 'loss'
+  quantity: number
+  unit_cost?: number
+  reference_id?: string
+  notes?: string
+  counted_by?: string
+  created_at: string
+}
+
+export interface InventoryCount {
+  id: string
+  tenant_id: string
+  counted_at: string
+  counted_by: string
+  notes?: string
+  status: 'draft' | 'confirmed'
+  created_at: string
+}
+
+export interface InventoryCountItem {
+  id: string
+  count_id: string
+  supply_id: string
+  theoretical_qty: number
+  physical_qty: number
+  difference: number
+  notes?: string
+  supply?: { id: string; name: string; code: string; unit: string } | null
 }

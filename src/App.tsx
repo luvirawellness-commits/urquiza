@@ -8,6 +8,9 @@ import Dashboard from '@/pages/Dashboard'
 import Clientes from '@/pages/Clientes'
 import Agenda from '@/pages/Agenda'
 import Finanzas from '@/pages/Finanzas'
+import GiftCards from '@/pages/GiftCards'
+import Productos from '@/pages/Productos'
+import Configuracion from '@/pages/Configuracion'
 import ClienteDetalle from '@/pages/ClienteDetalle'
 
 const queryClient = new QueryClient({
@@ -39,11 +42,28 @@ export default function App() {
               <Route path="/clientes" element={<Clientes />} />
               <Route path="/clientes/:id" element={<ClienteDetalle />} />
               <Route path="/agenda" element={<Agenda />} />
+              <Route path="/finanzas" element={<Finanzas />} />
               <Route
-                path="/finanzas"
+                path="/productos"
                 element={
                   <ProtectedRoute roles={['owner', 'partner_admin']}>
-                    <Finanzas />
+                    <Productos />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/gift-cards"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                    <GiftCards />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/configuracion"
+                element={
+                  <ProtectedRoute roles={['owner']}>
+                    <Configuracion />
                   </ProtectedRoute>
                 }
               />

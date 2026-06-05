@@ -1,5 +1,5 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, CalendarDays, TrendingUp, LogOut, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Users, CalendarDays, TrendingUp, Gift, ShoppingBag, Settings, LogOut, Menu, X } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
@@ -10,7 +10,10 @@ const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { to: '/clientes', label: 'Clientes', icon: Users },
   { to: '/agenda', label: 'Agenda', icon: CalendarDays },
-  { to: '/finanzas', label: 'Finanzas', icon: TrendingUp, roles: ['owner', 'partner_admin'] },
+  { to: '/finanzas', label: 'Finanzas', icon: TrendingUp, roles: ['owner', 'partner_admin', 'therapist'] },
+  { to: '/productos', label: 'Productos', icon: ShoppingBag, roles: ['owner', 'partner_admin'] },
+  { to: '/gift-cards', label: 'Gift Cards', icon: Gift, roles: ['owner', 'partner_admin'] },
+  { to: '/configuracion', label: 'Configuración', icon: Settings, roles: ['owner'] },
 ]
 
 export function Sidebar() {
