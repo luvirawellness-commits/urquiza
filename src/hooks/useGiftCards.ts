@@ -16,6 +16,9 @@ export interface GiftCard {
   used_in_appointment_id?: string | null
   expires_at?: string | null
   notes?: string | null
+  recipient_name?: string | null
+  sender_name?: string | null
+  message?: string | null
   created_at: string
   service?: { id: string; name: string; emoji?: string } | null
   used_by?: { id: string; first_name: string; last_name?: string } | null
@@ -56,6 +59,9 @@ type CreateGiftCardInput = {
   expires_at: string
   notes: string
   user_id: string
+  recipient_name?: string
+  sender_name?: string
+  message?: string
 }
 
 export function useCreateGiftCard() {
@@ -86,6 +92,9 @@ export function useCreateGiftCard() {
           sold_by: input.sold_by || null,
           expires_at: input.expires_at || null,
           notes: input.notes || null,
+          recipient_name: input.recipient_name || null,
+          sender_name: input.sender_name || null,
+          message: input.message || null,
         })
         .select('id, code')
         .single()

@@ -1,14 +1,18 @@
-import { useState } from 'react'
-import { Gift, Copy, Check, Loader2 } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Gift, Loader2, Download } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useServices, useTherapists } from '@/hooks/useAppointments'
 import { useGiftCards, useCreateGiftCard, GiftCard } from '@/hooks/useGiftCards'
+import { supabase, TENANT_ID } from '@/lib/supabase'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
+
+// Replace with actual base64-encoded logo PNG
+const LOGO_BASE64 = ''
 
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -19,49 +23,211 @@ function defaultExpiry(): string {
   return d.toISOString().split('T')[0]
 }
 
-// ── Code success modal ─────────────────────────────────────────────────────────
-function GiftCardCodeModal({ code, onClose }: { code: string; onClose: () => void }) {
-  const [copied, setCopied] = useState(false)
+type GeneratedGiftCard = {
+  code: string
+  serviceName: string
+  duration: number
+  recipientName: string
+  senderName: string
+  message: string
+}
 
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(code)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch { /* clipboard not available */ }
+// ── Canvas generator ───────────────────────────────────────────────────────────
+async function generateGiftCardCanvas(params: {
+  code: string
+  serviceName: string
+  duration: number
+  recipientName: string
+  senderName?: string
+  whatsappNumber?: string
+}): Promise<string> {
+  const canvas = document.createElement('canvas')
+  canvas.width = 900
+  canvas.height = 500
+  const ctx = canvas.getContext('2d')!
+
+  // Background gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, 500)
+  grad.addColorStop(0, '#3D0A3F')
+  grad.addColorStop(1, '#1A0020')
+  ctx.fillStyle = grad
+  ctx.fillRect(0, 0, 900, 500)
+
+  // Decorative mandala arcs — top-left corner
+  ctx.save()
+  ctx.globalAlpha = 0.4
+  ctx.strokeStyle = '#B8960C'
+  ctx.lineWidth = 1
+  for (const r of [20, 40, 60, 80, 100]) {
+    ctx.beginPath()
+    ctx.arc(-20, -20, r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  // Decorative mandala arcs — bottom-right corner
+  ctx.save()
+  ctx.globalAlpha = 0.4
+  ctx.strokeStyle = '#B8960C'
+  ctx.lineWidth = 1
+  for (const r of [20, 40, 60, 80, 100]) {
+    ctx.beginPath()
+    ctx.arc(920, 520, r, 0, Math.PI * 2)
+    ctx.stroke()
+  }
+  ctx.restore()
+
+  // Logo (drawn before text so text renders on top)
+  if (LOGO_BASE64) {
+    await new Promise<void>((resolve) => {
+      const img = new Image()
+      img.onload = () => { ctx.drawImage(img, 40, 150, 180, 180); resolve() }
+      img.onerror = () => resolve()
+      img.src = LOGO_BASE64
+    })
+  }
+
+  // Brand text — left column starting at x=280
+  ctx.textAlign = 'left'
+
+  ctx.fillStyle = '#B8960C'
+  ctx.font = 'bold 42px Georgia, serif'
+  ctx.fillText('TARJETA DE REGALO', 280, 80)
+
+  ctx.fillStyle = '#D4A0D4'
+  ctx.font = '20px Georgia, serif'
+  ctx.fillText('CENTRO DE BIENESTAR', 280, 115)
+
+  ctx.fillStyle = '#B8960C'
+  ctx.font = 'bold 56px Georgia, serif'
+  ctx.fillText('LUVIRA', 280, 175)
+
+  // "WELLNESS" with manual letter spacing (+2px per glyph)
+  ctx.fillStyle = '#B8960C'
+  ctx.font = '28px Georgia, serif'
+  let xPos = 280
+  for (const letter of 'WELLNESS') {
+    ctx.fillText(letter, xPos, 210)
+    xPos += ctx.measureText(letter).width + 2
+  }
+
+  // Thin separator line in brand area
+  ctx.fillStyle = '#B8960C'
+  ctx.fillRect(280, 232, 400, 1)
+
+  // Full-width gold double line
+  ctx.strokeStyle = '#B8960C'
+  ctx.lineWidth = 2
+  ctx.beginPath(); ctx.moveTo(0, 320); ctx.lineTo(900, 320); ctx.stroke()
+
+  ctx.save()
+  ctx.globalAlpha = 0.5
+  ctx.strokeStyle = '#B8960C'
+  ctx.lineWidth = 1
+  ctx.beginPath(); ctx.moveTo(0, 325); ctx.lineTo(900, 325); ctx.stroke()
+  ctx.restore()
+
+  // Bottom section — centered at x=450
+  ctx.textAlign = 'center'
+
+  ctx.fillStyle = '#E8D5E8'
+  ctx.font = 'italic 18px Georgia, serif'
+  ctx.fillText(`Vale por: ${params.serviceName} ${params.duration}min`, 450, 355)
+
+  ctx.fillStyle = '#FFFFFF'
+  ctx.font = '16px Georgia, serif'
+  ctx.fillText(`A nombre de: ${params.recipientName}`, 450, 385)
+
+  ctx.fillStyle = '#B8960C'
+  ctx.font = 'bold 16px "Courier New", monospace'
+  ctx.fillText(`Código: ${params.code}`, 450, 410)
+
+  ctx.fillStyle = '#D4A0D4'
+  ctx.font = '13px Georgia, serif'
+  ctx.fillText(
+    params.whatsappNumber
+      ? `Reservar por WhatsApp al ${params.whatsappNumber}`
+      : 'Reservar por WhatsApp',
+    450, 440,
+  )
+
+  if (params.senderName) {
+    ctx.fillStyle = '#E8D5E8'
+    ctx.font = 'italic 13px Georgia, serif'
+    ctx.fillText(`Con cariño de: ${params.senderName}`, 450, 460)
+  }
+
+  return canvas.toDataURL('image/png')
+}
+
+// ── Gift card image modal ──────────────────────────────────────────────────────
+function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: () => void }) {
+  const [imageUrl, setImageUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function build() {
+      const { data } = await supabase
+        .from('tenants')
+        .select('whatsapp_number')
+        .eq('id', TENANT_ID)
+        .single()
+      if (cancelled) return
+      const url = await generateGiftCardCanvas({
+        code: gc.code,
+        serviceName: gc.serviceName,
+        duration: gc.duration,
+        recipientName: gc.recipientName,
+        senderName: gc.senderName || undefined,
+        whatsappNumber: (data as { whatsapp_number?: string | null } | null)?.whatsapp_number ?? undefined,
+      })
+      if (!cancelled) setImageUrl(url)
+    }
+    build()
+    return () => { cancelled = true }
+  }, [gc])
+
+  function handleDownload() {
+    if (!imageUrl) return
+    const a = document.createElement('a')
+    a.href = imageUrl
+    a.download = `GiftCard-Luvira-${gc.code}.png`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
   }
 
   return (
     <Dialog open onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-sm">
+      <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 justify-center">
-            <Gift className="w-5 h-5 text-gold-500" /> Gift Card generada
+          <DialogTitle className="flex items-center gap-2">
+            <Gift className="w-5 h-5" /> Gift Card generada
           </DialogTitle>
-          <DialogDescription className="text-center">
-            Compartí este código con el cliente
+          <DialogDescription>
+            A nombre de {gc.recipientName} · Código:{' '}
+            <span className="font-mono font-semibold">{gc.code}</span>
           </DialogDescription>
         </DialogHeader>
 
-        <div className="py-4 text-center space-y-4">
-          <div className="bg-plum-50 border-2 border-plum-200 rounded-xl py-5 px-6">
-            <p className="text-2xl font-bold tracking-widest text-plum-800 font-mono select-all">
-              {code}
-            </p>
-          </div>
-          <div className="flex gap-2">
-            <Button onClick={copy} variant="outline" className="flex-1 gap-1.5">
-              {copied
-                ? <><Check className="w-4 h-4 text-green-600" /> Copiado</>
-                : <><Copy className="w-4 h-4" /> Copiar código</>}
-            </Button>
-            <Button onClick={() => window.print()} variant="outline" className="flex-1">
-              Imprimir
-            </Button>
-          </div>
+        <div className="mt-2 rounded-lg overflow-hidden border">
+          {imageUrl ? (
+            <img src={imageUrl} alt="Gift Card Luvira" className="w-full" />
+          ) : (
+            <div className="flex items-center justify-center h-52 bg-gray-50">
+              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+            </div>
+          )}
         </div>
 
-        <Button onClick={onClose} className="w-full">Listo</Button>
+        <div className="flex gap-2 mt-2">
+          <Button onClick={handleDownload} disabled={!imageUrl} className="flex-1 gap-2">
+            <Download className="w-4 h-4" /> Descargar Gift Card
+          </Button>
+          <Button onClick={onClose} variant="outline" className="flex-1">
+            Cerrar
+          </Button>
+        </div>
       </DialogContent>
     </Dialog>
   )
@@ -80,7 +246,10 @@ function GiftCardForm() {
   const [soldBy, setSoldBy] = useState('')
   const [expiresAt, setExpiresAt] = useState(defaultExpiry)
   const [notes, setNotes] = useState('')
-  const [generatedCode, setGeneratedCode] = useState<string | null>(null)
+  const [recipientName, setRecipientName] = useState('')
+  const [senderName, setSenderName] = useState('')
+  const [message, setMessage] = useState('')
+  const [generatedGC, setGeneratedGC] = useState<GeneratedGiftCard | null>(null)
 
   const selectedService = services?.find((s) => s.id === serviceId)
 
@@ -102,7 +271,7 @@ function GiftCardForm() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!serviceId || !amount) return
+    if (!serviceId || !amount || !recipientName.trim()) return
     try {
       const result = await createGC.mutateAsync({
         service_id: serviceId,
@@ -113,10 +282,21 @@ function GiftCardForm() {
         expires_at: expiresAt,
         notes,
         user_id: user!.id,
+        recipient_name: recipientName.trim(),
+        sender_name: senderName.trim(),
+        message: message.trim(),
       })
-      setGeneratedCode(result.code)
+      setGeneratedGC({
+        code: result.code,
+        serviceName: selectedService?.name ?? 'Servicio',
+        duration,
+        recipientName: recipientName.trim(),
+        senderName: senderName.trim(),
+        message: message.trim(),
+      })
       setServiceId(''); setAmount(''); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
+      setRecipientName(''); setSenderName(''); setMessage('')
     } catch (_) { /* error shown below */ }
   }
 
@@ -179,10 +359,38 @@ function GiftCardForm() {
                 <Input placeholder="Opcional" value={notes}
                   onChange={(e) => setNotes(e.target.value)} />
               </div>
+
+              <div className="sm:col-span-2 space-y-1.5">
+                <Label>A nombre de *</Label>
+                <Input
+                  required
+                  placeholder="Nombre y apellido del destinatario"
+                  value={recipientName}
+                  onChange={(e) => setRecipientName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>De parte de</Label>
+                <Input
+                  placeholder="¿Quién la regala? (opcional)"
+                  value={senderName}
+                  onChange={(e) => setSenderName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Mensaje</Label>
+                <Input
+                  placeholder="Mensaje personal (opcional)"
+                  value={message}
+                  onChange={(e) => setMessage(e.target.value)}
+                />
+              </div>
             </div>
 
             <Button type="submit" className="w-full gap-2"
-              disabled={createGC.isPending || !serviceId || !amount}>
+              disabled={createGC.isPending || !serviceId || !amount || !recipientName.trim()}>
               {createGC.isPending
                 ? <><Loader2 className="w-4 h-4 animate-spin" /> Generando...</>
                 : <><Gift className="w-4 h-4" /> Generar Gift Card</>}
@@ -197,8 +405,8 @@ function GiftCardForm() {
         </CardContent>
       </Card>
 
-      {generatedCode && (
-        <GiftCardCodeModal code={generatedCode} onClose={() => setGeneratedCode(null)} />
+      {generatedGC && (
+        <GiftCardImageModal gc={generatedGC} onClose={() => setGeneratedGC(null)} />
       )}
     </>
   )
@@ -242,7 +450,7 @@ function GiftCardList() {
             <table className="w-full min-w-[700px]">
               <thead>
                 <tr className="border-b bg-gray-50">
-                  {['Código', 'Servicio', 'Monto', 'Vendida', 'Vence', 'Estado', 'Usado por'].map((h) => (
+                  {['Código', 'Servicio', 'Destinatario', 'Monto', 'Vendida', 'Vence', 'Estado', 'Usado por'].map((h) => (
                     <th key={h}
                       className="text-left text-xs font-medium text-muted-foreground px-4 py-2.5 whitespace-nowrap">
                       {h}
@@ -263,6 +471,14 @@ function GiftCardList() {
                         {gc.service?.emoji} {gc.service?.name ?? '—'}
                       </p>
                       <p className="text-xs text-muted-foreground">{gc.duration_minutes} min</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm text-plum-800 whitespace-nowrap">
+                        {gc.recipient_name ?? '—'}
+                      </p>
+                      {gc.sender_name && (
+                        <p className="text-xs text-muted-foreground">de {gc.sender_name}</p>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-sm font-medium tabular-nums text-plum-800 whitespace-nowrap">
                       {formatCurrency(gc.amount)}
