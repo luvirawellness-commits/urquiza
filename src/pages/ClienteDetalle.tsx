@@ -1,10 +1,24 @@
+import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Phone, Mail, Calendar, Hash, Loader2 } from 'lucide-react'
+import {
+  ArrowLeft, Phone, Mail, Calendar, Hash, Loader2,
+  CreditCard, Plus, Users, X,
+} from 'lucide-react'
 import { useClient } from '@/hooks/useClients'
+import { useClients } from '@/hooks/useClients'
+import { useClientActiveMemberships, useAddBeneficiary } from '@/hooks/useClientMemberships'
+import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { formatDate } from '@/lib/utils'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
+} from '@/components/ui/dialog'
+import { cn, formatDate, formatCurrency } from '@/lib/utils'
+import VenderMembresiaModal from '@/components/VenderMembresiaModal'
+import type { ClientMembership } from '@/types'
 
 const STATUS_LABELS: Record<string, string> = {
   active: 'Activo',
@@ -26,6 +40,205 @@ const SOURCE_LABELS: Record<string, string> = {
   in_person: 'Presencial',
   other: 'Otro',
 }
+
+// ── AgregarBeneficiarioModal ──────────────────────────────────────────────────
+
+function AgregarBeneficiarioModal({
+  membershipId, membership, onClose,
+}: {
+  membershipId: string
+  membership: ClientMembership
+  onClose: () => void
+}) {
+  const { user } = useAuth()
+  const [search, setSearch] = useState('')
+  const [showDrop, setShowDrop] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const { data: clients } = useClients(search.length >= 2 ? search : undefined)
+  const addBeneficiary = useAddBeneficiary()
+
+  const existingIds = new Set([
+    membership.client_id,
+    ...(membership.beneficiaries ?? []).map((b) => b.client_id),
+  ])
+
+  async function handleAdd(clientId: string) {
+    if (!user) return
+    setError(null)
+    try {
+      await addBeneficiary.mutateAsync({ membershipId, clientId, addedBy: user.id })
+      onClose()
+    } catch (e) {
+      setError((e as Error).message || 'Error al agregar beneficiario')
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(v) => { if (!v) onClose() }}>
+      <DialogContent className="sm:max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Users className="w-4 h-4" /> Agregar beneficiario
+          </DialogTitle>
+          <DialogDescription>
+            Membresía {membership.plan?.name ?? ''}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 mt-2">
+          <div className="relative">
+            <Label className="text-xs mb-1 block">Buscar cliente</Label>
+            <Input
+              placeholder="Nombre o teléfono..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setShowDrop(true) }}
+              onFocus={() => setShowDrop(true)}
+              onBlur={() => setTimeout(() => setShowDrop(false), 150)}
+            />
+            {showDrop && clients && clients.length > 0 && (
+              <div className="absolute z-20 w-full bg-white border rounded-md shadow-lg mt-1 max-h-48 overflow-y-auto">
+                {clients
+                  .filter((c) => !existingIds.has(c.id))
+                  .slice(0, 8)
+                  .map((c) => (
+                    <button key={c.id} type="button"
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-plum-50 hover:text-plum-800 border-b last:border-b-0"
+                      onMouseDown={() => handleAdd(c.id)}>
+                      <p className="font-medium">{c.first_name} {c.last_name}</p>
+                      {c.phone && <p className="text-xs text-muted-foreground">{c.phone}</p>}
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          {addBeneficiary.isPending && (
+            <div className="flex justify-center">
+              <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          <Button variant="outline" onClick={onClose} className="w-full">Cancelar</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// ── MembershipsSection ────────────────────────────────────────────────────────
+
+function MembershipsSection({ clientId }: { clientId: string }) {
+  const [showVender, setShowVender] = useState(false)
+  const [addBenMembership, setAddBenMembership] = useState<ClientMembership | null>(null)
+
+  const { data: memberships, isLoading } = useClientActiveMemberships(clientId)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+            <CreditCard className="w-4 h-4" /> Membresías activas
+          </CardTitle>
+          <Button size="sm" variant="outline"
+            className="h-7 text-xs gap-1 px-2.5 border-plum-200 text-plum-800 hover:bg-plum-50"
+            onClick={() => setShowVender(true)}>
+            <Plus className="w-3.5 h-3.5" /> Nueva membresía
+          </Button>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : !memberships || memberships.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">Sin membresías activas</p>
+        ) : (
+          <div className="space-y-3">
+            {memberships.map((m) => {
+              const sessionsTotal = m.plan?.sessions_qty ?? 0
+              const sessionsUsed = m.sessions_used ?? 0
+              const sessionsLeft = Math.max(0, sessionsTotal - sessionsUsed)
+              const isTitular = m.client_id === clientId
+              const bens = m.beneficiaries ?? []
+
+              return (
+                <div key={m.id}
+                  className="border rounded-xl p-3 space-y-2 bg-white">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-semibold text-sm text-plum-800">
+                        {m.plan?.name ?? 'Membresía'}
+                      </p>
+                      {!isTitular && (
+                        <Badge variant="outline" className="text-[10px] h-4 px-1 mt-0.5">
+                          Beneficiario
+                        </Badge>
+                      )}
+                    </div>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        'text-xs shrink-0',
+                        sessionsLeft > 0 ? 'border-green-300 text-green-700' : 'border-red-300 text-red-700',
+                      )}
+                    >
+                      {sessionsLeft}/{sessionsTotal} ses.
+                    </Badge>
+                  </div>
+
+                  <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                    <span>Vence {m.expires_at ? formatDate(m.expires_at) : '—'}</span>
+                    {m.amount_paid && (
+                      <span>{formatCurrency(m.amount_paid)}</span>
+                    )}
+                  </div>
+
+                  {bens.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {bens.map((b) => (
+                        <span key={b.client_id}
+                          className="inline-flex items-center gap-1 bg-plum-50 text-plum-700 text-xs px-2 py-0.5 rounded-full">
+                          {b.client?.first_name ?? '?'} {b.client?.last_name ?? ''}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {isTitular && (
+                    <Button size="sm" variant="outline"
+                      className="h-6 text-xs gap-1 px-2 mt-1"
+                      onClick={() => setAddBenMembership(m)}>
+                      <Users className="w-3 h-3" /> Agregar beneficiario
+                    </Button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </CardContent>
+
+      {showVender && (
+        <VenderMembresiaModal
+          open={showVender}
+          onClose={() => setShowVender(false)}
+          preSelectedClientId={clientId}
+        />
+      )}
+
+      {addBenMembership && (
+        <AgregarBeneficiarioModal
+          membershipId={addBenMembership.id}
+          membership={addBenMembership}
+          onClose={() => setAddBenMembership(null)}
+        />
+      )}
+    </Card>
+  )
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ClienteDetalle() {
   const { id } = useParams<{ id: string }>()
@@ -55,7 +268,7 @@ export default function ClienteDetalle() {
   }
 
   const name = [client.first_name, client.last_name].filter(Boolean).join(' ') || client.full_name || '—'
-  const initials = name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
+  const initials = name.split(' ').map((w) => w[0]).slice(0, 2).join('').toUpperCase()
   const status = client.status ?? 'active'
 
   return (
@@ -146,6 +359,8 @@ export default function ClienteDetalle() {
           </Card>
         )}
       </div>
+
+      <MembershipsSection clientId={client.id} />
     </div>
   )
 }

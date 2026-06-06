@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard } from 'lucide-react'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useServices, useTherapists, type Therapist,
-  useActiveClientMembership, useUseMembershipSession, useUpdateClientAfterSession,
+  useUseMembershipSession, useUpdateClientAfterSession,
 } from '@/hooks/useAppointments'
+import { useClientActiveMemberships } from '@/hooks/useClientMemberships'
+import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useInsertTransaction } from '@/hooks/useFinanzas'
 import { useValidateGiftCard, useRedeemGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
 import { useClients } from '@/hooks/useClients'
@@ -293,8 +295,17 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const descPctNum = Number(descPct) || 0
   const montoFinal = Math.max(0, montoNum - descAmtNum - (montoNum * descPctNum / 100))
 
-  const { data: membership } = useActiveClientMembership(appt.client_id ?? null)
+  const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
+  const [membershipSubOpt, setMembershipSubOpt] = useState<'use_existing' | 'sell_new'>('use_existing')
+  const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(null)
+  const [showVenderModal, setShowVenderModal] = useState(false)
   const useMembershipSession = useUseMembershipSession()
+
+  useEffect(() => {
+    if (activeMemberships && activeMemberships.length >= 1 && !selectedMembershipId) {
+      setSelectedMembershipId(activeMemberships[0].id)
+    }
+  }, [activeMemberships])
 
   const [gcCode, setGcCode] = useState('')
   const [gcValid, setGcValid] = useState<ValidatedGiftCard | null>(null)
@@ -337,8 +348,8 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
           date: today, user_id: user!.id, status: 'paid',
           is_recurring: false, appointment_id: appt.id,
         })
-      } else if (paymentType === 'membresia' && membership) {
-        await useMembershipSession.mutateAsync(membership.id)
+      } else if (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && selectedMembershipId) {
+        await useMembershipSession.mutateAsync({ membershipId: selectedMembershipId, appointmentId: appt.id })
       } else if (paymentType === 'gift_card' && gcValid) {
         await redeemGC.mutateAsync({ giftCardId: gcValid.id, clientId: appt.client_id ?? '', appointmentId: appt.id })
       }
@@ -350,13 +361,9 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
     } finally { setBusy(false) }
   }
 
-  const sessionsRemaining = membership && (membership.sessions_total ?? 0) > 0
-    ? (membership.sessions_total ?? 0) - (membership.sessions_used ?? 0)
-    : null
-
   const canConfirm = !busy && (
     paymentType === 'efectivo_digital' ||
-    (paymentType === 'membresia' && !!membership) ||
+    (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
 
@@ -373,11 +380,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
         <div className="flex flex-col gap-2">
           {([
             { value: 'efectivo_digital' as const, label: 'Efectivo / Digital', enabled: true },
-            {
-              value: 'membresia' as const,
-              label: `Membresía${sessionsRemaining !== null ? ` (${sessionsRemaining} sesiones restantes)` : ''}`,
-              enabled: !!membership && (sessionsRemaining === null || sessionsRemaining > 0),
-            },
+            { value: 'membresia' as const, label: 'Membresía', enabled: true },
             { value: 'gift_card' as const, label: 'Gift Card', enabled: true },
           ] as const).map((opt) => (
             <label key={opt.value} className={cn(
@@ -415,13 +418,83 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
         </div>
       )}
 
-      {paymentType === 'membresia' && membership && (
-        <div className="border border-green-200 rounded-lg p-3 bg-green-50 space-y-1">
-          <p className="text-sm font-medium text-green-800">{membership.plan_name ?? 'Membresía activa'}</p>
-          {sessionsRemaining !== null && (
-            <p className="text-xs text-green-700">{sessionsRemaining} sesiones restantes · vence {membership.expires_at ? formatDate(membership.expires_at) : '—'}</p>
-          )}
-          <p className="text-xs text-green-600 mt-1">No se registra cobro — se descuenta una sesión.</p>
+      {paymentType === 'membresia' && (
+        <div className="border rounded-lg p-3 bg-gray-50 space-y-3">
+          {/* Sub-opción A: Usar membresía existente */}
+          <label className={cn(
+            'flex items-start gap-2.5 p-3 border rounded-lg cursor-pointer transition-colors bg-white',
+            membershipSubOpt === 'use_existing' ? 'border-plum-800' : 'border-gray-200 hover:border-gray-300',
+          )}>
+            <input type="radio" name="membershipSub" value="use_existing"
+              checked={membershipSubOpt === 'use_existing'}
+              onChange={() => setMembershipSubOpt('use_existing')}
+              className="accent-plum-800 mt-0.5 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium">Usar membresía existente</p>
+              {membershipSubOpt === 'use_existing' && (
+                <div className="mt-2">
+                  {!activeMemberships || activeMemberships.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Sin membresías activas para este cliente.</p>
+                  ) : activeMemberships.length === 1 ? (
+                    (() => {
+                      const m = activeMemberships[0]
+                      const rem = Math.max(0, (m.plan?.sessions_qty ?? 0) - (m.sessions_used ?? 0))
+                      return (
+                        <div className="border border-green-200 rounded-lg p-2.5 bg-green-50 space-y-0.5">
+                          <p className="text-sm font-medium text-green-800">{m.plan?.name ?? 'Membresía activa'}</p>
+                          <p className="text-xs text-green-700">
+                            {rem} sesiones restantes · vence {m.expires_at ? formatDate(m.expires_at) : '—'}
+                          </p>
+                          <p className="text-xs text-green-600">No se registra cobro — se descuenta una sesión.</p>
+                        </div>
+                      )
+                    })()
+                  ) : (
+                    <select
+                      className={SELECT_CLS}
+                      value={selectedMembershipId ?? ''}
+                      onChange={(e) => setSelectedMembershipId(e.target.value || null)}
+                    >
+                      <option value="">Seleccionar membresía...</option>
+                      {activeMemberships.map((m) => {
+                        const rem = Math.max(0, (m.plan?.sessions_qty ?? 0) - (m.sessions_used ?? 0))
+                        return (
+                          <option key={m.id} value={m.id}>
+                            {m.plan?.name ?? 'Membresía'} — {rem} ses. · vence {m.expires_at ? formatDate(m.expires_at) : '—'}
+                          </option>
+                        )
+                      })}
+                    </select>
+                  )}
+                </div>
+              )}
+            </div>
+          </label>
+
+          {/* Sub-opción B: Vender nueva membresía */}
+          <label className={cn(
+            'flex items-start gap-2.5 p-3 border rounded-lg cursor-pointer transition-colors bg-white',
+            membershipSubOpt === 'sell_new' ? 'border-plum-800' : 'border-gray-200 hover:border-gray-300',
+          )}>
+            <input type="radio" name="membershipSub" value="sell_new"
+              checked={membershipSubOpt === 'sell_new'}
+              onChange={() => setMembershipSubOpt('sell_new')}
+              className="accent-plum-800 mt-0.5 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="text-sm font-medium">Vender nueva membresía ahora</p>
+              {membershipSubOpt === 'sell_new' && (
+                <div className="mt-2 space-y-1.5">
+                  <Button type="button" size="sm" className="gap-1.5"
+                    onClick={() => setShowVenderModal(true)}>
+                    <CreditCard className="w-3.5 h-3.5" /> Vender membresía
+                  </Button>
+                  <p className="text-xs text-muted-foreground">
+                    El precio de la membresía cubre esta sesión. No se genera cobro adicional.
+                  </p>
+                </div>
+              )}
+            </div>
+          </label>
         </div>
       )}
 
@@ -451,6 +524,27 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
       <Button onClick={handleConfirm} className="w-full" disabled={!canConfirm}>
         {busy ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Cerrando sesión...</> : 'Confirmar y cerrar sesión'}
       </Button>
+
+      {showVenderModal && (
+        <VenderMembresiaModal
+          open={showVenderModal}
+          onClose={() => setShowVenderModal(false)}
+          preSelectedClientId={appt.client_id ?? ''}
+          preSelectedAppointmentId={appt.id}
+          onSuccess={async () => {
+            setShowVenderModal(false)
+            setBusy(true)
+            try {
+              await updateStatus.mutateAsync({ id: appt.id, status: 'completed' })
+              await updateClient.mutateAsync(appt.client_id ?? '')
+              onClose()
+            } catch (e) {
+              setError((e as Error).message || 'Error al cerrar la sesión')
+              setBusy(false)
+            }
+          }}
+        />
+      )}
     </div>
   )
 }

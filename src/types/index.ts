@@ -44,6 +44,7 @@ export interface Appointment {
   deposit_amount?: number
   deposit_paid?: boolean
   notes?: string
+  client_membership_id?: string | null
   client?: { id: string; first_name: string; last_name?: string; phone?: string; status?: string; total_sessions?: number } | null
   therapist?: { id: string; full_name: string; color_hex?: string; avatar_url?: string } | null
   service?: { id: string; name: string; emoji?: string; price_60?: number; price_90?: number } | null
@@ -110,6 +111,56 @@ export interface ServiceCostItem {
   quantity: number
   created_at: string
   supply?: { id: string; name: string; code: string; unit: string; unit_price: number } | null
+}
+
+export interface MembershipPlan {
+  id: string
+  tenant_id: string
+  name: string
+  price: number
+  sessions_qty: number
+  validity_days: number
+  highlight_badge?: string | null
+  active: boolean
+}
+
+export interface ClientMembership {
+  id: string
+  tenant_id: string
+  client_id: string
+  membership_id?: string | null
+  plan?: {
+    id: string
+    name: string
+    sessions_qty?: number | null
+    validity_days?: number | null
+    price?: number | null
+    highlight_badge?: string | null
+  } | null
+  sessions_total?: number | null
+  sessions_used?: number | null
+  expires_at?: string | null
+  purchased_at?: string | null
+  status: 'active' | 'expired' | 'cancelled'
+  payment_method?: string | null
+  amount_paid?: number | null
+  sold_by?: string | null
+  beneficiaries?: {
+    id?: string
+    client_id: string
+    added_at?: string
+    client?: { id?: string; first_name: string; last_name?: string | null; phone?: string | null } | null
+  }[] | null
+}
+
+export interface MembershipBeneficiary {
+  id: string
+  tenant_id: string
+  client_membership_id: string
+  client_id: string
+  added_by?: string | null
+  added_at: string
+  client?: { id: string; first_name: string; last_name?: string | null } | null
 }
 
 export interface InventoryMovement {

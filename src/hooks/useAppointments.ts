@@ -127,7 +127,7 @@ export function useUpdateAppointmentStatus() {
 
 export interface ActiveMembership {
   id: string
-  plan_name?: string
+  plan?: { id: string; name: string } | null
   sessions_total?: number
   sessions_used?: number
   expires_at?: string
@@ -140,7 +140,7 @@ export function useActiveClientMembership(clientId: string | null) {
       if (!clientId) return null
       const { data } = await supabase
         .from('client_memberships')
-        .select('id, plan_name, sessions_total, sessions_used, expires_at')
+        .select('id, plan:memberships(id, name), sessions_total, sessions_used, expires_at')
         .eq('client_id', clientId)
         .eq('tenant_id', TENANT_ID)
         .eq('status', 'active')
@@ -156,20 +156,42 @@ export function useActiveClientMembership(clientId: string | null) {
 export function useUseMembershipSession() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: async (membershipId: string) => {
+    mutationFn: async ({ membershipId, appointmentId }: { membershipId: string; appointmentId: string }) => {
+      // Fetch current usage + plan total to determine if membership becomes exhausted
       const { data, error: fetchErr } = await supabase
         .from('client_memberships')
-        .select('sessions_used')
+        .select('sessions_used, plan:memberships!fk_cm_membership_id(sessions_qty)')
         .eq('id', membershipId)
         .single()
       if (fetchErr) throw fetchErr
-      const { error } = await supabase
+
+      const newSessionsUsed = (data.sessions_used ?? 0) + 1
+      const sessionsQty = (data.plan as { sessions_qty: number } | null)?.sessions_qty ?? 0
+
+      const updatePayload: Record<string, unknown> = { sessions_used: newSessionsUsed }
+      if (sessionsQty > 0 && newSessionsUsed >= sessionsQty) {
+        updatePayload.status = 'expired'
+      }
+
+      const { error: cmErr } = await supabase
         .from('client_memberships')
-        .update({ sessions_used: (data.sessions_used ?? 0) + 1 })
+        .update(updatePayload)
         .eq('id', membershipId)
-      if (error) throw error
+      if (cmErr) throw cmErr
+
+      // Link appointment to this membership BEFORE status is set to completed,
+      // so the DB trigger can detect client_membership_id IS NOT NULL and skip
+      // creating a duplicate income transaction.
+      const { error: apptErr } = await supabase
+        .from('appointments')
+        .update({ client_membership_id: membershipId })
+        .eq('id', appointmentId)
+      if (apptErr) throw apptErr
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['active-membership'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['active-membership'] })
+      qc.invalidateQueries({ queryKey: ['client-active-memberships'] })
+    },
   })
 }
 
