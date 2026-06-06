@@ -1,16 +1,18 @@
 import { useState, useEffect, useMemo } from 'react'
 import {
-  Plus, Pencil, Loader2, Download, Check, ChevronLeft, ChevronRight, UserCheck,
+  Plus, Pencil, Loader2, Download, Check, ChevronLeft, ChevronRight, UserCheck, Trash2,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   useJobPositions, useEmployeeProfiles, useAllTenantUsers,
   useAbsences, useCCSSByMonth, useCompletedApptsByTherapist, useAbsencesByMonth,
+  useHolidaysForYear, useHolidaysForMonth,
   useCreateJobPosition, useUpdateJobPosition,
   useCreateEmployee, useUpdateEmployee,
   useCreateAbsence, useUpsertCCSS, useUpdateCCSSStatus,
-  calcMonthScheduleHours,
-  type JobPosition, type EmployeeProfile, type EmployeeCCSS,
+  useCreateHoliday, useDeleteHoliday,
+  calcMonthScheduleHours, calcHolidayBonus,
+  type JobPosition, type EmployeeProfile, type EmployeeCCSS, type Holiday, type HolidayDetail,
 } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -46,6 +48,12 @@ function fmtARS(n: number) {
 function initials(name?: string | null) {
   if (!name) return '?'
   return name.split(' ').map(w => w[0]).slice(0, 2).join('').toUpperCase()
+}
+
+function fmtHolidayDate(dateStr: string): string {
+  return new Date(dateStr + 'T12:00:00').toLocaleDateString('es-AR', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  })
 }
 
 // ── Tab 1: Puestos ────────────────────────────────────────────────────────────
@@ -531,6 +539,9 @@ type CardData = {
   bonus2Earned: boolean
   bonusTotal: number
   baseSueldo: number
+  holidayDetails: HolidayDetail[]
+  holidayHours: number
+  holidayBonus: number
   subtotal: number
   ccssEntry?: EmployeeCCSS
 }
@@ -539,8 +550,9 @@ function computeCard(
   emp: EmployeeProfile,
   year: number, month: number,
   appts: { therapist_id: string; duration_minutes: number }[],
-  absences: { user_id: string; hours_absent: number; deduct_from_salary: boolean }[],
+  absences: { user_id: string; hours_absent: number; deduct_from_salary: boolean; date: string }[],
   ccssData: EmployeeCCSS[],
+  holidays: Holiday[],
 ): CardData {
   const horasEsperadas = emp.expected_monthly_hours
   const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, year, month) || horasEsperadas
@@ -568,9 +580,17 @@ function computeCard(
     baseSueldo = Math.round(sal - (sal / hrs) * horasDeductibles)
   }
 
-  const subtotal = baseSueldo + bonusTotal
+  const employeeAbsences = absences
+    .filter(a => a.user_id === emp.user_id)
+    .map(a => ({ date: a.date, deduct_from_salary: a.deduct_from_salary }))
+  const holidayDetails = emp.position?.contract_type === 'hourly'
+    ? calcHolidayBonus(emp.user?.schedule, emp.position.hourly_rate ?? 0, holidays, employeeAbsences)
+    : []
+  const holidayHours = Math.round(holidayDetails.reduce((s, h) => s + h.hours, 0) * 100) / 100
+  const holidayBonus = holidayDetails.reduce((s, h) => s + h.bonus, 0)
+  const subtotal = baseSueldo + holidayBonus + bonusTotal
   const ccssEntry = ccssData.find(c => c.user_id === emp.user_id)
-  return { emp, horasEsperadas, horasSchedule, horasAusentes, horasNetas, sessionCount, sessionHours, bonus1Earned, bonus2Earned, bonusTotal, baseSueldo, subtotal, ccssEntry }
+  return { emp, horasEsperadas, horasSchedule, horasAusentes, horasNetas, sessionCount, sessionHours, bonus1Earned, bonus2Earned, bonusTotal, baseSueldo, holidayDetails, holidayHours, holidayBonus, subtotal, ccssEntry }
 }
 
 function CcssSection({ card, yearMonth }: { card: CardData; yearMonth: string }) {
@@ -714,10 +734,26 @@ function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMont
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Liquidación</p>
           <div className="space-y-1 text-sm">
             {isHourly ? (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">{card.horasNetas}h × {fmtARS(emp.position?.hourly_rate ?? 0)}/h</span>
-                <span className="tabular-nums">{fmtARS(card.baseSueldo)}</span>
-              </div>
+              <>
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Horas normales: {card.horasNetas}h × {fmtARS(emp.position?.hourly_rate ?? 0)}/h</span>
+                  <span className="tabular-nums">{fmtARS(card.baseSueldo)}</span>
+                </div>
+                {card.holidayDetails.length > 0 && (
+                  <div className="space-y-0.5">
+                    <div className="flex justify-between text-amber-700">
+                      <span>Adicional feriados: {card.holidayHours}h × {fmtARS(emp.position?.hourly_rate ?? 0)}/h</span>
+                      <span className="tabular-nums">+{fmtARS(card.holidayBonus)}</span>
+                    </div>
+                    {card.holidayDetails.map(hd => (
+                      <div key={hd.date} className="flex justify-between text-xs text-amber-600 pl-3">
+                        <span>{hd.date.slice(5).replace('-', '/')} {hd.name}: {hd.hours}hs</span>
+                        <span className="tabular-nums">{fmtARS(hd.bonus)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
             ) : (
               <>
                 <div className="flex justify-between">
@@ -752,7 +788,7 @@ function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMont
 }
 
 function exportCSV(cards: CardData[], yearMonth: string) {
-  const header = ['Empleado', 'Puesto', 'Tipo', 'H.Esperadas', 'H.Schedule', 'H.Ausentes', 'H.Netas', 'Sesiones', 'Bono', 'Base Sueldo', 'Subtotal', 'CCSS', 'Total']
+  const header = ['Empleado', 'Puesto', 'Tipo', 'H.Esperadas', 'H.Schedule', 'H.Ausentes', 'H.Netas', 'Sesiones', 'Bono', 'Base Sueldo', 'Adicional Feriados', 'Subtotal', 'CCSS', 'Total']
   const rows = cards.map(c => [
     c.emp.user?.full_name ?? '',
     c.emp.position?.name ?? '',
@@ -764,6 +800,7 @@ function exportCSV(cards: CardData[], yearMonth: string) {
     c.sessionCount,
     c.bonusTotal,
     c.baseSueldo,
+    c.holidayBonus,
     c.subtotal,
     c.ccssEntry?.amount ?? 0,
     c.subtotal + (c.ccssEntry?.amount ?? 0),
@@ -787,14 +824,15 @@ function LiquidacionTab() {
   const { data: appts = [], isLoading: apptLoading } = useCompletedApptsByTherapist(yearMonth)
   const { data: absenceData = [], isLoading: absLoading } = useAbsencesByMonth(yearMonth)
   const { data: ccssData = [], isLoading: ccssLoading } = useCCSSByMonth(yearMonth)
+  const { data: holidays = [], isLoading: holLoading } = useHolidaysForMonth(yearMonth)
 
-  const isLoading = empLoading || apptLoading || absLoading || ccssLoading
+  const isLoading = empLoading || apptLoading || absLoading || ccssLoading || holLoading
 
   const activeEmployees = employees.filter(e => e.active)
 
   const cards = useMemo(() =>
-    activeEmployees.map(emp => computeCard(emp, year, month, appts, absenceData, ccssData)),
-    [activeEmployees, year, month, appts, absenceData, ccssData],
+    activeEmployees.map(emp => computeCard(emp, year, month, appts, absenceData, ccssData, holidays)),
+    [activeEmployees, year, month, appts, absenceData, ccssData, holidays],
   )
 
   function prevMonth() {
@@ -990,7 +1028,16 @@ function AusenciasTab() {
                       {ABSENCE_LABELS[a.type]}
                     </span>
                   </td>
-                  <td className="px-4 py-3 text-muted-foreground max-w-[150px] truncate">{a.reason ?? '—'}</td>
+                  <td className="px-4 py-3 max-w-[200px]">
+                    <div className="space-y-1">
+                      {a.appointment_id && (
+                        <span className="inline-flex text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-100 text-blue-700">
+                          Desde agenda
+                        </span>
+                      )}
+                      <p className="text-sm text-muted-foreground truncate">{a.reason ?? '—'}</p>
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     {a.deduct_from_salary
                       ? <span className="text-xs text-red-600 font-medium">Sí</span>
@@ -1008,15 +1055,137 @@ function AusenciasTab() {
   )
 }
 
+// ── Tab 5: Feriados ───────────────────────────────────────────────────────────
+
+function AgregarFeriadoModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const { user } = useAuth()
+  const createHoliday = useCreateHoliday()
+  const [date, setDate] = useState('')
+  const [name, setName] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) { setDate(''); setName(''); setError('') }
+  }, [open])
+
+  async function handleSave() {
+    if (!date) { setError('La fecha es obligatoria'); return }
+    if (!name.trim()) { setError('El nombre es obligatorio'); return }
+    setError('')
+    try {
+      await createHoliday.mutateAsync({ date, name: name.trim(), created_by: user!.id })
+      onClose()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al guardar')
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Agregar Feriado</DialogTitle>
+          <DialogDescription>Registrá un feriado nacional o local.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 mt-2">
+          <div className="space-y-1.5">
+            <Label>Fecha *</Label>
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Nombre *</Label>
+            <Input value={name} onChange={e => setName(e.target.value)}
+              placeholder="ej: Día de la Revolución de Mayo" />
+          </div>
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex gap-2 justify-end">
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="button" onClick={handleSave} disabled={createHoliday.isPending}>
+              {createHoliday.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Guardar
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function FeriadosTab() {
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+  const [modalOpen, setModalOpen] = useState(false)
+  const { data: holidays = [], isLoading } = useHolidaysForYear(year)
+  const deleteHoliday = useDeleteHoliday()
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y - 1)}>
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <span className="text-base font-semibold text-plum-800 min-w-[60px] text-center">{year}</span>
+          <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y + 1)}>
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </div>
+        <Button size="sm" onClick={() => setModalOpen(true)}>
+          <Plus className="w-4 h-4 mr-1.5" />Agregar Feriado
+        </Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-12"><Loader2 className="w-6 h-6 animate-spin text-plum-800" /></div>
+      ) : (
+        <div className="rounded-xl border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                {['Fecha', 'Nombre del feriado', ''].map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {holidays.length === 0 ? (
+                <tr>
+                  <td colSpan={3} className="py-10 text-center text-muted-foreground text-sm">
+                    Sin feriados registrados para {year}
+                  </td>
+                </tr>
+              ) : holidays.map(h => (
+                <tr key={h.id} className="border-b last:border-b-0 hover:bg-gray-50">
+                  <td className="px-4 py-3 capitalize tabular-nums">{fmtHolidayDate(h.date)}</td>
+                  <td className="px-4 py-3 font-medium text-plum-800">{h.name}</td>
+                  <td className="px-4 py-3 text-right">
+                    <Button variant="ghost" size="icon" className="w-8 h-8 text-red-500 hover:text-red-700 hover:bg-red-50"
+                      onClick={() => deleteHoliday.mutate(h.id)}>
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <AgregarFeriadoModal open={modalOpen} onClose={() => setModalOpen(false)} />
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias'
+type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados'
 
 const TABS: { key: RRHHTab; label: string }[] = [
   { key: 'puestos', label: 'Puestos' },
   { key: 'empleados', label: 'Empleados' },
   { key: 'liquidacion', label: 'Liquidación Mensual' },
   { key: 'ausencias', label: 'Ausencias' },
+  { key: 'feriados', label: 'Feriados' },
 ]
 
 export default function RRHH() {
@@ -1052,6 +1221,7 @@ export default function RRHH() {
       {tab === 'empleados' && <EmpleadosTab />}
       {tab === 'liquidacion' && <LiquidacionTab />}
       {tab === 'ausencias' && <AusenciasTab />}
+      {tab === 'feriados' && <FeriadosTab />}
     </div>
   )
 }

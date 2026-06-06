@@ -43,6 +43,15 @@ export type EmployeeCCSS = {
   status: 'pending' | 'paid'; notes?: string | null; created_at: string
 }
 
+export type Holiday = {
+  id: string; tenant_id: string; date: string; name: string
+  created_by?: string | null; created_at: string
+}
+
+export type HolidayDetail = {
+  date: string; name: string; hours: number; bonus: number
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const DAY_KEYS_SHORT = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
@@ -65,6 +74,36 @@ export function calcMonthScheduleHours(
     }
   }
   return Math.round(total * 100) / 100
+}
+
+export function calcHolidayBonus(
+  schedule: Record<string, { start: string; end: string }[]> | null | undefined,
+  hourlyRate: number,
+  holidays: Holiday[],
+  absences: { date: string; deduct_from_salary: boolean }[],
+): HolidayDetail[] {
+  if (!schedule || !hourlyRate) return []
+  const result: HolidayDetail[] = []
+  for (const h of holidays) {
+    const hasAbsence = absences.some(a => a.date === h.date)
+    if (hasAbsence) continue
+    const dayKey = DAY_KEYS_SHORT[new Date(h.date + 'T12:00:00').getDay()]
+    const ranges = (schedule[dayKey] ?? []) as { start: string; end: string }[]
+    let hours = 0
+    for (const r of ranges) {
+      const [sh, sm] = r.start.split(':').map(Number)
+      const [eh, em] = r.end.split(':').map(Number)
+      hours += (eh * 60 + em - (sh * 60 + sm)) / 60
+    }
+    if (hours > 0) {
+      result.push({
+        date: h.date, name: h.name,
+        hours: Math.round(hours * 100) / 100,
+        bonus: Math.round(hours * hourlyRate),
+      })
+    }
+  }
+  return result
 }
 
 // ── Read hooks ────────────────────────────────────────────────────────────────
@@ -170,6 +209,37 @@ export function useAbsencesByMonth(yearMonth: string) {
         .gte('date', `${yearMonth}-01`).lte('date', endDate)
       if (error) throw error
       return data as { user_id: string; hours_absent: number; deduct_from_salary: boolean; date: string }[]
+    },
+    enabled: !!yearMonth,
+  })
+}
+
+export function useHolidaysForYear(year: number) {
+  return useQuery({
+    queryKey: ['holidays', year],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('holidays').select('*').eq('tenant_id', TENANT_ID)
+        .gte('date', `${year}-01-01`).lte('date', `${year}-12-31`)
+        .order('date')
+      if (error) throw error
+      return data as Holiday[]
+    },
+  })
+}
+
+export function useHolidaysForMonth(yearMonth: string) {
+  const [y, m] = yearMonth.split('-').map(Number)
+  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  return useQuery({
+    queryKey: ['holidays-month', yearMonth],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('holidays').select('*').eq('tenant_id', TENANT_ID)
+        .gte('date', `${yearMonth}-01`).lte('date', endDate)
+        .order('date')
+      if (error) throw error
+      return data as Holiday[]
     },
     enabled: !!yearMonth,
   })
@@ -382,5 +452,29 @@ export function useUpdateCCSSStatus() {
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['employee-ccss'] }),
+  })
+}
+
+export function useCreateHoliday() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ date, name, created_by }: { date: string; name: string; created_by: string }) => {
+      const { data, error } = await supabase
+        .from('holidays').insert({ date, name, created_by, tenant_id: TENANT_ID }).select().single()
+      if (error) throw error
+      return data
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['holidays'] }),
+  })
+}
+
+export function useDeleteHoliday() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const { error } = await supabase.from('holidays').delete().eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['holidays'] }),
   })
 }

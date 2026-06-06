@@ -9,6 +9,8 @@ import { useInsertTransaction } from '@/hooks/useFinanzas'
 import { useValidateGiftCard, useRedeemGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
 import { useClients } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
+import { supabase } from '@/lib/supabase'
+import { useCreateAbsence } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -28,6 +30,21 @@ const DEFAULT_COLORS = ['#7c3aed', '#0891b2', '#16a34a', '#dc2626', '#d97706']
 const DAY_NAMES_LONG = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 const DAY_NAMES_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
 const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
+
+type BloqueoTipo = 'descanso' | 'ausencia'
+
+const BLOQUEO_COLORS: Record<BloqueoTipo, { bg: string; border: string; text: string }> = {
+  descanso: { bg: '#f1f5f9', border: '#94a3b8', text: '#475569' },
+  ausencia: { bg: '#fee2e2', border: '#ef4444', text: '#991b1b' },
+}
+
+function parseBloqueoTipo(notes: string | null | undefined): BloqueoTipo | null {
+  if (!notes) return null
+  const lower = notes.toLowerCase()
+  if (lower.startsWith('ausencia')) return 'ausencia'
+  if (lower.startsWith('descanso')) return 'descanso'
+  return null
+}
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -211,20 +228,31 @@ function DayApptBlock({
   const height = Math.max(appt.duration_minutes * (HOUR_PX / 60), 22)
   const isBlock = appt.status === 'blocked'
 
+  const bloqueoTipo = isBlock ? parseBloqueoTipo(appt.notes) : null
+  const bloqueoStyle = bloqueoTipo
+    ? BLOQUEO_COLORS[bloqueoTipo]
+    : { bg: '#f1f5f9', border: '#94a3b8', text: '#475569' }
+  const blockLabel = bloqueoTipo === 'ausencia' ? '⚠️ Ausencia' : bloqueoTipo === 'descanso' ? 'Descanso' : 'Bloqueado'
+  const blockMotivo = bloqueoTipo && appt.notes?.includes(': ')
+    ? appt.notes.split(': ').slice(1).join(': ').trim()
+    : (!bloqueoTipo ? (appt.notes ?? '') : '')
+
   return (
     <div
       className="absolute left-1 right-1 rounded overflow-hidden cursor-pointer z-10 select-none transition-opacity hover:opacity-90"
       style={{
         top,
         height,
-        backgroundColor: isBlock ? '#f1f5f9' : `${color}26`,
-        borderLeft: `3px solid ${isBlock ? '#94a3b8' : color}`,
+        backgroundColor: isBlock ? bloqueoStyle.bg : `${color}26`,
+        borderLeft: `3px solid ${isBlock ? bloqueoStyle.border : color}`,
       }}
       onClick={(e) => { e.stopPropagation(); onClick() }}
     >
       <div className="px-1.5 py-0.5 h-full overflow-hidden">
         {isBlock ? (
-          <p className="text-[11px] font-medium text-slate-500 leading-tight mt-0.5">Bloqueado{appt.notes ? ` · ${appt.notes}` : ''}</p>
+          <p className="text-[11px] font-medium leading-tight mt-0.5" style={{ color: bloqueoStyle.text }}>
+            {blockLabel}{blockMotivo ? ` · ${blockMotivo}` : ''}
+          </p>
         ) : (
           <>
             <div className="flex items-center gap-1">
@@ -737,18 +765,25 @@ function NuevoTurnoModal({
 function BloqueoModal({ slot, therapists, onClose }: {
   slot: SlotTarget; therapists: Therapist[]; onClose: () => void
 }) {
+  const { user } = useAuth()
   const createAppt = useCreateAppointment()
+  const createAbsence = useCreateAbsence()
   const { data: services } = useServices()
   const therapist = therapists.find(t => t.id === slot.therapistId)
+
   const [duration, setDuration] = useState(60)
   const [boxNumber, setBoxNumber] = useState<1 | 2 | 3>(1)
   const [motivo, setMotivo] = useState('')
+  const [tipo, setTipo] = useState<BloqueoTipo>('descanso')
+  const [deductFromSalary, setDeductFromSalary] = useState(true)
   const [error, setError] = useState('')
+  const [successMsg, setSuccessMsg] = useState('')
 
   async function handleSave() {
     setError('')
+    const notesValue = `${tipo === 'ausencia' ? 'Ausencia' : 'Descanso'}: ${motivo.trim()}`
     try {
-      await createAppt.mutateAsync({
+      const newAppt = await createAppt.mutateAsync({
         therapist_id: slot.therapistId,
         client_id: null,
         service_id: services?.[0]?.id ?? null,
@@ -757,14 +792,56 @@ function BloqueoModal({ slot, therapists, onClose }: {
         box_number: boxNumber,
         status: 'blocked' as const,
         source: 'manual',
-        notes: motivo || undefined,
+        notes: notesValue,
         deposit_amount: 0,
         deposit_paid: false,
-      })
-      onClose()
+      }) as { id: string }
+
+      if (tipo === 'ausencia') {
+        const hoursAbsent = Math.round((duration / 60) * 100) / 100
+        try {
+          await createAbsence.mutateAsync({
+            user_id: slot.therapistId,
+            date: slot.date,
+            hours_absent: hoursAbsent,
+            type: 'absence',
+            reason: motivo.trim() || undefined,
+            deduct_from_salary: deductFromSalary,
+            registered_by: user!.id,
+            appointment_id: newAppt.id,
+          })
+          const hrsLabel = hoursAbsent % 1 === 0 ? `${hoursAbsent}` : hoursAbsent.toFixed(1)
+          setSuccessMsg(
+            `Ausencia registrada. Se descontarán ${hrsLabel}hs de la liquidación de ${therapist?.full_name ?? 'la terapeuta'}.`
+          )
+        } catch (absErr: unknown) {
+          await supabase.from('appointments').delete().eq('id', newAppt.id)
+          setError(`Error al registrar la ausencia: ${absErr instanceof Error ? absErr.message : 'Error desconocido'}. El bloqueo fue revertido.`)
+        }
+      } else {
+        onClose()
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al crear el bloqueo')
     }
+  }
+
+  const busy = createAppt.isPending || createAbsence.isPending
+
+  if (successMsg) {
+    return (
+      <Dialog open onOpenChange={(v) => { if (!v) onClose() }}>
+        <DialogContent className="max-w-sm">
+          <div className="py-6 text-center space-y-3">
+            <div className="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center mx-auto">
+              <CheckCircle className="w-6 h-6 text-green-600" />
+            </div>
+            <p className="text-sm font-medium text-plum-800 px-2">{successMsg}</p>
+            <Button variant="outline" size="sm" onClick={onClose}>Cerrar</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    )
   }
 
   return (
@@ -789,6 +866,30 @@ function BloqueoModal({ slot, therapists, onClose }: {
               <span className="font-medium">{fmtSlot(slot.hour, slot.minute)}</span>
             </div>
           </div>
+
+          <div className="space-y-1.5">
+            <Label>Tipo</Label>
+            <select
+              value={tipo}
+              onChange={(e) => setTipo(e.target.value as BloqueoTipo)}
+              className={SELECT_CLS}
+            >
+              <option value="descanso">Descanso</option>
+              <option value="ausencia">Ausencia</option>
+            </select>
+          </div>
+
+          {tipo === 'ausencia' && (
+            <div className="rounded-lg border border-red-100 bg-red-50 p-3">
+              <p className="text-xs font-semibold text-red-700 mb-2">⚠️ Se registrará una ausencia en RRHH</p>
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input type="checkbox" checked={deductFromSalary}
+                  onChange={(e) => setDeductFromSalary(e.target.checked)} className="w-4 h-4" />
+                Descontar del sueldo
+              </label>
+            </div>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="bloqueo-duration">Duración</Label>
@@ -817,22 +918,22 @@ function BloqueoModal({ slot, therapists, onClose }: {
               </select>
             </div>
           </div>
+
           <div className="space-y-1.5">
             <Label htmlFor="bloqueo-motivo">Motivo (opcional)</Label>
             <Input
               id="bloqueo-motivo"
               value={motivo}
               onChange={(e) => setMotivo(e.target.value)}
-              placeholder="Ej: Limpieza, Pausa, Reservado..."
+              placeholder={tipo === 'ausencia' ? 'Ej: visita médica, enfermedad...' : 'Ej: preparación de sala...'}
             />
           </div>
+
           {error && <p className="text-xs text-red-600">{error}</p>}
           <div className="flex gap-2 justify-end pt-1">
-            <Button type="button" variant="outline" onClick={onClose}>
-              Cancelar
-            </Button>
-            <Button type="button" onClick={handleSave} disabled={createAppt.isPending}>
-              {createAppt.isPending
+            <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button type="button" onClick={handleSave} disabled={busy}>
+              {busy
                 ? <><Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />Guardando...</>
                 : 'Guardar bloqueo'
               }
