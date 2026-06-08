@@ -1,15 +1,16 @@
 import { Navigate, Outlet } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
-import { UserRole } from '@/types'
 import { ReactNode } from 'react'
 
 interface ProtectedRouteProps {
   children?: ReactNode
-  roles?: UserRole[]
+  roles?: string[]         // legacy: exact role-name membership check
+  permission?: string      // require this one permission key
+  anyPermission?: string[] // require ANY of these permission keys
 }
 
-export function ProtectedRoute({ children, roles }: ProtectedRouteProps) {
-  const { user, profile, loading } = useAuth()
+export function ProtectedRoute({ children, roles, permission, anyPermission }: ProtectedRouteProps) {
+  const { user, profile, loading, permissions } = useAuth()
 
   if (loading) {
     return (
@@ -26,6 +27,25 @@ export function ProtectedRoute({ children, roles }: ProtectedRouteProps) {
 
   if (!user) return <Navigate to="/auth" replace />
 
+  // Owner bypasses every permission check
+  const isOwner = profile?.role === 'owner'
+  if (isOwner) return children ? <>{children}</> : <Outlet />
+
+  // Permission-based checks (preferred over role names)
+  if (permission !== undefined || anyPermission !== undefined) {
+    // If permissions haven't loaded yet, allow access — the sidebar already hides
+    // the nav item, and the page itself can show an empty state if needed
+    if (permissions === null) return children ? <>{children}</> : <Outlet />
+
+    const allowed = anyPermission
+      ? anyPermission.some((k) => permissions[k] === true)
+      : permissions[permission!] === true
+
+    if (!allowed) return <Navigate to="/dashboard" replace />
+    return children ? <>{children}</> : <Outlet />
+  }
+
+  // Legacy role-based check
   if (roles && profile && !roles.includes(profile.role)) {
     return <Navigate to="/dashboard" replace />
   }

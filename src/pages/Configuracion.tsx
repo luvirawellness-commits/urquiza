@@ -1112,7 +1112,7 @@ export default function Configuracion() {
   return (
     <div className="p-6 space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-plum-800">Configuración</h1>
+        <h1 className="text-2xl font-bold text-plum-800">Compras</h1>
         <p className="text-muted-foreground text-sm mt-1">Gestión de insumos y estructura de costos</p>
       </div>
 

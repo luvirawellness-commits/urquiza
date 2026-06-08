@@ -1,20 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import type { ClientMembership, MembershipPlan } from '@/types'
 
 export function useMembershipPlans() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['membership-plans'],
+    queryKey: ['membership-plans', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('memberships')
         .select('id, name, price, sessions_qty, validity_days, highlight_badge')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('active', true)
         .order('price')
       if (error) throw error
       return (data ?? []) as MembershipPlan[]
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -42,27 +45,26 @@ const MEMBERSHIP_SELECT = `
 `
 
 export function useClientActiveMemberships(clientId: string | null) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['client-active-memberships', clientId],
+    queryKey: ['client-active-memberships', tenantId, clientId],
     queryFn: async () => {
       if (!clientId) return [] as ClientMembership[]
       const today = new Date().toISOString().split('T')[0]
 
-      // Query 1: memberships where client is titular
       const { data: direct, error: e1 } = await supabase
         .from('client_memberships')
         .select(MEMBERSHIP_SELECT)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('client_id', clientId)
         .eq('status', 'active')
         .gte('expires_at', today)
       if (e1) { console.log('[useClientActiveMemberships] direct query error:', e1); throw e1 }
 
-      // Query 2: memberships where client is a beneficiary
       const { data: benRows, error: e2 } = await supabase
         .from('membership_beneficiaries')
         .select('client_membership_id')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('client_id', clientId)
       if (e2) { console.log('[useClientActiveMemberships] beneficiaries lookup error:', e2); throw e2 }
 
@@ -77,14 +79,13 @@ export function useClientActiveMemberships(clientId: string | null) {
           .from('client_memberships')
           .select(MEMBERSHIP_SELECT)
           .in('id', membershipIds)
-          .eq('tenant_id', TENANT_ID)
+          .eq('tenant_id', tenantId)
           .eq('status', 'active')
           .gte('expires_at', today)
         if (e3) { console.log('[useClientActiveMemberships] indirect query error:', e3); throw e3 }
         indirect = (ind ?? []) as ClientMembership[]
       }
 
-      // Merge, deduplicate by id, and only return memberships with sessions remaining
       const seen = new Set<string>()
       const all: ClientMembership[] = []
       for (const m of [...(direct ?? []), ...indirect]) {
@@ -97,7 +98,7 @@ export function useClientActiveMemberships(clientId: string | null) {
 
       return all
     },
-    enabled: !!clientId,
+    enabled: !!clientId && !!tenantId,
     retry: 0,
     throwOnError: false,
   })
@@ -118,6 +119,7 @@ type SellMembershipInput = {
 }
 
 export function useSellMembership() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: SellMembershipInput) => {
@@ -129,7 +131,7 @@ export function useSellMembership() {
       const { data: cm, error: cmErr } = await supabase
         .from('client_memberships')
         .insert({
-          tenant_id: TENANT_ID,
+          tenant_id: tenantId,
           client_id: input.clientId,
           membership_id: input.planId,
           sessions_used: sessionsUsed,
@@ -146,26 +148,23 @@ export function useSellMembership() {
 
       const membershipId: string = cm.id
 
-      // Always insert the titular as beneficiary first — this is what makes the
-      // membership visible when querying via membership_beneficiaries.
       const { error: titularErr } = await supabase
         .from('membership_beneficiaries')
         .insert({
-          tenant_id: TENANT_ID,
+          tenant_id: tenantId,
           client_membership_id: membershipId,
           client_id: input.clientId,
           added_by: input.soldBy,
         })
       if (titularErr) { console.log('[useSellMembership] titular beneficiary insert error:', titularErr); throw titularErr }
 
-      // Insert additional beneficiaries if any (skip titular to avoid duplicate)
       const extraBenIds = (input.beneficiaryIds ?? []).filter((id) => id !== input.clientId)
       if (extraBenIds.length > 0) {
         const { error: benErr } = await supabase
           .from('membership_beneficiaries')
           .insert(
             extraBenIds.map((cid) => ({
-              tenant_id: TENANT_ID,
+              tenant_id: tenantId,
               client_membership_id: membershipId,
               client_id: cid,
               added_by: input.soldBy,
@@ -177,7 +176,7 @@ export function useSellMembership() {
       const { error: txErr } = await supabase
         .from('transactions')
         .insert({
-          tenant_id: TENANT_ID,
+          tenant_id: tenantId,
           type: 'income',
           category: 'membership',
           amount: input.amount,
@@ -212,6 +211,7 @@ export function useSellMembership() {
 }
 
 export function useAddBeneficiary() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({
@@ -226,7 +226,7 @@ export function useAddBeneficiary() {
       const { error } = await supabase
         .from('membership_beneficiaries')
         .insert({
-          tenant_id: TENANT_ID,
+          tenant_id: tenantId,
           client_membership_id: membershipId,
           client_id: clientId,
           added_by: addedBy,
@@ -240,6 +240,7 @@ export function useAddBeneficiary() {
 }
 
 export function useRemoveBeneficiary() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({
@@ -254,7 +255,7 @@ export function useRemoveBeneficiary() {
         .delete()
         .eq('client_membership_id', membershipId)
         .eq('client_id', clientId)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => {

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus } from 'lucide-react'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useServices, useTherapists, type Therapist,
@@ -9,7 +9,7 @@ import { useClientActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useInsertTransaction } from '@/hooks/useFinanzas'
 import { useValidateGiftCard, useRedeemGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
-import { useClients } from '@/hooks/useClients'
+import { useClients, useCreateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { useCreateAbsence } from '@/hooks/useRRHH'
@@ -733,8 +733,34 @@ function NuevoTurnoModal({
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
 
+  const createClient = useCreateClient()
+  const [showQuickCreate, setShowQuickCreate] = useState(false)
+  const [qcFirst, setQcFirst] = useState('')
+  const [qcLast, setQcLast] = useState('')
+  const [qcPhone, setQcPhone] = useState('')
+  const [qcSource, setQcSource] = useState<'instagram' | 'google' | 'referral' | 'whatsapp' | 'in_person' | 'other'>('whatsapp')
+  const [qcError, setQcError] = useState<string | null>(null)
+
   function set<K extends keyof TurnoForm>(key: K, value: TurnoForm[K]) {
     setForm(prev => ({ ...prev, [key]: value }))
+  }
+
+  async function handleQuickCreate() {
+    if (!qcFirst.trim() || !qcPhone.trim()) return
+    setQcError(null)
+    try {
+      const newClient = await createClient.mutateAsync({
+        first_name: qcFirst.trim(),
+        last_name: qcLast.trim() || undefined,
+        phone: qcPhone.trim(),
+        source: qcSource,
+      })
+      set('client_id', newClient.id)
+      setShowQuickCreate(false)
+      setQcFirst(''); setQcLast(''); setQcPhone(''); setQcSource('whatsapp')
+    } catch {
+      setQcError('Error al crear el cliente. Intentá de nuevo.')
+    }
   }
 
   async function handleSubmit(e: React.FormEvent) {
@@ -782,7 +808,65 @@ function NuevoTurnoModal({
         <form onSubmit={handleSubmit} className="space-y-4 mt-2">
           <div className="space-y-1.5">
             <Label>Cliente *</Label>
-            <ClientSearch selectedId={form.client_id} onSelect={id => set('client_id', id)} />
+            <div className="flex gap-2">
+              <div className="flex-1">
+                <ClientSearch
+                  selectedId={form.client_id}
+                  onSelect={id => { set('client_id', id); if (id) setShowQuickCreate(false) }}
+                />
+              </div>
+              <Button type="button" variant="outline" size="icon" className="h-9 w-9 flex-shrink-0"
+                onClick={() => setShowQuickCreate(v => !v)}
+                title="Crear nuevo cliente">
+                <UserPlus className="w-4 h-4" />
+              </Button>
+            </div>
+
+            {showQuickCreate && (
+              <div className="border rounded-lg p-3 bg-slate-50 space-y-3 mt-1">
+                <p className="text-xs font-semibold text-plum-800">Crear nuevo cliente</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Nombre *</Label>
+                    <Input value={qcFirst} onChange={e => setQcFirst(e.target.value)} placeholder="Nombre" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Apellido</Label>
+                    <Input value={qcLast} onChange={e => setQcLast(e.target.value)} placeholder="Apellido" />
+                  </div>
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Teléfono *</Label>
+                  <Input type="tel" value={qcPhone} onChange={e => setQcPhone(e.target.value)} placeholder="Ej: 11-2345-6789" />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-xs">Canal</Label>
+                  <select className={SELECT_CLS} value={qcSource}
+                    onChange={e => setQcSource(e.target.value as typeof qcSource)}>
+                    <option value="whatsapp">WhatsApp</option>
+                    <option value="instagram">Instagram</option>
+                    <option value="google">Google</option>
+                    <option value="referral">Referido</option>
+                    <option value="in_person">Presencial</option>
+                    <option value="other">Otro</option>
+                  </select>
+                </div>
+                {qcError && <p className="text-xs text-red-600">{qcError}</p>}
+                <div className="flex items-center gap-3">
+                  <Button type="button" size="sm" className="flex-1"
+                    disabled={!qcFirst.trim() || !qcPhone.trim() || createClient.isPending}
+                    onClick={handleQuickCreate}>
+                    {createClient.isPending
+                      ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Creando...</>
+                      : 'Crear y seleccionar'}
+                  </Button>
+                  <button type="button" className="text-xs text-muted-foreground hover:underline"
+                    onClick={() => { setShowQuickCreate(false); setQcError(null) }}>
+                    Cancelar
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label>Servicio *</Label>

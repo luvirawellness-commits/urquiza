@@ -1,5 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 
 export interface GiftCard {
   id: string
@@ -32,8 +33,9 @@ function generateCode(): string {
 }
 
 export function useGiftCards() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['gift_cards'],
+    queryKey: ['gift_cards', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('gift_cards')
@@ -42,11 +44,12 @@ export function useGiftCards() {
           service:service_id ( id, name, emoji ),
           used_by:used_by_client_id ( id, first_name, last_name )
         `)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('created_at', { ascending: false })
       if (error) throw error
       return data as GiftCard[]
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -65,10 +68,10 @@ type CreateGiftCardInput = {
 }
 
 export function useCreateGiftCard() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreateGiftCardInput) => {
-      // Generate unique code — up to 5 attempts
       let code = ''
       for (let i = 0; i < 5; i++) {
         const attempt = generateCode()
@@ -84,7 +87,7 @@ export function useCreateGiftCard() {
       const { data: gc, error: gcError } = await supabase
         .from('gift_cards')
         .insert({
-          tenant_id: TENANT_ID,
+          tenant_id: tenantId,
           code,
           service_id: input.service_id,
           duration_minutes: input.duration_minutes,
@@ -102,7 +105,7 @@ export function useCreateGiftCard() {
 
       const today = new Date().toISOString().split('T')[0]
       const { error: txError } = await supabase.from('transactions').insert({
-        tenant_id: TENANT_ID,
+        tenant_id: tenantId,
         type: 'income',
         category: 'other',
         amount: input.amount,
@@ -160,6 +163,7 @@ export function useValidateGiftCard() {
 }
 
 export function useRedeemGiftCard() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({
@@ -174,7 +178,7 @@ export function useRedeemGiftCard() {
           used_in_appointment_id: appointmentId,
         })
         .eq('id', giftCardId)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['gift_cards'] }),

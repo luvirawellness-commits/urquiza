@@ -1,15 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import { Transaction } from '@/types'
 
 export function useTransactions(month?: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['transactions', month],
+    queryKey: ['transactions', tenantId, month],
     queryFn: async () => {
       let query = supabase
         .from('transactions')
         .select('*')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('date', { ascending: false })
 
       if (month) {
@@ -22,43 +24,47 @@ export function useTransactions(month?: string) {
       if (error) throw error
       return data as Transaction[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useTodayTransactions() {
+  const tenantId = useTenantId()
   const today = new Date().toISOString().split('T')[0]
   return useQuery({
-    queryKey: ['transactions', 'today', today],
+    queryKey: ['transactions', tenantId, 'today', today],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('transactions')
         .select('*')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('date', today)
         .order('created_at', { ascending: false })
       if (error) throw error
       return data as Transaction[]
     },
     refetchInterval: 30_000,
+    enabled: !!tenantId,
   })
 }
 
 export function useTodayMetrics() {
+  const tenantId = useTenantId()
   const today = new Date().toISOString().split('T')[0]
   return useQuery({
-    queryKey: ['today-metrics', today],
+    queryKey: ['today-metrics', tenantId, today],
     queryFn: async () => {
       const [txRes, apptRes] = await Promise.all([
         supabase
           .from('transactions')
           .select('amount, payment_method, type')
-          .eq('tenant_id', TENANT_ID)
+          .eq('tenant_id', tenantId)
           .eq('date', today)
           .eq('status', 'paid'),
         supabase
           .from('appointments')
           .select('id', { count: 'exact', head: true })
-          .eq('tenant_id', TENANT_ID)
+          .eq('tenant_id', tenantId)
           .gte('scheduled_at', `${today}T00:00:00`)
           .lte('scheduled_at', `${today}T23:59:59`)
           .eq('status', 'completed'),
@@ -83,6 +89,7 @@ export function useTodayMetrics() {
       }
     },
     refetchInterval: 30_000,
+    enabled: !!tenantId,
   })
 }
 
@@ -100,12 +107,13 @@ type InsertTransactionInput = {
 }
 
 export function useInsertTransaction() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (tx: InsertTransactionInput) => {
       const { data, error } = await supabase
         .from('transactions')
-        .insert({ ...tx, tenant_id: TENANT_ID })
+        .insert({ ...tx, tenant_id: tenantId })
         .select()
         .single()
       if (error) throw error
@@ -120,28 +128,30 @@ export function useInsertTransaction() {
 }
 
 export function useClientMembership(clientId: string | null) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['membership', clientId],
+    queryKey: ['membership', tenantId, clientId],
     queryFn: async () => {
       if (!clientId) return null
       const { data } = await supabase
         .from('memberships')
         .select('id, status, expires_at')
         .eq('client_id', clientId)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('status', 'active')
         .maybeSingle()
       return data
     },
-    enabled: !!clientId,
+    enabled: !!clientId && !!tenantId,
     retry: 0,
     throwOnError: false,
   })
 }
 
 export function useTransactionsRange(startDate: string, endDate: string, filterByTenant = true) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['transactions', 'range', startDate, endDate, filterByTenant],
+    queryKey: ['transactions', 'range', tenantId, startDate, endDate, filterByTenant],
     queryFn: async () => {
       let query = supabase
         .from('transactions')
@@ -149,17 +159,19 @@ export function useTransactionsRange(startDate: string, endDate: string, filterB
         .gte('date', startDate)
         .lte('date', endDate)
         .order('date', { ascending: true })
-      if (filterByTenant) query = query.eq('tenant_id', TENANT_ID)
+      if (filterByTenant) query = query.eq('tenant_id', tenantId)
       const { data, error } = await query
       if (error) throw error
       return data as Transaction[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useCompletedAppointmentsForCMV(startDate: string, endDate: string, filterByTenant = true) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['appointments', 'cmv', startDate, endDate, filterByTenant],
+    queryKey: ['appointments', 'cmv', tenantId, startDate, endDate, filterByTenant],
     queryFn: async () => {
       let query = supabase
         .from('appointments')
@@ -167,17 +179,19 @@ export function useCompletedAppointmentsForCMV(startDate: string, endDate: strin
         .eq('status', 'completed')
         .gte('scheduled_at', `${startDate}T00:00:00`)
         .lte('scheduled_at', `${endDate}T23:59:59`)
-      if (filterByTenant) query = query.eq('tenant_id', TENANT_ID)
+      if (filterByTenant) query = query.eq('tenant_id', tenantId)
       const { data, error } = await query
       if (error) throw error
       return (data ?? []) as { id: string; service_id: string; duration_minutes: number; scheduled_at: string }[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useDashboardMetrics() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['dashboard-metrics'],
+    queryKey: ['dashboard-metrics', tenantId],
     queryFn: async () => {
       const today = new Date().toISOString().split('T')[0]
       const monthStart = today.slice(0, 7) + '-01'
@@ -190,15 +204,15 @@ export function useDashboardMetrics() {
       })()
 
       const [clientsRes, todayApptRes, monthRevRes, weekApptRes] = await Promise.all([
-        supabase.from('clients').select('id', { count: 'exact', head: true }).eq('tenant_id', TENANT_ID),
+        supabase.from('clients').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId),
         supabase.from('appointments').select('id', { count: 'exact', head: true })
-          .eq('tenant_id', TENANT_ID)
+          .eq('tenant_id', tenantId)
           .gte('starts_at', `${today}T00:00:00`)
           .lte('starts_at', `${today}T23:59:59`),
-        supabase.from('transactions').select('amount').eq('tenant_id', TENANT_ID)
+        supabase.from('transactions').select('amount').eq('tenant_id', tenantId)
           .eq('type', 'income').gte('date', monthStart).lte('date', today),
         supabase.from('appointments').select('id', { count: 'exact', head: true })
-          .eq('tenant_id', TENANT_ID)
+          .eq('tenant_id', tenantId)
           .gte('starts_at', `${weekStart}T00:00:00`),
       ])
 
@@ -211,5 +225,6 @@ export function useDashboardMetrics() {
         appointmentsThisWeek: weekApptRes.count ?? 0,
       }
     },
+    enabled: !!tenantId,
   })
 }

@@ -1,19 +1,17 @@
-import { useState, useEffect } from 'react'
+﻿import { useState } from 'react'
 import { Gift, Loader2, Download } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useServices, useTherapists } from '@/hooks/useAppointments'
 import { useGiftCards, useCreateGiftCard, GiftCard } from '@/hooks/useGiftCards'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
-
-// Replace with actual base64-encoded logo PNG
-const LOGO_BASE64 = ''
-
+import { CARD_BASE64 } from '@/lib/cardBase64'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
@@ -30,167 +28,69 @@ type GeneratedGiftCard = {
   recipientName: string
   senderName: string
   message: string
+  imageDataUrl: string
 }
 
 // ── Canvas generator ───────────────────────────────────────────────────────────
-async function generateGiftCardCanvas(params: {
-  code: string
-  serviceName: string
-  duration: number
-  recipientName: string
-  senderName?: string
-  whatsappNumber?: string
-}): Promise<string> {
-  const canvas = document.createElement('canvas')
-  canvas.width = 900
-  canvas.height = 500
-  const ctx = canvas.getContext('2d')!
+async function generateGiftCardImage(
+  serviceName: string,
+  durationMinutes: number,
+  recipientName: string,
+  code: string,
+  whatsapp: string,
+  senderName?: string,
+  message?: string,
+): Promise<string> {
+  return new Promise((resolve) => {
+    const canvas = document.createElement('canvas')
+    canvas.width = 1050
+    canvas.height = 600
+    const ctx = canvas.getContext('2d')!
+    const bg = new Image()
+    bg.onload = () => {
+      ctx.drawImage(bg, 0, 0, 1050, 600)
 
-  // Background gradient
-  const grad = ctx.createLinearGradient(0, 0, 0, 500)
-  grad.addColorStop(0, '#3D0A3F')
-  grad.addColorStop(1, '#1A0020')
-  ctx.fillStyle = grad
-  ctx.fillRect(0, 0, 900, 500)
+      ctx.textAlign = 'center'
 
-  // Decorative mandala arcs — top-left corner
-  ctx.save()
-  ctx.globalAlpha = 0.4
-  ctx.strokeStyle = '#B8960C'
-  ctx.lineWidth = 1
-  for (const r of [20, 40, 60, 80, 100]) {
-    ctx.beginPath()
-    ctx.arc(-20, -20, r, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-  ctx.restore()
+      ctx.fillStyle = '#E8D5E8'
+      ctx.font = 'italic 20px Georgia, serif'
+      ctx.fillText('Vale por: ' + serviceName + ' · ' + durationMinutes + ' minutos', 560, 445)
 
-  // Decorative mandala arcs — bottom-right corner
-  ctx.save()
-  ctx.globalAlpha = 0.4
-  ctx.strokeStyle = '#B8960C'
-  ctx.lineWidth = 1
-  for (const r of [20, 40, 60, 80, 100]) {
-    ctx.beginPath()
-    ctx.arc(920, 520, r, 0, Math.PI * 2)
-    ctx.stroke()
-  }
-  ctx.restore()
+      ctx.fillStyle = '#FFFFFF'
+      ctx.font = 'bold 19px Georgia, serif'
+      ctx.fillText('A nombre de: ' + recipientName, 560, 475)
 
-  // Logo (drawn before text so text renders on top)
-  if (LOGO_BASE64) {
-    await new Promise<void>((resolve) => {
-      const img = new Image()
-      img.onload = () => { ctx.drawImage(img, 40, 150, 180, 180); resolve() }
-      img.onerror = () => resolve()
-      img.src = LOGO_BASE64
-    })
-  }
+      if (message) {
+        ctx.fillStyle = '#E8D5E8'
+        ctx.font = 'italic 15px Georgia, serif'
+        ctx.fillText('"' + message + '"', 560, 501)
+      }
 
-  // Brand text — left column starting at x=280
-  ctx.textAlign = 'left'
+      ctx.fillStyle = '#D4AF37'
+      ctx.font = 'bold 16px Georgia, serif'
+      ctx.fillText('Código de tarjeta: ' + code, 560, message ? 529 : 504)
 
-  ctx.fillStyle = '#B8960C'
-  ctx.font = 'bold 42px Georgia, serif'
-  ctx.fillText('TARJETA DE REGALO', 280, 80)
+      ctx.fillStyle = '#E8D5E8'
+      ctx.font = '14px Georgia, serif'
+      ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 560, message ? 555 : 530)
 
-  ctx.fillStyle = '#D4A0D4'
-  ctx.font = '20px Georgia, serif'
-  ctx.fillText('CENTRO DE BIENESTAR', 280, 115)
+      if (senderName) {
+        ctx.fillStyle = '#D4A0D4'
+        ctx.font = 'italic 13px Georgia, serif'
+        ctx.fillText('Con cariño de: ' + senderName, 560, message ? 579 : 554)
+      }
 
-  ctx.fillStyle = '#B8960C'
-  ctx.font = 'bold 56px Georgia, serif'
-  ctx.fillText('LUVIRA', 280, 175)
-
-  // "WELLNESS" with manual letter spacing (+2px per glyph)
-  ctx.fillStyle = '#B8960C'
-  ctx.font = '28px Georgia, serif'
-  let xPos = 280
-  for (const letter of 'WELLNESS') {
-    ctx.fillText(letter, xPos, 210)
-    xPos += ctx.measureText(letter).width + 2
-  }
-
-  // Thin separator line in brand area
-  ctx.fillStyle = '#B8960C'
-  ctx.fillRect(280, 232, 400, 1)
-
-  // Full-width gold double line
-  ctx.strokeStyle = '#B8960C'
-  ctx.lineWidth = 2
-  ctx.beginPath(); ctx.moveTo(0, 320); ctx.lineTo(900, 320); ctx.stroke()
-
-  ctx.save()
-  ctx.globalAlpha = 0.5
-  ctx.strokeStyle = '#B8960C'
-  ctx.lineWidth = 1
-  ctx.beginPath(); ctx.moveTo(0, 325); ctx.lineTo(900, 325); ctx.stroke()
-  ctx.restore()
-
-  // Bottom section — centered at x=450
-  ctx.textAlign = 'center'
-
-  ctx.fillStyle = '#E8D5E8'
-  ctx.font = 'italic 18px Georgia, serif'
-  ctx.fillText(`Vale por: ${params.serviceName} ${params.duration}min`, 450, 355)
-
-  ctx.fillStyle = '#FFFFFF'
-  ctx.font = '16px Georgia, serif'
-  ctx.fillText(`A nombre de: ${params.recipientName}`, 450, 385)
-
-  ctx.fillStyle = '#B8960C'
-  ctx.font = 'bold 16px "Courier New", monospace'
-  ctx.fillText(`Código: ${params.code}`, 450, 410)
-
-  ctx.fillStyle = '#D4A0D4'
-  ctx.font = '13px Georgia, serif'
-  ctx.fillText(
-    params.whatsappNumber
-      ? `Reservar por WhatsApp al ${params.whatsappNumber}`
-      : 'Reservar por WhatsApp',
-    450, 440,
-  )
-
-  if (params.senderName) {
-    ctx.fillStyle = '#E8D5E8'
-    ctx.font = 'italic 13px Georgia, serif'
-    ctx.fillText(`Con cariño de: ${params.senderName}`, 450, 460)
-  }
-
-  return canvas.toDataURL('image/png')
+      resolve(canvas.toDataURL('image/png'))
+    }
+    bg.onerror = () => resolve(canvas.toDataURL('image/png'))
+    bg.src = CARD_BASE64
+  })
 }
-
 // ── Gift card image modal ──────────────────────────────────────────────────────
 function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: () => void }) {
-  const [imageUrl, setImageUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    async function build() {
-      const { data } = await supabase
-        .from('tenants')
-        .select('whatsapp_number')
-        .eq('id', TENANT_ID)
-        .single()
-      if (cancelled) return
-      const url = await generateGiftCardCanvas({
-        code: gc.code,
-        serviceName: gc.serviceName,
-        duration: gc.duration,
-        recipientName: gc.recipientName,
-        senderName: gc.senderName || undefined,
-        whatsappNumber: (data as { whatsapp_number?: string | null } | null)?.whatsapp_number ?? undefined,
-      })
-      if (!cancelled) setImageUrl(url)
-    }
-    build()
-    return () => { cancelled = true }
-  }, [gc])
-
   function handleDownload() {
-    if (!imageUrl) return
     const a = document.createElement('a')
-    a.href = imageUrl
+    a.href = gc.imageDataUrl
     a.download = `GiftCard-Luvira-${gc.code}.png`
     document.body.appendChild(a)
     a.click()
@@ -202,7 +102,7 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
       <DialogContent className="sm:max-w-3xl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Gift className="w-5 h-5" /> Gift Card generada
+            <Gift className="w-5 h-5" /> ¡Gift Card generada!
           </DialogTitle>
           <DialogDescription>
             A nombre de {gc.recipientName} · Código:{' '}
@@ -211,17 +111,11 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
         </DialogHeader>
 
         <div className="mt-2 rounded-lg overflow-hidden border">
-          {imageUrl ? (
-            <img src={imageUrl} alt="Gift Card Luvira" className="w-full" />
-          ) : (
-            <div className="flex items-center justify-center h-52 bg-gray-50">
-              <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
-            </div>
-          )}
+          <img src={gc.imageDataUrl} alt="Gift Card Luvira" style={{ width: '100%', borderRadius: '8px' }} />
         </div>
 
         <div className="flex gap-2 mt-2">
-          <Button onClick={handleDownload} disabled={!imageUrl} className="flex-1 gap-2">
+          <Button onClick={handleDownload} className="flex-1 gap-2">
             <Download className="w-4 h-4" /> Descargar Gift Card
           </Button>
           <Button onClick={onClose} variant="outline" className="flex-1">
@@ -236,6 +130,7 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
 // ── Sale form ──────────────────────────────────────────────────────────────────
 function GiftCardForm() {
   const { user } = useAuth()
+  const tenantId = useTenantId()
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
   const createGC = useCreateGiftCard()
@@ -286,6 +181,23 @@ function GiftCardForm() {
         sender_name: senderName.trim(),
         message: message.trim(),
       })
+
+      const { data: tenantData } = await supabase
+        .from('tenants')
+        .select('whatsapp_number')
+        .eq('id', tenantId)
+        .single()
+
+      const imageDataUrl = await generateGiftCardImage(
+        selectedService?.name ?? 'Servicio',
+        duration,
+        recipientName.trim(),
+        result.code,
+        (tenantData as { whatsapp_number?: string | null } | null)?.whatsapp_number ?? '',
+        senderName.trim() || undefined,
+        message.trim() || undefined,
+      )
+
       setGeneratedGC({
         code: result.code,
         serviceName: selectedService?.name ?? 'Servicio',
@@ -293,6 +205,7 @@ function GiftCardForm() {
         recipientName: recipientName.trim(),
         senderName: senderName.trim(),
         message: message.trim(),
+        imageDataUrl,
       })
       setServiceId(''); setAmount(''); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())

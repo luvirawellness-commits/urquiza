@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock,
@@ -1673,9 +1673,30 @@ function TabPL() {
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Finanzas() {
-  const { profile } = useAuth()
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin'
+  const { profile, permissions } = useAuth()
+
+  // Use permissions from roles table; fall back to role-name check while loading
+  const showCaja = permissions !== null
+    ? permissions.caja === true
+    : ['owner', 'partner_admin', 'therapist'].includes(profile?.role ?? '')
+
+  const showPL = permissions !== null
+    ? permissions.finanzas === true
+    : ['owner', 'partner_admin'].includes(profile?.role ?? '')
+
   const [activeTab, setActiveTab] = useState<Tab>('caja')
+
+  // Once permissions resolve, land on the first visible tab
+  useEffect(() => {
+    if (permissions !== null) {
+      if (!showCaja && showPL) setActiveTab('pl')
+    }
+  }, [permissions]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const visibleTabs = [
+    { key: 'caja' as Tab, label: 'Caja',          show: showCaja },
+    { key: 'pl'   as Tab, label: 'P&L y Reportes', show: showPL  },
+  ].filter((t) => t.show)
 
   return (
     <div className="p-6 space-y-6">
@@ -1686,10 +1707,7 @@ export default function Finanzas() {
 
       {/* Tab bar */}
       <div className="flex gap-0 border-b border-gray-200">
-        {([
-          { key: 'caja' as Tab, label: 'Caja', show: true },
-          { key: 'pl' as Tab, label: 'P&L y Reportes', show: isOwnerOrAdmin },
-        ] as const).filter((t) => t.show).map((t) => (
+        {visibleTabs.map((t) => (
           <button
             key={t.key}
             onClick={() => setActiveTab(t.key)}
@@ -1705,8 +1723,8 @@ export default function Finanzas() {
         ))}
       </div>
 
-      {activeTab === 'caja' && <TabCaja />}
-      {activeTab === 'pl' && isOwnerOrAdmin && <TabPL />}
+      {activeTab === 'caja' && showCaja && <TabCaja />}
+      {activeTab === 'pl'   && showPL   && <TabPL />}
     </div>
   )
 }

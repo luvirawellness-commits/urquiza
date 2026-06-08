@@ -1,34 +1,39 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import type { InventoryMovement, InventoryCount } from '@/types'
 
 export function useInventoryMovements() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['inventory-movements'],
+    queryKey: ['inventory-movements', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('inventory_movements')
         .select('*')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('created_at', { ascending: false })
       if (error) throw error
       return (data ?? []) as InventoryMovement[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useInventoryCounts() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['inventory-counts'],
+    queryKey: ['inventory-counts', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('inventory_counts')
         .select('*, counted_by_user:counted_by ( full_name )')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('counted_at', { ascending: false })
       if (error) throw error
       return (data ?? []) as (InventoryCount & { counted_by_user?: { full_name: string } | null })[]
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -49,19 +54,21 @@ export function useCountItems(countId: string | null) {
 }
 
 export function useConfirmedCountsWithItems() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['inventory-counts', 'confirmed', 'items'],
+    queryKey: ['inventory-counts', tenantId, 'confirmed', 'items'],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('inventory_counts')
         .select('id, counted_at, inventory_count_items ( supply_id, physical_qty, difference )')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('status', 'confirmed')
         .order('counted_at', { ascending: false })
         .limit(10)
       if (error) throw error
       return data ?? []
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -76,12 +83,13 @@ type InsertMovementInput = {
 }
 
 export function useInsertMovement() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: InsertMovementInput) => {
       const { data, error } = await supabase
         .from('inventory_movements')
-        .insert({ ...input, tenant_id: TENANT_ID })
+        .insert({ ...input, tenant_id: tenantId })
         .select()
         .single()
       if (error) throw error
@@ -101,12 +109,13 @@ type CreateCountInput = {
 }
 
 export function useCreateCount() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ userId, notes, status, rows }: CreateCountInput) => {
       const { data: count, error: cErr } = await supabase
         .from('inventory_counts')
-        .insert({ tenant_id: TENANT_ID, counted_by: userId, notes: notes || null, status })
+        .insert({ tenant_id: tenantId, counted_by: userId, notes: notes || null, status })
         .select()
         .single()
       if (cErr) throw cErr
@@ -126,7 +135,7 @@ export function useCreateCount() {
         const adjustments = rows
           .filter((r) => Math.abs(r.physical - r.theoretical) > 0.0001)
           .map((r) => ({
-            tenant_id: TENANT_ID,
+            tenant_id: tenantId,
             supply_id: r.supplyId,
             type: 'adjustment' as const,
             quantity: r.physical - r.theoretical,

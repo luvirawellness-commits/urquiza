@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { QueryClientProvider } from '@tanstack/react-query'
+import { queryClient } from '@/lib/queryClient'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
@@ -12,16 +13,8 @@ import GiftCards from '@/pages/GiftCards'
 import Productos from '@/pages/Productos'
 import RRHH from '@/pages/RRHH'
 import Configuracion from '@/pages/Configuracion'
+import ConfiguracionAdmin from '@/pages/ConfiguracionAdmin'
 import ClienteDetalle from '@/pages/ClienteDetalle'
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 1000 * 60 * 2,
-      retry: 1,
-    },
-  },
-})
 
 function ProtectedLayout() {
   return (
@@ -43,11 +36,18 @@ export default function App() {
               <Route path="/clientes" element={<Clientes />} />
               <Route path="/clientes/:id" element={<ClienteDetalle />} />
               <Route path="/agenda" element={<Agenda />} />
-              <Route path="/finanzas" element={<Finanzas />} />
+              <Route
+                path="/finanzas"
+                element={
+                  <ProtectedRoute anyPermission={['caja', 'finanzas']}>
+                    <Finanzas />
+                  </ProtectedRoute>
+                }
+              />
               <Route
                 path="/rrhh"
                 element={
-                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                  <ProtectedRoute permission="rrhh">
                     <RRHH />
                   </ProtectedRoute>
                 }
@@ -55,7 +55,7 @@ export default function App() {
               <Route
                 path="/productos"
                 element={
-                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                  <ProtectedRoute permission="productos">
                     <Productos />
                   </ProtectedRoute>
                 }
@@ -63,16 +63,24 @@ export default function App() {
               <Route
                 path="/gift-cards"
                 element={
-                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                  <ProtectedRoute permission="gift_cards">
                     <GiftCards />
                   </ProtectedRoute>
                 }
               />
               <Route
-                path="/configuracion"
+                path="/compras"
+                element={
+                  <ProtectedRoute permission="compras">
+                    <Configuracion />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/configuracion-admin"
                 element={
                   <ProtectedRoute roles={['owner']}>
-                    <Configuracion />
+                    <ConfiguracionAdmin />
                   </ProtectedRoute>
                 }
               />

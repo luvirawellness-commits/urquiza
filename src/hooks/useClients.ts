@@ -1,15 +1,17 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import { Client } from '@/types'
 
 export function useClients(search?: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['clients', search],
+    queryKey: ['clients', tenantId, search],
     queryFn: async () => {
       let query = supabase
         .from('clients')
         .select('*')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('created_at', { ascending: false })
 
       if (search) {
@@ -22,23 +24,25 @@ export function useClients(search?: string) {
       if (error) throw error
       return data as Client[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useClient(id: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['client', id],
+    queryKey: ['client', tenantId, id],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('clients')
         .select('*')
         .eq('id', id)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .single()
       if (error) throw error
       return data as Client
     },
-    enabled: !!id,
+    enabled: !!id && !!tenantId,
   })
 }
 
@@ -52,13 +56,14 @@ type CreateClientInput = {
 }
 
 export function useCreateClient() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (client: CreateClientInput) => {
       const payload = {
         ...client,
         source: client.source ?? 'other',
-        tenant_id: TENANT_ID,
+        tenant_id: tenantId,
         status: 'active',
         wa_opt_in: true,
       }

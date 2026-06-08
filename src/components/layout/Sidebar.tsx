@@ -1,24 +1,88 @@
 import { NavLink, useNavigate } from 'react-router-dom'
-import { LayoutDashboard, Users, CalendarDays, TrendingUp, Gift, ShoppingBag, Settings, LogOut, Menu, X, Users2 } from 'lucide-react'
+import {
+  LayoutDashboard, Users, CalendarDays, TrendingUp, Gift,
+  ShoppingBag, ShoppingCart, Settings, LogOut, Menu, X, Users2, Building2,
+  ChevronDown, Loader2, Check,
+} from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 
+// permKeys: visible if ANY of the listed permission keys is true.
+// Items without permKeys are always visible (Dashboard, Clientes, Agenda).
+// roles[] is the fallback used while permissions are still loading (null).
 const navItems = [
-  { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/clientes', label: 'Clientes', icon: Users },
-  { to: '/agenda', label: 'Agenda', icon: CalendarDays },
-  { to: '/finanzas', label: 'Finanzas', icon: TrendingUp, roles: ['owner', 'partner_admin', 'therapist'] },
-  { to: '/rrhh', label: 'RRHH', icon: Users2, roles: ['owner', 'partner_admin'] },
-  { to: '/productos', label: 'Productos', icon: ShoppingBag, roles: ['owner', 'partner_admin'] },
-  { to: '/gift-cards', label: 'Gift Cards', icon: Gift, roles: ['owner', 'partner_admin'] },
-  { to: '/configuracion', label: 'Configuración', icon: Settings, roles: ['owner'] },
+  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
+  { to: '/clientes',   label: 'Clientes',   icon: Users },
+  { to: '/agenda',     label: 'Agenda',     icon: CalendarDays },
+  { to: '/finanzas',   label: 'Finanzas',   icon: TrendingUp,   permKeys: ['caja', 'finanzas'],  roles: ['owner', 'partner_admin', 'therapist'] },
+  { to: '/rrhh',       label: 'RRHH',       icon: Users2,       permKeys: ['rrhh'],              roles: ['owner', 'partner_admin'] },
+  { to: '/productos',  label: 'Productos',  icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
+  { to: '/gift-cards', label: 'Gift Cards', icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
+  { to: '/compras',    label: 'Compras',    icon: ShoppingCart, permKeys: ['compras'],           roles: ['owner'] },
 ]
 
+function TenantSwitcher() {
+  const { currentTenant, availableTenants, switchTenant } = useAuth()
+  const [open, setOpen] = useState(false)
+  const [switching, setSwitching] = useState(false)
+  const multi = availableTenants.length > 1
+
+  async function handleSwitch(tenantId: string) {
+    if (tenantId === currentTenant?.id) { setOpen(false); return }
+    setSwitching(true)
+    await switchTenant(tenantId)
+    setOpen(false)
+    setSwitching(false)
+  }
+
+  return (
+    <div className="relative px-3 py-3 border-b border-plum-700">
+      <button
+        disabled={!multi}
+        onClick={() => multi && setOpen((v) => !v)}
+        className={cn(
+          'w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors',
+          multi ? 'hover:bg-plum-700 cursor-pointer' : 'cursor-default',
+        )}
+      >
+        <Building2 className="w-4 h-4 text-gold-400 flex-shrink-0" />
+        <span className="flex-1 text-left text-sm font-semibold text-gold-400 truncate">
+          {switching ? '...' : (currentTenant?.name ?? 'Cargando...')}
+        </span>
+        {switching && <Loader2 className="w-3.5 h-3.5 text-plum-300 animate-spin" />}
+        {!switching && multi && (
+          <ChevronDown className={cn('w-3.5 h-3.5 text-plum-300 transition-transform', open && 'rotate-180')} />
+        )}
+      </button>
+
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute left-3 right-3 top-full mt-1 z-20 bg-plum-900 border border-plum-600 rounded-lg shadow-lg overflow-hidden">
+            {availableTenants.map((t) => (
+              <button
+                key={t.id}
+                onClick={() => handleSwitch(t.id)}
+                className="w-full flex items-center gap-2 px-3 py-2.5 text-sm hover:bg-plum-700 transition-colors text-left"
+              >
+                <span className={cn('flex-1 truncate', t.id === currentTenant?.id ? 'text-gold-400 font-semibold' : 'text-plum-200')}>
+                  {t.name}
+                </span>
+                {t.id === currentTenant?.id && <Check className="w-3.5 h-3.5 text-gold-400 flex-shrink-0" />}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
 export function Sidebar() {
-  const { profile, signOut } = useAuth()
+  const { profile, signOut, permissions } = useAuth()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -31,9 +95,18 @@ export function Sidebar() {
     ? profile.full_name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()
     : '?'
 
-  const filteredNav = navItems.filter(
-    (item) => !item.roles || item.roles.includes(profile?.role ?? '')
-  )
+  // Use permissions from roles table; fall back to role[] while still loading (null)
+  const filteredNav = navItems.filter((item) => {
+    if (!item.permKeys) return true // Dashboard, Clientes, Agenda — always visible
+    if (permissions !== null) return item.permKeys.some((k) => permissions[k] === true)
+    // Fallback while permissions are loading
+    return !item.roles || item.roles.includes(profile?.role ?? '')
+  })
+
+  // Configuración admin: visible if role is owner OR permissions.configuracion is set
+  const showAdminLink =
+    profile?.role === 'owner' ||
+    (permissions !== null && permissions['configuracion'] === true)
 
   const sidebarContent = (
     <div className="flex flex-col h-full">
@@ -48,8 +121,11 @@ export function Sidebar() {
         </div>
       </div>
 
+      {/* Tenant switcher */}
+      <TenantSwitcher />
+
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
         {filteredNav.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
@@ -68,6 +144,25 @@ export function Sidebar() {
             {label}
           </NavLink>
         ))}
+
+        {/* Configuración — owner or configuracion permission */}
+        {showAdminLink && (
+          <NavLink
+            to="/configuracion-admin"
+            onClick={() => setMobileOpen(false)}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-gold-500 text-plum-900'
+                  : 'text-plum-200 hover:bg-plum-700 hover:text-white'
+              )
+            }
+          >
+            <Settings className="w-4 h-4 flex-shrink-0" />
+            Configuración
+          </NavLink>
+        )}
       </nav>
 
       {/* User profile + logout */}

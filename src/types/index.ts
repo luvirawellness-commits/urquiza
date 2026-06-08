@@ -1,11 +1,36 @@
 export type UserRole = 'owner' | 'partner_admin' | 'therapist' | 'receptionist'
 
+export interface Tenant {
+  id: string
+  name: string
+  slug: string
+  address?: string
+  phone?: string
+  whatsapp?: string
+  breakeven?: number
+  royalty_pct?: number
+  active: boolean
+  created_at: string
+}
+
+export interface UserTenant {
+  id: string
+  user_id: string
+  tenant_id: string
+  role: UserRole
+  active: boolean
+  created_at: string
+  tenant?: Tenant
+}
+
 export interface UserProfile {
   id: string
   tenant_id: string
+  default_tenant_id?: string
   email: string
   full_name: string
   role: UserRole
+  color_hex?: string
   avatar_url?: string
   created_at: string
 }

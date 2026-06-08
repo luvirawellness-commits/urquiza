@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -59,7 +60,7 @@ const DAY_KEYS_SHORT = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as cons
 export function calcMonthScheduleHours(
   schedule: Record<string, { start: string; end: string }[]> | null | undefined,
   year: number,
-  month: number, // 1-indexed
+  month: number,
 ): number {
   if (!schedule) return 0
   const daysInMonth = new Date(year, month, 0).getDate()
@@ -109,189 +110,206 @@ export function calcHolidayBonus(
 // ── Read hooks ────────────────────────────────────────────────────────────────
 
 export function useJobPositions() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['job-positions'],
+    queryKey: ['job-positions', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('job_positions').select('*').eq('tenant_id', TENANT_ID).order('name')
+        .from('job_positions').select('*').eq('tenant_id', tenantId).order('name')
       if (error) throw error
       return data as JobPosition[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useEmployeeProfiles() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['employee-profiles'],
+    queryKey: ['employee-profiles', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('employee_profiles')
         .select('*, user:users!employee_profiles_user_id_fkey(id,full_name,color_hex,schedule), position:job_positions!employee_profiles_job_position_id_fkey(*)')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('created_at')
       if (error) throw error
       return data as EmployeeProfile[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useAllTenantUsers() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['tenant-users'],
+    queryKey: ['tenant-users', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('users').select('id,full_name,role,color_hex')
-        .eq('tenant_id', TENANT_ID).eq('active', true).order('full_name')
+        .eq('tenant_id', tenantId).eq('active', true).order('full_name')
       if (error) throw error
       return data as { id: string; full_name: string; role: string; color_hex?: string | null }[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useAbsences(startDate?: string, endDate?: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['employee-absences', startDate, endDate],
+    queryKey: ['employee-absences', tenantId, startDate, endDate],
     queryFn: async () => {
       let q = supabase
         .from('employee_absences')
         .select('*, employee_user:users!employee_absences_user_id_fkey(full_name), registrar:users!employee_absences_registered_by_fkey(full_name)')
-        .eq('tenant_id', TENANT_ID).order('date', { ascending: false })
+        .eq('tenant_id', tenantId).order('date', { ascending: false })
       if (startDate) q = q.gte('date', startDate)
       if (endDate) q = q.lte('date', endDate)
       const { data, error } = await q
       if (error) throw error
       return data as EmployeeAbsence[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useCCSSByMonth(yearMonth: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['employee-ccss', yearMonth],
+    queryKey: ['employee-ccss', tenantId, yearMonth],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('employee_ccss').select('*').eq('tenant_id', TENANT_ID)
+        .from('employee_ccss').select('*').eq('tenant_id', tenantId)
         .eq('period_month', `${yearMonth}-01`)
       if (error) throw error
       return data as EmployeeCCSS[]
     },
-    enabled: !!yearMonth,
+    enabled: !!yearMonth && !!tenantId,
   })
 }
 
 export function useCompletedApptsByTherapist(yearMonth: string) {
+  const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
   const endDate = new Date(y, m, 0).toISOString().split('T')[0]
   return useQuery({
-    queryKey: ['completed-appts-therapist-month', yearMonth],
+    queryKey: ['completed-appts-therapist-month', tenantId, yearMonth],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('appointments').select('therapist_id,duration_minutes,scheduled_at')
-        .eq('tenant_id', TENANT_ID).eq('status', 'completed')
+        .eq('tenant_id', tenantId).eq('status', 'completed')
         .gte('scheduled_at', `${yearMonth}-01T00:00:00`)
         .lte('scheduled_at', `${endDate}T23:59:59`)
       if (error) throw error
       return data as { therapist_id: string; duration_minutes: number; scheduled_at: string }[]
     },
-    enabled: !!yearMonth,
+    enabled: !!yearMonth && !!tenantId,
   })
 }
 
 export function useAbsencesByMonth(yearMonth: string) {
+  const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
   const endDate = new Date(y, m, 0).toISOString().split('T')[0]
   return useQuery({
-    queryKey: ['absences-month', yearMonth],
+    queryKey: ['absences-month', tenantId, yearMonth],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('employee_absences').select('user_id,hours_absent,deduct_from_salary,date')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .gte('date', `${yearMonth}-01`).lte('date', endDate)
       if (error) throw error
       return data as { user_id: string; hours_absent: number; deduct_from_salary: boolean; date: string }[]
     },
-    enabled: !!yearMonth,
+    enabled: !!yearMonth && !!tenantId,
   })
 }
 
 export function useHolidaysForYear(year: number) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['holidays', year],
+    queryKey: ['holidays', tenantId, year],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('holidays').select('*').eq('tenant_id', TENANT_ID)
+        .from('holidays').select('*').eq('tenant_id', tenantId)
         .gte('date', `${year}-01-01`).lte('date', `${year}-12-31`)
         .order('date')
       if (error) throw error
       return data as Holiday[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useHolidaysForMonth(yearMonth: string) {
+  const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
   const endDate = new Date(y, m, 0).toISOString().split('T')[0]
   return useQuery({
-    queryKey: ['holidays-month', yearMonth],
+    queryKey: ['holidays-month', tenantId, yearMonth],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('holidays').select('*').eq('tenant_id', TENANT_ID)
+        .from('holidays').select('*').eq('tenant_id', tenantId)
         .gte('date', `${yearMonth}-01`).lte('date', endDate)
         .order('date')
       if (error) throw error
       return data as Holiday[]
     },
-    enabled: !!yearMonth,
+    enabled: !!yearMonth && !!tenantId,
   })
 }
 
-// For P&L multi-month RRHH cost computation
 export function useCompletedApptsRange(startDate: string, endDate: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['completed-appts-range', startDate, endDate],
+    queryKey: ['completed-appts-range', tenantId, startDate, endDate],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('appointments').select('therapist_id,duration_minutes,scheduled_at')
-        .eq('tenant_id', TENANT_ID).eq('status', 'completed')
+        .eq('tenant_id', tenantId).eq('status', 'completed')
         .gte('scheduled_at', `${startDate}T00:00:00`)
         .lte('scheduled_at', `${endDate}T23:59:59`)
       if (error) throw error
       return data as { therapist_id: string; duration_minutes: number; scheduled_at: string }[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useAbsencesRange(startDate: string, endDate: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['absences-range', startDate, endDate],
+    queryKey: ['absences-range', tenantId, startDate, endDate],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('employee_absences').select('user_id,hours_absent,deduct_from_salary,date')
-        .eq('tenant_id', TENANT_ID).gte('date', startDate).lte('date', endDate)
+        .eq('tenant_id', tenantId).gte('date', startDate).lte('date', endDate)
       if (error) throw error
       return data as { user_id: string; hours_absent: number; deduct_from_salary: boolean; date: string }[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function usePaidCCSSForMonths(months: string[]) {
+  const tenantId = useTenantId()
   const start = months[0] ? `${months[0]}-01` : '2000-01-01'
   const end = months[months.length - 1] ? `${months[months.length - 1]}-01` : '2099-12-01'
   return useQuery({
-    queryKey: ['paid-ccss-months', start, end],
+    queryKey: ['paid-ccss-months', tenantId, start, end],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('employee_ccss').select('user_id,period_month,amount')
-        .eq('tenant_id', TENANT_ID).eq('status', 'paid')
+        .eq('tenant_id', tenantId).eq('status', 'paid')
         .gte('period_month', start).lte('period_month', end)
       if (error) throw error
       return data as { user_id: string; period_month: string; amount: number }[]
     },
-    enabled: months.length > 0,
+    enabled: months.length > 0 && !!tenantId,
   })
 }
 
-// Aggregated RRHH cost per month — used by P&L
 export function useRRHHCostByMonths(
   months: string[],
   employees: EmployeeProfile[] | undefined,
@@ -346,11 +364,12 @@ export function useRRHHCostByMonths(
 type CreatePositionInput = Omit<JobPosition, 'id' | 'tenant_id' | 'created_at' | 'updated_at'>
 
 export function useCreateJobPosition() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreatePositionInput) => {
       const { data, error } = await supabase
-        .from('job_positions').insert({ ...input, tenant_id: TENANT_ID }).select().single()
+        .from('job_positions').insert({ ...input, tenant_id: tenantId }).select().single()
       if (error) throw error
       return data
     },
@@ -359,12 +378,13 @@ export function useCreateJobPosition() {
 }
 
 export function useUpdateJobPosition() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ id, ...rest }: Partial<CreatePositionInput> & { id: string }) => {
       const { error } = await supabase
         .from('job_positions').update({ ...rest, updated_at: new Date().toISOString() })
-        .eq('id', id).eq('tenant_id', TENANT_ID)
+        .eq('id', id).eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['job-positions'] }),
@@ -380,11 +400,12 @@ type CreateEmployeeInput = {
 }
 
 export function useCreateEmployee() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreateEmployeeInput) => {
       const { data, error } = await supabase
-        .from('employee_profiles').insert({ ...input, tenant_id: TENANT_ID, active: true }).select().single()
+        .from('employee_profiles').insert({ ...input, tenant_id: tenantId, active: true }).select().single()
       if (error) throw error
       return data
     },
@@ -393,12 +414,13 @@ export function useCreateEmployee() {
 }
 
 export function useUpdateEmployee() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ id, ...rest }: Partial<CreateEmployeeInput> & { id: string; active?: boolean }) => {
       const { error } = await supabase
         .from('employee_profiles').update({ ...rest, updated_at: new Date().toISOString() })
-        .eq('id', id).eq('tenant_id', TENANT_ID)
+        .eq('id', id).eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['employee-profiles'] }),
@@ -413,11 +435,12 @@ type CreateAbsenceInput = {
 }
 
 export function useCreateAbsence() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreateAbsenceInput) => {
       const { data, error } = await supabase
-        .from('employee_absences').insert({ ...input, tenant_id: TENANT_ID }).select().single()
+        .from('employee_absences').insert({ ...input, tenant_id: tenantId }).select().single()
       if (error) throw error
       return data
     },
@@ -429,12 +452,13 @@ export function useCreateAbsence() {
 }
 
 export function useUpsertCCSS() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ user_id, period_month, amount, notes }: { user_id: string; period_month: string; amount: number; notes?: string }) => {
       const { data, error } = await supabase
         .from('employee_ccss')
-        .upsert({ user_id, period_month, amount, notes: notes ?? null, tenant_id: TENANT_ID, status: 'pending' },
+        .upsert({ user_id, period_month, amount, notes: notes ?? null, tenant_id: tenantId, status: 'pending' },
           { onConflict: 'tenant_id,user_id,period_month' })
         .select().single()
       if (error) throw error
@@ -456,11 +480,12 @@ export function useUpdateCCSSStatus() {
 }
 
 export function useCreateHoliday() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ date, name, created_by }: { date: string; name: string; created_by: string }) => {
       const { data, error } = await supabase
-        .from('holidays').insert({ date, name, created_by, tenant_id: TENANT_ID }).select().single()
+        .from('holidays').insert({ date, name, created_by, tenant_id: tenantId }).select().single()
       if (error) throw error
       return data
     },

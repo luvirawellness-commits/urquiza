@@ -1,10 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { supabase, TENANT_ID } from '@/lib/supabase'
+import { supabase } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import { Appointment, AppointmentStatus, Service } from '@/types'
 
 export function useAppointments(startDate?: string, endDate?: string) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['appointments', startDate, endDate],
+    queryKey: ['appointments', tenantId, startDate, endDate],
     queryFn: async () => {
       let query = supabase
         .from('appointments')
@@ -20,7 +22,7 @@ export function useAppointments(startDate?: string, endDate?: string) {
             id, name, emoji, price_60, price_90
           )
         `)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .order('scheduled_at')
 
       if (startDate) query = query.gte('scheduled_at', startDate)
@@ -33,22 +35,25 @@ export function useAppointments(startDate?: string, endDate?: string) {
       }
       return data as Appointment[]
     },
+    enabled: !!tenantId,
   })
 }
 
 export function useServices() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['services'],
+    queryKey: ['services', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('services')
         .select('id, name, emoji, price_60, price_90')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('active', true)
         .order('name')
       if (error) throw error
       return data as Pick<Service, 'id' | 'name' | 'emoji' | 'price_60' | 'price_90'>[]
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -60,19 +65,21 @@ export type Therapist = {
 }
 
 export function useTherapists() {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['therapists'],
+    queryKey: ['therapists', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('users')
         .select('id, full_name, color_hex, schedule')
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('active', true)
         .in('role', ['therapist', 'partner_admin'])
         .order('full_name')
       if (error) throw error
       return data as Therapist[]
     },
+    enabled: !!tenantId,
   })
 }
 
@@ -92,12 +99,13 @@ type CreateAppointmentInput = {
 }
 
 export function useCreateAppointment() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (appt: CreateAppointmentInput) => {
       const { data, error } = await supabase
         .from('appointments')
-        .insert({ ...appt, tenant_id: TENANT_ID })
+        .insert({ ...appt, tenant_id: tenantId })
         .select()
         .single()
       if (error) {
@@ -111,6 +119,7 @@ export function useCreateAppointment() {
 }
 
 export function useUpdateAppointmentStatus() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ id, status }: { id: string; status: AppointmentStatus }) => {
@@ -118,7 +127,7 @@ export function useUpdateAppointmentStatus() {
         .from('appointments')
         .update({ status })
         .eq('id', id)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['appointments'] }),
@@ -134,20 +143,21 @@ export interface ActiveMembership {
 }
 
 export function useActiveClientMembership(clientId: string | null) {
+  const tenantId = useTenantId()
   return useQuery({
-    queryKey: ['active-membership', clientId],
+    queryKey: ['active-membership', tenantId, clientId],
     queryFn: async () => {
       if (!clientId) return null
       const { data } = await supabase
         .from('client_memberships')
         .select('id, plan:memberships(id, name), sessions_total, sessions_used, expires_at')
         .eq('client_id', clientId)
-        .eq('tenant_id', TENANT_ID)
+        .eq('tenant_id', tenantId)
         .eq('status', 'active')
         .maybeSingle()
       return data as ActiveMembership | null
     },
-    enabled: !!clientId,
+    enabled: !!clientId && !!tenantId,
     retry: 0,
     throwOnError: false,
   })
@@ -157,7 +167,6 @@ export function useUseMembershipSession() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ membershipId, appointmentId }: { membershipId: string; appointmentId: string }) => {
-      // Fetch current usage + plan total to determine if membership becomes exhausted
       const { data, error: fetchErr } = await supabase
         .from('client_memberships')
         .select('sessions_used, plan:memberships!fk_cm_membership_id(sessions_qty)')
@@ -179,9 +188,6 @@ export function useUseMembershipSession() {
         .eq('id', membershipId)
       if (cmErr) throw cmErr
 
-      // Link appointment to this membership BEFORE status is set to completed,
-      // so the DB trigger can detect client_membership_id IS NOT NULL and skip
-      // creating a duplicate income transaction.
       const { error: apptErr } = await supabase
         .from('appointments')
         .update({ client_membership_id: membershipId })

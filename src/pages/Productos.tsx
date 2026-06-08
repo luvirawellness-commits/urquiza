@@ -3,7 +3,7 @@ import { ShoppingCart, Loader2, Package, Search } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useSellableSupplies } from '@/hooks/useSupplies'
 import { useInsertTransaction } from '@/hooks/useFinanzas'
-import { TENANT_ID } from '@/lib/supabase'
+import { useTenantId } from '@/contexts/AuthContext'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -27,6 +27,7 @@ function VenderProductoModal({
   product: Supply | null; onClose: () => void
 }) {
   const { profile } = useAuth()
+  const tenantId = useTenantId()
   const insertTx = useInsertTransaction()
   const [qty, setQty] = useState('1')
   const [pm, setPm] = useState('cash')
@@ -45,7 +46,7 @@ function VenderProductoModal({
     setError('')
     try {
       const payload = {
-        tenant_id: TENANT_ID,
+        tenant_id: tenantId,
         type: 'income' as const,
         category: 'product',
         amount: unitPrice * q,
