@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Phone, Mail, Calendar, Hash, Loader2,
-  CreditCard, Plus, Users, X,
+  CreditCard, Plus, Users,
 } from 'lucide-react'
 import { useClient } from '@/hooks/useClients'
 import { useClients } from '@/hooks/useClients'

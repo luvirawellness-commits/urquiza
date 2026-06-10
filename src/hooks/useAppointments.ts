@@ -191,7 +191,7 @@ export function useUseMembershipSession() {
       if (fetchErr) throw fetchErr
 
       const newSessionsUsed = (data.sessions_used ?? 0) + 1
-      const sessionsQty = (data.plan as { sessions_qty: number } | null)?.sessions_qty ?? 0
+      const sessionsQty = (data.plan as unknown as { sessions_qty: number } | null)?.sessions_qty ?? 0
 
       const updatePayload: Record<string, unknown> = { sessions_used: newSessionsUsed }
       if (sessionsQty > 0 && newSessionsUsed >= sessionsQty) {
