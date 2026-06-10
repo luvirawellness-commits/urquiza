@@ -66,19 +66,21 @@ async function generateGiftCardImage(
         ctx.fillText('"' + message + '"', 560, 501)
       }
 
+      if (senderName && message) {
+        ctx.fillStyle = '#D4A0D4'
+        ctx.font = 'italic 13px Georgia, serif'
+        ctx.fillText('Con cariño de: ' + senderName, 560, 522)
+      }
+
+      const hasBoth = !!(senderName && message)
+      const codigoY = hasBoth ? 547 : message ? 529 : senderName ? 505 : 480
       ctx.fillStyle = '#D4AF37'
       ctx.font = 'bold 16px Georgia, serif'
-      ctx.fillText('Código de tarjeta: ' + code, 560, message ? 529 : 504)
+      ctx.fillText('Código de tarjeta: ' + code, 560, codigoY)
 
       ctx.fillStyle = '#E8D5E8'
       ctx.font = '14px Georgia, serif'
-      ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 560, message ? 555 : 530)
-
-      if (senderName) {
-        ctx.fillStyle = '#D4A0D4'
-        ctx.font = 'italic 13px Georgia, serif'
-        ctx.fillText('Con cariño de: ' + senderName, 560, message ? 579 : 554)
-      }
+      ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 560, codigoY + 26)
 
       resolve(canvas.toDataURL('image/png'))
     }

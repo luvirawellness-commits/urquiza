@@ -39,6 +39,22 @@ export function useSellableSupplies() {
   })
 }
 
+export function useUpdateSupplySalePrice() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, salePrice }: { id: string; salePrice: number }) => {
+      const { error } = await supabase
+        .from('supplies')
+        .update({ sale_price: salePrice, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['supplies'] }),
+  })
+}
+
 type SupplyInput = Omit<Supply, 'id' | 'tenant_id' | 'created_at' | 'updated_at'>
 
 export function useCreateSupply() {

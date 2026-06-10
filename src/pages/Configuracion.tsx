@@ -1,15 +1,18 @@
 import { useState, useMemo, useEffect } from 'react'
-import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check } from 'lucide-react'
+import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check, TrendingUp, RotateCcw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
-import { useServices } from '@/hooks/useAppointments'
+import { useServices, useUpdateServicePrice } from '@/hooks/useAppointments'
+import { useMembershipPlans, useUpdateMembershipPrice } from '@/hooks/useClientMemberships'
 import {
   useSupplies,
+  useSellableSupplies,
   useCreateSupply,
   useUpdateSupply,
   useDeleteSupply,
   useAllServiceCostItems,
   useAddCostItem,
   useRemoveCostItem,
+  useUpdateSupplySalePrice,
 } from '@/hooks/useSupplies'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
@@ -1087,8 +1090,489 @@ function TabInventario() {
   )
 }
 
+// ── Tab Análisis de Precios ───────────────────────────────────────────────────
+
+const LABOR_CODES = ['MTPHS', 'PYCLS']
+
+type PriceSection = 'servicios' | 'membresias' | 'productos'
+type PriceFilter = 'todos' | PriceSection
+
+type PriceRow = {
+  rowId: string
+  section: PriceSection
+  nombre: string
+  cmv: number | null
+  precioActual: number
+  target:
+    | { type: 'service'; id: string; field: 'price_60' | 'price_90' }
+    | { type: 'membership'; id: string }
+    | { type: 'product'; id: string }
+}
+
+function cmvPct(cmv: number | null, price: number | null | undefined): number | null {
+  if (cmv === null || !price || price === 0) return null
+  return (cmv / price) * 100
+}
+
+function CmvPctBadge({ pct }: { pct: number | null }) {
+  if (pct === null) return <span className="text-muted-foreground text-xs">—</span>
+  const cls = pct < 30 ? 'text-green-600' : pct <= 50 ? 'text-amber-600' : 'text-red-600'
+  return <span className={cn('text-xs font-medium tabular-nums', cls)}>{pct.toFixed(1)}%</span>
+}
+
+function VarBadge({ value, type }: { value: number | null; type: 'precio' | 'cmv' }) {
+  if (value === null) return <span className="text-muted-foreground text-xs">—</span>
+  if (Math.abs(value) < 0.05) return <span className="text-gray-400 text-xs">=</span>
+  const absStr = Math.abs(value).toFixed(1) + '%'
+  if (type === 'precio') {
+    return value > 0
+      ? <span className="text-green-600 text-xs font-medium">↑ {absStr}</span>
+      : <span className="text-red-600 text-xs font-medium">↓ {absStr}</span>
+  }
+  // CMV: decrease is good (green), increase is bad (red)
+  return value > 0
+    ? <span className="text-red-600 text-xs font-medium">↑ {absStr}</span>
+    : <span className="text-green-600 text-xs font-medium">↓ {absStr}</span>
+}
+
+const SECTION_LABELS: Record<PriceSection, string> = {
+  servicios: 'Servicios',
+  membresias: 'Membresías',
+  productos: 'Productos a la venta',
+}
+
+function TabAnalisisPrecios() {
+  const { data: services = [], isLoading: svLoading } = useServices()
+  const { data: memberships = [], isLoading: mbLoading } = useMembershipPlans()
+  const { data: products = [], isLoading: prLoading } = useSellableSupplies()
+  const { data: costItems = [], isLoading: ciLoading } = useAllServiceCostItems()
+
+  const updateServicePrice = useUpdateServicePrice()
+  const updateMembershipPrice = useUpdateMembershipPrice()
+  const updateSupplySalePrice = useUpdateSupplySalePrice()
+
+  const [prices, setPrices] = useState<Record<string, string>>({})
+  const [filter, setFilter] = useState<PriceFilter>('todos')
+  const [bulkPct, setBulkPct] = useState('')
+  const [touched, setTouched] = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [applying, setApplying] = useState(false)
+  const [applyError, setApplyError] = useState<string | null>(null)
+  const [applySuccess, setApplySuccess] = useState(false)
+
+  const isLoading = svLoading || mbLoading || prLoading || ciLoading
+
+  function getCmvForService(serviceId: string, dur: 60 | 90): number | null {
+    const items = costItems.filter(
+      (ci) =>
+        ci.service_id === serviceId &&
+        ci.duration_minutes === dur &&
+        !LABOR_CODES.includes(ci.supply?.code ?? ''),
+    )
+    if (items.length === 0) return null
+    return items.reduce((sum, ci) => {
+      const price = ci.supply?.unit_price ?? 0
+      const cost = ci.supply?.unit === 'min' ? (price / 60) * ci.quantity : price * ci.quantity
+      return sum + cost
+    }, 0)
+  }
+
+  const avgCmv60 = useMemo(() => {
+    const vals = services
+      .map((svc) => getCmvForService(svc.id, 60))
+      .filter((v): v is number => v !== null)
+    if (vals.length === 0) return null
+    return vals.reduce((a, b) => a + b, 0) / vals.length
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services, costItems])
+
+  const rows = useMemo((): PriceRow[] => {
+    const result: PriceRow[] = []
+
+    for (const svc of services) {
+      if (svc.price_60 != null) {
+        result.push({
+          rowId: `svc_${svc.id}_60`,
+          section: 'servicios',
+          nombre: `${svc.emoji ?? ''} ${svc.name} — 60 min`.trim(),
+          cmv: getCmvForService(svc.id, 60),
+          precioActual: svc.price_60,
+          target: { type: 'service', id: svc.id, field: 'price_60' },
+        })
+      }
+      if (svc.price_90 != null) {
+        result.push({
+          rowId: `svc_${svc.id}_90`,
+          section: 'servicios',
+          nombre: `${svc.emoji ?? ''} ${svc.name} — 90 min`.trim(),
+          cmv: getCmvForService(svc.id, 90),
+          precioActual: svc.price_90,
+          target: { type: 'service', id: svc.id, field: 'price_90' },
+        })
+      }
+    }
+
+    for (const memb of memberships) {
+      const cmv =
+        avgCmv60 !== null && memb.sessions_qty > 0 ? avgCmv60 * memb.sessions_qty : null
+      result.push({
+        rowId: `memb_${memb.id}`,
+        section: 'membresias',
+        nombre: memb.name,
+        cmv,
+        precioActual: memb.price,
+        target: { type: 'membership', id: memb.id },
+      })
+    }
+
+    for (const prod of products) {
+      result.push({
+        rowId: `prod_${prod.id}`,
+        section: 'productos',
+        nombre: prod.name,
+        cmv: prod.unit_price,
+        precioActual: prod.sale_price ?? 0,
+        target: { type: 'product', id: prod.id },
+      })
+    }
+
+    return result
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [services, memberships, products, costItems, avgCmv60])
+
+  const visibleRows = filter === 'todos' ? rows : rows.filter((r) => r.section === filter)
+
+  const completados = rows.filter((r) => {
+    const v = Number(prices[r.rowId])
+    return prices[r.rowId] !== undefined && prices[r.rowId] !== '' && v > 0
+  }).length
+  const total = rows.length
+  const allFilled = total > 0 && completados === total
+
+  function handleBulkApply() {
+    const pct = parseFloat(bulkPct)
+    if (isNaN(pct) || !bulkPct.trim()) return
+    const next: Record<string, string> = {}
+    for (const row of rows) {
+      const newP = Math.round((row.precioActual * (1 + pct / 100)) / 100) * 100
+      next[row.rowId] = String(newP)
+    }
+    setPrices(next)
+  }
+
+  function handleReset() {
+    setPrices({})
+    setTouched(false)
+    setApplySuccess(false)
+    setApplyError(null)
+  }
+
+  async function handleApply() {
+    setApplying(true)
+    setApplyError(null)
+    try {
+      for (const row of rows) {
+        const newPrice = parseFloat(prices[row.rowId] ?? '')
+        if (!newPrice || newPrice <= 0) continue
+        if (row.target.type === 'service') {
+          await updateServicePrice.mutateAsync({
+            id: row.target.id,
+            field: row.target.field,
+            price: newPrice,
+          })
+        } else if (row.target.type === 'membership') {
+          await updateMembershipPrice.mutateAsync({ id: row.target.id, price: newPrice })
+        } else {
+          await updateSupplySalePrice.mutateAsync({ id: row.target.id, salePrice: newPrice })
+        }
+      }
+      setApplySuccess(true)
+      setPrices({})
+      setTouched(false)
+      setShowConfirm(false)
+    } catch (e) {
+      setApplyError((e as Error).message || 'Error al aplicar precios')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="space-y-3 mt-2">
+        {[1, 2, 3, 4, 5].map((i) => (
+          <div key={i} className="h-10 rounded-md bg-gray-100 animate-pulse" />
+        ))}
+      </div>
+    )
+  }
+
+  const SECTIONS: PriceSection[] = ['servicios', 'membresias', 'productos']
+
+  return (
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center gap-3">
+        {/* Filter tabs */}
+        <div className="flex bg-gray-100 rounded-lg p-1 gap-0.5">
+          {(['todos', ...SECTIONS] as PriceFilter[]).map((f) => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={cn(
+                'px-3 py-1 text-xs font-medium rounded-md transition-colors capitalize',
+                filter === f
+                  ? 'bg-white text-plum-800 shadow-sm'
+                  : 'text-muted-foreground hover:text-plum-700',
+              )}
+            >
+              {f === 'todos' ? 'Todos' : SECTION_LABELS[f as PriceSection]}
+            </button>
+          ))}
+        </div>
+
+        {/* Bulk increase */}
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="text-xs text-muted-foreground">Aumentar todo</span>
+          <Input
+            type="number"
+            step="0.1"
+            placeholder="%"
+            value={bulkPct}
+            onChange={(e) => setBulkPct(e.target.value)}
+            className="w-16 h-7 text-xs text-right px-2"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-7 text-xs px-2.5 gap-1"
+            onClick={handleBulkApply}
+            disabled={!bulkPct.trim()}
+          >
+            <TrendingUp className="w-3 h-3" />
+            Aplicar
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="h-7 text-xs px-2 text-muted-foreground hover:text-plum-800"
+            onClick={handleReset}
+            title="Limpiar todos los precios nuevos"
+          >
+            <RotateCcw className="w-3 h-3" />
+          </Button>
+        </div>
+      </div>
+
+      {/* Success banner */}
+      {applySuccess && (
+        <div className="flex items-center gap-2 bg-green-50 border border-green-200 rounded-lg px-4 py-2.5">
+          <Check className="w-4 h-4 text-green-600 shrink-0" />
+          <span className="text-sm text-green-700 font-medium">
+            Precios actualizados correctamente.
+          </span>
+          <button
+            className="ml-auto text-xs text-green-600 hover:underline"
+            onClick={() => setApplySuccess(false)}
+          >
+            Cerrar
+          </button>
+        </div>
+      )}
+
+      {/* Table */}
+      <Card>
+        <CardContent className="p-0 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-gray-50">
+                <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground min-w-[180px]">Nombre</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground min-w-[90px]">CMV Teórico</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground min-w-[100px]">Precio actual</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground min-w-[80px]">CMV% act.</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-plum-700 min-w-[120px]">Precio nuevo</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground min-w-[80px]">CMV% nuevo</th>
+                <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground min-w-[80px]">Var. precio</th>
+                <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground min-w-[80px]">Var. CMV%</th>
+              </tr>
+            </thead>
+            <tbody>
+              {SECTIONS.map((section) => {
+                const sectionRows = visibleRows.filter((r) => r.section === section)
+                if (filter !== 'todos' && filter !== section) return null
+                return (
+                  <>
+                    {/* Section header */}
+                    <tr key={`hdr_${section}`} className="bg-plum-50 border-y border-plum-100">
+                      <td
+                        colSpan={8}
+                        className="px-4 py-1.5 text-[11px] font-bold text-plum-700 uppercase tracking-wider"
+                      >
+                        {SECTION_LABELS[section]}
+                      </td>
+                    </tr>
+
+                    {/* Gift cards note inside Servicios section */}
+                    {section === 'servicios' && (
+                      <tr key="giftcard_note" className="bg-blue-50/50 border-b border-blue-100">
+                        <td colSpan={8} className="px-4 py-2 text-xs text-blue-600 italic">
+                          🎁 Los precios de gift cards siguen automáticamente el precio del servicio asociado.
+                        </td>
+                      </tr>
+                    )}
+
+                    {sectionRows.length === 0 ? (
+                      <tr key={`empty_${section}`}>
+                        <td colSpan={8} className="px-4 py-4 text-center text-xs text-muted-foreground">
+                          Sin datos
+                        </td>
+                      </tr>
+                    ) : (
+                      sectionRows.map((row) => {
+                        const nuevoNum = parseFloat(prices[row.rowId] ?? '') || null
+                        const cmvActPct = cmvPct(row.cmv, row.precioActual)
+                        const cmvNuevoPct = cmvPct(row.cmv, nuevoNum)
+                        const varPrecio =
+                          nuevoNum && row.precioActual
+                            ? ((nuevoNum - row.precioActual) / row.precioActual) * 100
+                            : null
+                        const varCmv =
+                          cmvActPct !== null && cmvNuevoPct !== null
+                            ? cmvNuevoPct - cmvActPct
+                            : null
+                        const isEmpty =
+                          touched && (prices[row.rowId] === undefined || prices[row.rowId] === '')
+
+                        return (
+                          <tr
+                            key={row.rowId}
+                            className="border-b last:border-0 hover:bg-gray-50/50"
+                          >
+                            <td className="px-4 py-2.5 text-sm text-plum-800 font-medium">
+                              {row.nombre}
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums text-xs text-muted-foreground">
+                              {row.cmv !== null ? formatCurrency(row.cmv) : '—'}
+                            </td>
+                            <td className="px-3 py-2.5 text-right tabular-nums text-sm font-medium text-plum-800">
+                              {formatCurrency(row.precioActual)}
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <CmvPctBadge pct={cmvActPct} />
+                            </td>
+                            <td className="px-3 py-2.5">
+                              <Input
+                                type="number"
+                                min="0"
+                                step="100"
+                                placeholder="Nuevo precio"
+                                value={prices[row.rowId] ?? ''}
+                                onChange={(e) => {
+                                  setPrices((p) => ({ ...p, [row.rowId]: e.target.value }))
+                                  if (applySuccess) setApplySuccess(false)
+                                }}
+                                className={cn(
+                                  'h-7 text-xs text-right w-28 ml-auto',
+                                  isEmpty && 'border-red-400 focus:ring-red-400',
+                                )}
+                              />
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <CmvPctBadge pct={cmvNuevoPct} />
+                            </td>
+                            <td className="px-3 py-2.5 text-right">
+                              <VarBadge value={varPrecio} type="precio" />
+                            </td>
+                            <td className="px-4 py-2.5 text-right">
+                              <VarBadge value={varCmv} type="cmv" />
+                            </td>
+                          </tr>
+                        )
+                      })
+                    )}
+                  </>
+                )
+              })}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      {/* Summary bar */}
+      <div className="flex items-center gap-4 bg-gray-50 rounded-xl px-4 py-3 border">
+        <div className="flex-1 space-y-1">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Completados: <span className="font-semibold text-plum-800">{completados} / {total}</span></span>
+            {allFilled && <span className="text-green-600 font-medium">✓ Listo para aplicar</span>}
+          </div>
+          <div className="h-1.5 rounded-full bg-gray-200 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-plum-600 transition-all"
+              style={{ width: total > 0 ? `${(completados / total) * 100}%` : '0%' }}
+            />
+          </div>
+        </div>
+        <div className="relative group shrink-0">
+          <Button
+            onClick={() => {
+              if (!allFilled) { setTouched(true); return }
+              setShowConfirm(true)
+            }}
+            className={cn(!allFilled && 'opacity-60')}
+          >
+            <TrendingUp className="w-4 h-4 mr-2" />
+            Aplicar precios nuevos
+          </Button>
+          {!allFilled && (
+            <div className="absolute bottom-full mb-1.5 left-1/2 -translate-x-1/2 hidden group-hover:block z-10 whitespace-nowrap bg-gray-800 text-white text-xs rounded px-2.5 py-1.5">
+              Completá todos los precios para continuar
+            </div>
+          )}
+        </div>
+      </div>
+
+      {applyError && (
+        <p className="text-sm text-red-600 px-1">{applyError}</p>
+      )}
+
+      {/* Confirm modal */}
+      {showConfirm && (
+        <Dialog open onOpenChange={() => setShowConfirm(false)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Confirmar actualización de precios</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 mt-2">
+              <p className="text-sm text-muted-foreground">
+                Estás por actualizar{' '}
+                <span className="font-semibold text-plum-800">{total} precios</span>.
+                Esta acción no se puede deshacer fácilmente.
+              </p>
+              {applyError && <p className="text-sm text-red-600">{applyError}</p>}
+              <div className="flex gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  onClick={() => setShowConfirm(false)}
+                  className="flex-1"
+                  disabled={applying}
+                >
+                  Cancelar
+                </Button>
+                <Button onClick={handleApply} className="flex-1" disabled={applying}>
+                  {applying && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                  Confirmar
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
-type ConfigTab = 'insumos' | 'costos' | 'inventario' | 'general'
+type ConfigTab = 'insumos' | 'costos' | 'inventario' | 'precios' | 'general'
 
 export default function Configuracion() {
   const { profile } = useAuth()
@@ -1106,6 +1590,7 @@ export default function Configuracion() {
     { key: 'insumos', label: 'Insumos' },
     { key: 'costos', label: 'Estructura de Costos' },
     { key: 'inventario', label: 'Inventario' },
+    { key: 'precios', label: 'Análisis de Precios' },
     { key: 'general', label: 'General' },
   ]
 
@@ -1139,6 +1624,7 @@ export default function Configuracion() {
       {tab === 'insumos' && <TabInsumos />}
       {tab === 'costos' && <TabCostos />}
       {tab === 'inventario' && <TabInventario />}
+      {tab === 'precios' && <TabAnalisisPrecios />}
       {tab === 'general' && (
         <div className="text-center py-16 text-muted-foreground bg-gray-50 rounded-xl">
           <p className="text-sm font-medium">Próximamente</p>

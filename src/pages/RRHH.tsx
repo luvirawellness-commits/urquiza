@@ -857,6 +857,12 @@ function LiquidacionTab() {
         </Button>
       </div>
 
+      <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-800 space-y-0.5">
+        <p className="font-semibold">Al registrar pagos de sueldos en Caja</p>
+        <p>• Empleados por hora (masoterapeutas, recepción, yoga) → <strong>Sueldos Operativos</strong></p>
+        <p>• Empleados mensuales (gestión, administración) → <strong>Sueldos Administrativos</strong></p>
+      </div>
+
       {isLoading ? (
         <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
       ) : activeEmployees.length === 0 ? (

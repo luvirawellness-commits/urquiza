@@ -118,6 +118,22 @@ export function useCreateAppointment() {
   })
 }
 
+export function useUpdateServicePrice() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, field, price }: { id: string; field: 'price_60' | 'price_90'; price: number }) => {
+      const { error } = await supabase
+        .from('services')
+        .update({ [field]: price })
+        .eq('id', id)
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['services'] }),
+  })
+}
+
 export function useUpdateAppointmentStatus() {
   const tenantId = useTenantId()
   const qc = useQueryClient()

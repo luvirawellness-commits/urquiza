@@ -1,7 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
-import { Transaction } from '@/types'
+import { Appointment, Transaction } from '@/types'
 
 export function useTransactions(month?: string) {
   const tenantId = useTenantId()
@@ -193,36 +193,162 @@ export function useDashboardMetrics() {
   return useQuery({
     queryKey: ['dashboard-metrics', tenantId],
     queryFn: async () => {
-      const today = new Date().toISOString().split('T')[0]
+      const today = new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+      })
       const monthStart = today.slice(0, 7) + '-01'
-      const weekStart = (() => {
-        const d = new Date()
-        const day = d.getDay()
-        const diff = d.getDate() - day + (day === 0 ? -6 : 1)
-        d.setDate(diff)
-        return d.toISOString().split('T')[0]
-      })()
 
-      const [clientsRes, todayApptRes, monthRevRes, weekApptRes] = await Promise.all([
-        supabase.from('clients').select('id', { count: 'exact', head: true }).eq('tenant_id', tenantId),
-        supabase.from('appointments').select('id', { count: 'exact', head: true })
+      const [sesionesRes, billingRes, clientsRes, membsRes] = await Promise.all([
+        supabase
+          .from('appointments')
+          .select('id', { count: 'exact', head: true })
           .eq('tenant_id', tenantId)
-          .gte('starts_at', `${today}T00:00:00`)
-          .lte('starts_at', `${today}T23:59:59`),
-        supabase.from('transactions').select('amount').eq('tenant_id', tenantId)
-          .eq('type', 'income').gte('date', monthStart).lte('date', today),
-        supabase.from('appointments').select('id', { count: 'exact', head: true })
+          .eq('status', 'completed')
+          .gte('scheduled_at', `${today}T00:00:00`)
+          .lte('scheduled_at', `${today}T23:59:59`),
+        supabase
+          .from('transactions')
+          .select('amount')
           .eq('tenant_id', tenantId)
-          .gte('starts_at', `${weekStart}T00:00:00`),
+          .eq('type', 'income')
+          .eq('status', 'paid')
+          .gte('date', monthStart)
+          .lte('date', today),
+        supabase
+          .from('clients')
+          .select('id', { count: 'exact', head: true })
+          .eq('tenant_id', tenantId)
+          .eq('status', 'active'),
+        supabase
+          .from('client_memberships')
+          .select('id', { count: 'exact', head: true })
+          .eq('tenant_id', tenantId)
+          .eq('status', 'active')
+          .gte('expires_at', today),
       ])
 
-      const revenueThisMonth = (monthRevRes.data ?? []).reduce((sum, t) => sum + (t.amount ?? 0), 0)
+      const billingThisMonth = (billingRes.data ?? []).reduce(
+        (sum, t) => sum + (t.amount ?? 0),
+        0,
+      )
 
       return {
-        totalClients: clientsRes.count ?? 0,
-        appointmentsToday: todayApptRes.count ?? 0,
-        revenueThisMonth,
-        appointmentsThisWeek: weekApptRes.count ?? 0,
+        sesionesHoy: sesionesRes.count ?? 0,
+        billingThisMonth,
+        activeClients: clientsRes.count ?? 0,
+        activeMemberships: membsRes.count ?? 0,
+      }
+    },
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
+  })
+}
+
+export function useTodayAgenda() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['today-agenda', tenantId],
+    queryFn: async () => {
+      const today = new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+      })
+      const { data, error } = await supabase
+        .from('appointments')
+        .select(`
+          id, scheduled_at, status, box_number,
+          client:clients!fk_apt_client(id, first_name, last_name),
+          therapist:users!fk_apt_therapist(id, full_name, color_hex),
+          service:services!fk_apt_service(id, name, emoji)
+        `)
+        .eq('tenant_id', tenantId)
+        .in('status', ['pending', 'confirmed', 'completed'])
+        .gte('scheduled_at', `${today}T00:00:00`)
+        .lte('scheduled_at', `${today}T23:59:59`)
+        .order('scheduled_at', { ascending: true })
+      if (error) throw error
+      return (data ?? []) as unknown as Appointment[]
+    },
+    enabled: !!tenantId,
+    refetchInterval: 60_000,
+  })
+}
+
+type AtRiskClient = {
+  id: string
+  first_name: string
+  last_name?: string | null
+  phone?: string | null
+  last_visit_at?: string | null
+}
+
+type AlertMembership = {
+  id: string
+  expires_at?: string | null
+  sessions_used?: number | null
+  client?: { id: string; first_name: string; last_name?: string | null } | null
+  plan?: { id: string; name: string; sessions_qty?: number | null } | null
+}
+
+export type DashboardAlerts = {
+  atRiskClients: AtRiskClient[]
+  expiringMemberships: AlertMembership[]
+  lowSessionMemberships: AlertMembership[]
+}
+
+export function useDashboardAlerts() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['dashboard-alerts', tenantId],
+    queryFn: async () => {
+      const today = new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+      })
+      const sevenDaysLater = (() => {
+        const d = new Date()
+        d.setDate(d.getDate() + 7)
+        return d.toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' })
+      })()
+
+      const membershipSelect = `id, expires_at, sessions_used, client:clients(id, first_name, last_name), plan:memberships!fk_cm_membership_id(id, name, sessions_qty)`
+
+      const [atRiskRes, expiringRes, allActiveRes] = await Promise.all([
+        supabase
+          .from('clients')
+          .select('id, first_name, last_name, phone, last_visit_at')
+          .eq('tenant_id', tenantId)
+          .eq('status', 'at_risk')
+          .order('last_visit_at', { ascending: true })
+          .limit(5),
+        supabase
+          .from('client_memberships')
+          .select(membershipSelect)
+          .eq('tenant_id', tenantId)
+          .eq('status', 'active')
+          .gte('expires_at', today)
+          .lte('expires_at', sevenDaysLater)
+          .order('expires_at', { ascending: true })
+          .limit(5),
+        supabase
+          .from('client_memberships')
+          .select(membershipSelect)
+          .eq('tenant_id', tenantId)
+          .eq('status', 'active')
+          .gte('expires_at', today)
+          .limit(100),
+      ])
+
+      const lowSessions = (allActiveRes.data ?? [])
+        .filter((m) => {
+          const qty = (m.plan as { sessions_qty?: number | null } | null)?.sessions_qty ?? 0
+          if (qty === 0) return false
+          return qty - (m.sessions_used ?? 0) <= 1
+        })
+        .slice(0, 5) as unknown as AlertMembership[]
+
+      return {
+        atRiskClients: (atRiskRes.data ?? []) as AtRiskClient[],
+        expiringMemberships: (expiringRes.data ?? []) as unknown as AlertMembership[],
+        lowSessionMemberships: lowSessions,
       }
     },
     enabled: !!tenantId,

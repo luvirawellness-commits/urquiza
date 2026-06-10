@@ -3,6 +3,22 @@ import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
 import type { ClientMembership, MembershipPlan } from '@/types'
 
+export function useUpdateMembershipPrice() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ id, price }: { id: string; price: number }) => {
+      const { error } = await supabase
+        .from('memberships')
+        .update({ price })
+        .eq('id', id)
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['membership-plans'] }),
+  })
+}
+
 export function useMembershipPlans() {
   const tenantId = useTenantId()
   return useQuery({

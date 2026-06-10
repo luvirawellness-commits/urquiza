@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
-  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock,
+  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark,
 } from 'lucide-react'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useAuth } from '@/contexts/AuthContext'
@@ -16,6 +16,11 @@ import {
   useClientMembership,
 } from '@/hooks/useFinanzas'
 import { useAllServiceCostItems } from '@/hooks/useSupplies'
+import {
+  useEmployeeProfiles,
+  useAbsencesRange,
+  calcMonthScheduleHours,
+} from '@/hooks/useRRHH'
 import {
   useTreasuryDeclarations, useTreasuryItems, useCreateTreasuryDeclaration,
 } from '@/hooks/useTreasury'
@@ -44,7 +49,8 @@ const EXPENSE_CATEGORIES_CAJA = [
   { value: 'supplies', label: 'Insumos' },
   { value: 'rent', label: 'Alquiler' },
   { value: 'utilities', label: 'Servicios (agua, luz, internet, alarma)' },
-  { value: 'salary', label: 'Sueldos' },
+  { value: 'salary_operativo', label: 'Sueldos Operativos (masoterapeutas, recepción, yoga)' },
+  { value: 'salary_admin', label: 'Sueldos Administrativos (gestión, administración)' },
   { value: 'social_charges', label: 'Cargas Sociales (CCSS)' },
   { value: 'marketing', label: 'Marketing y Publicidad' },
   { value: 'management', label: 'Gestión (sistemas, contador)' },
@@ -459,33 +465,27 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   )
 
   async function handleConfirm() {
-    if (!depositar) return
+    if (!depositar || depositarNum <= 0) return
     setBusy(true)
     setError(null)
     try {
-      await insertTx.mutateAsync({
-        type: 'expense',
-        category: 'other',
+      const depositPayload = {
+        type: 'expense' as const,
+        category: 'cash_transfer',
         amount: depositarNum,
         payment_method: 'cash',
-        description: `Cierre de caja - Depósito: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`,
+        description: `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`,
         date: today,
         user_id: user!.id,
         status: 'paid',
         is_recurring: false,
-      })
-      await insertTx.mutateAsync({
-        type: 'income',
-        category: 'other',
-        amount: efectivoQueda,
-        payment_method: 'cash',
-        description: `Saldo inicial caja siguiente: ${formatCurrency(efectivoQueda)}`,
-        date: today,
-        user_id: user!.id,
-        status: 'paid',
-        is_recurring: false,
-      })
-      setSuccess(`Caja cerrada. Saldo para mañana: ${formatCurrency(efectivoQueda)}`)
+      }
+      console.log('[CierreCaja] INSERT - Depósito a caja mayor:', depositPayload)
+      await insertTx.mutateAsync(depositPayload)
+
+      setSuccess(
+        `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`,
+      )
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la caja')
     } finally {
@@ -726,7 +726,9 @@ function computePLMonth(
   costItems: ServiceCostItem[],
 ): PLNumericFields {
   const inc = txs.filter((t) => t.type === 'income')
-  const exp = txs.filter((t) => t.type === 'expense')
+  const exp = txs.filter(
+    (t) => t.type === 'expense' && !['cash_transfer', 'withdrawal'].includes(t.category ?? ''),
+  )
   const sum = (arr: Transaction[]) => arr.reduce((s, t) => s + t.amount, 0)
 
   const sesiones = sum(inc.filter((t) => t.category === 'session'))
@@ -747,11 +749,11 @@ function computePLMonth(
   }, 0)
   const cmvReal = sum(exp.filter((t) => t.category === 'supplies'))
   const diferenciaCMV = cmvReal - cmvTeorico
-  const costoOperativo = sum(exp.filter((t) => ['salary', 'social_charges'].includes(t.category)))
+  const costoOperativo = sum(exp.filter((t) => ['salary_operativo', 'salary', 'social_charges'].includes(t.category ?? '')))
   const costoVentaTotal = cmvReal + costoOperativo
   const utilidadBruta = totalIngresos - costoVentaTotal
 
-  const sueldoAdmin = sum(exp.filter((t) => t.category === 'salary'))
+  const sueldoAdmin = sum(exp.filter((t) => t.category === 'salary_admin'))
   const alquiler = sum(exp.filter((t) => t.category === 'rent'))
   const servicios = sum(exp.filter((t) => t.category === 'utilities'))
   const gestion = sum(exp.filter((t) => t.category === 'management'))
@@ -958,7 +960,7 @@ function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: st
 }
 
 // ── Treasury helpers ───────────────────────────────────────────────────────────
-type TreasuryTheoreticals = { cash: number; transfer: number; mpQr: number; cards: number }
+type TreasuryTheoreticals = { cash: number; transfer: number; mpQr: number; cards: number; cajaMayor: number }
 
 function TreasurySectionHeader({ label }: { label: string }) {
   return (
@@ -1071,6 +1073,21 @@ function NuevaDeclaracionModal({
                   label="Efectivo en caja" theoretical={theoreticals.cash}
                   declared={cashDeclared} onDeclaredChange={setCashDeclared}
                 />
+                {theoreticals.cajaMayor > 0 && (
+                  <tr className="border-b last:border-0 bg-amber-50/40">
+                    <td className="py-2 pr-3 text-sm text-gray-600">
+                      <span className="flex items-center gap-1.5">
+                        <Landmark className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                        Caja Mayor (depósitos acumulados)
+                      </span>
+                    </td>
+                    <td className="py-2 px-3 text-sm text-right tabular-nums text-amber-700 font-medium">
+                      {formatCurrency(theoreticals.cajaMayor)}
+                    </td>
+                    <td className="py-2 px-3 text-sm text-right text-muted-foreground italic">solo lectura</td>
+                    <td className="py-2 pl-3 text-sm text-right text-muted-foreground">—</td>
+                  </tr>
+                )}
 
                 <TreasurySectionHeader label="Cuentas bancarias" />
                 {bankAccounts.map((ba, i) => (
@@ -1162,16 +1179,29 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
   const { data: expandedItems, isLoading: expandedLoading } = useTreasuryItems(expandedId)
 
   const theoreticals = useMemo((): TreasuryTheoreticals => {
-    const netPm = (methods: string[]) => {
-      const inc = txs.filter((t) => t.type === 'income' && methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
-      const exp = txs.filter((t) => t.type === 'expense' && methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
+    const cajaMayor = txs
+      .filter((t) => t.type === 'expense' && t.category === 'cash_transfer')
+      .reduce((s, t) => s + t.amount, 0)
+    const netPm = (methods: string[], excludeCashTransfer = false) => {
+      const inc = txs
+        .filter((t) => t.type === 'income' && methods.includes(t.payment_method ?? ''))
+        .reduce((s, t) => s + t.amount, 0)
+      const exp = txs
+        .filter(
+          (t) =>
+            t.type === 'expense' &&
+            methods.includes(t.payment_method ?? '') &&
+            (!excludeCashTransfer || t.category !== 'cash_transfer'),
+        )
+        .reduce((s, t) => s + t.amount, 0)
       return inc - exp
     }
     return {
-      cash: netPm(['cash']),
+      cash: netPm(['cash'], true),
       transfer: netPm(['transfer']),
       mpQr: netPm(['mp', 'qr']),
       cards: netPm(['debit', 'credit']),
+      cajaMayor,
     }
   }, [txs])
 
@@ -1664,9 +1694,314 @@ function TabPL() {
             )}
           </>
         )}
+      {!isLoading && monthlyPL && (
+        <SectionProductividadOperativa
+          months={months}
+          txs={txs ?? []}
+          startDate={startDate}
+          endDate={endDate}
+        />
+      )}
       {!isLoading && periodType === 'monthly' && (
         <SectionBalanceTesoreria txs={txs ?? []} month={months[0]} />
       )}
+    </div>
+  )
+}
+
+// ── Productividad Operativa ───────────────────────────────────────────────────
+
+function ProductividadBadge({ pct }: { pct: number }) {
+  if (pct <= 0) return <span className="text-muted-foreground text-xs">—</span>
+  const cls =
+    pct >= 100 ? 'bg-green-100 text-green-700' :
+    pct >= 80  ? 'bg-yellow-100 text-yellow-700' :
+                 'bg-red-100 text-red-700'
+  return (
+    <span className={cn('px-1.5 py-0.5 rounded text-[11px] font-semibold', cls)}>
+      {pct.toFixed(1)}%
+    </span>
+  )
+}
+
+type EmpMonthDetail = { name: string; horasNetas: number; tarifa: number; costoTeorico: number }
+
+type ProdMonthData = {
+  yearMonth: string
+  costoTeorico: number
+  costoReal: number
+  gap: number
+  productividad: number
+  hasHourlyEmployees: boolean
+  employeeDetails: EmpMonthDetail[]
+}
+
+function SectionProductividadOperativa({
+  months,
+  txs,
+  startDate,
+  endDate,
+}: {
+  months: string[]
+  txs: Transaction[]
+  startDate: string
+  endDate: string
+}) {
+  const [showDetail, setShowDetail] = useState(false)
+  const { data: employees, isLoading: empLoading } = useEmployeeProfiles()
+  const { data: allAbsences, isLoading: absLoading } = useAbsencesRange(startDate, endDate)
+  const isLoading = empLoading || absLoading
+
+  const monthlyData = useMemo((): ProdMonthData[] | null => {
+    if (!employees || !allAbsences) return null
+    return months.map((yearMonth) => {
+      const [y, m] = yearMonth.split('-').map(Number)
+      const monthStart = `${yearMonth}-01`
+      const monthEnd = new Date(y, m, 0).toISOString().split('T')[0]
+      const monthAbsences = allAbsences.filter((a) => a.date >= monthStart && a.date <= monthEnd)
+      const hourlyEmps = employees.filter((e) => e.active && e.position?.contract_type === 'hourly')
+      const employeeDetails: EmpMonthDetail[] = hourlyEmps.map((emp) => {
+        const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, y, m)
+        const horasAusentes = monthAbsences
+          .filter((a) => a.user_id === emp.user_id && a.deduct_from_salary)
+          .reduce((s, a) => s + a.hours_absent, 0)
+        const horasNetas = Math.max(0, horasSchedule - horasAusentes)
+        const tarifa = emp.position?.hourly_rate ?? 0
+        return { name: emp.user?.full_name ?? '—', horasNetas, tarifa, costoTeorico: horasNetas * tarifa }
+      })
+      const costoTeorico = employeeDetails.reduce((s, e) => s + e.costoTeorico, 0)
+      const costoReal = txs
+        .filter((t) => t.date.startsWith(yearMonth) && t.type === 'expense' && ['salary_operativo', 'salary', 'social_charges'].includes(t.category ?? ''))
+        .reduce((s, t) => s + t.amount, 0)
+      return {
+        yearMonth, costoTeorico, costoReal,
+        gap: costoReal - costoTeorico,
+        productividad: costoReal > 0 ? (costoTeorico / costoReal) * 100 : 0,
+        hasHourlyEmployees: hourlyEmps.length > 0,
+        employeeDetails,
+      }
+    })
+  }, [employees, allAbsences, txs, months])
+
+  const totals = useMemo(() => {
+    if (!monthlyData) return null
+    const costoTeorico = monthlyData.reduce((s, m) => s + m.costoTeorico, 0)
+    const costoReal    = monthlyData.reduce((s, m) => s + m.costoReal, 0)
+    return {
+      costoTeorico, costoReal,
+      gap: costoReal - costoTeorico,
+      productividad: costoReal > 0 ? (costoTeorico / costoReal) * 100 : 0,
+      hasHourlyEmployees: monthlyData.some((m) => m.hasHourlyEmployees),
+    }
+  }, [monthlyData])
+
+  const aggregatedEmployees = useMemo((): EmpMonthDetail[] => {
+    if (!monthlyData) return []
+    const map = new Map<string, EmpMonthDetail>()
+    for (const md of monthlyData) {
+      for (const ed of md.employeeDetails) {
+        const existing = map.get(ed.name)
+        if (existing) {
+          existing.horasNetas += ed.horasNetas
+          existing.costoTeorico += ed.costoTeorico
+        } else {
+          map.set(ed.name, { ...ed })
+        }
+      }
+    }
+    return Array.from(map.values()).sort((a, b) => b.costoTeorico - a.costoTeorico)
+  }, [monthlyData])
+
+  const isMulti = months.length > 1
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+          <TrendingUp className="w-4 h-4" /> Productividad Operativa
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="overflow-x-auto p-0 pb-4">
+        {isLoading ? (
+          <div className="flex justify-center py-6">
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+          </div>
+        ) : !monthlyData || !totals ? null
+        : !totals.hasHourlyEmployees ? (
+          <div className="text-center py-8 text-muted-foreground text-sm px-4">
+            Sin datos de RRHH para el período seleccionado
+          </div>
+        ) : isMulti ? (
+          /* ── Multi-month view ── */
+          <>
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b bg-gray-50">
+                  <th className="text-left pb-2 pt-3 px-4 min-w-[190px] text-sm font-medium text-muted-foreground">Concepto</th>
+                  {monthlyData.map((md) => {
+                    const [y, mo] = md.yearMonth.split('-')
+                    return (
+                      <th key={md.yearMonth} className="text-right pb-2 pt-3 px-3 min-w-[90px] text-muted-foreground font-medium">
+                        {MONTHS_ABBR[parseInt(mo) - 1]}<br />
+                        <span className="text-[10px] font-normal">{y}</span>
+                      </th>
+                    )
+                  })}
+                  <th className="text-right pb-2 pt-3 px-3 min-w-[90px] font-semibold text-plum-800 border-l border-gray-200">TOTAL</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="bg-gray-50">
+                  <td colSpan={months.length + 2} className="py-1.5 px-4 text-[10px] font-semibold text-plum-700 uppercase tracking-widest">
+                    PRODUCTIVIDAD OPERATIVA
+                  </td>
+                </tr>
+
+                {/* Costo Teórico */}
+                <tr className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="py-1.5 px-4 pl-8 text-gray-700">Costo Operativo Teórico</td>
+                  {monthlyData.map((md) => (
+                    <td key={md.yearMonth} className="py-1.5 px-3 text-right tabular-nums text-gray-700">
+                      {md.hasHourlyEmployees
+                        ? fmtC(md.costoTeorico)
+                        : <span className="text-muted-foreground text-[10px]">Sin datos</span>}
+                    </td>
+                  ))}
+                  <td className="py-1.5 px-3 text-right tabular-nums font-semibold text-plum-800 border-l border-gray-200">
+                    {fmtC(totals.costoTeorico)}
+                  </td>
+                </tr>
+
+                {/* Costo Real */}
+                <tr className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="py-1.5 px-4 pl-8 text-gray-700">Costo Operativo Real</td>
+                  {monthlyData.map((md) => (
+                    <td key={md.yearMonth} className="py-1.5 px-3 text-right tabular-nums text-gray-700">
+                      {fmtC(md.costoReal)}
+                    </td>
+                  ))}
+                  <td className="py-1.5 px-3 text-right tabular-nums font-semibold text-plum-800 border-l border-gray-200">
+                    {fmtC(totals.costoReal)}
+                  </td>
+                </tr>
+
+                {/* GAP */}
+                <tr className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="py-1.5 px-4 font-semibold text-plum-800">GAP (Real − Teórico)</td>
+                  {monthlyData.map((md) => (
+                    <td key={md.yearMonth} className={cn(
+                      'py-1.5 px-3 text-right tabular-nums font-semibold',
+                      md.gap <= 0 ? 'text-green-700' : 'text-red-600',
+                    )}>
+                      {md.gap > 0 ? '+' : ''}{fmtC(md.gap)}
+                    </td>
+                  ))}
+                  <td className={cn(
+                    'py-1.5 px-3 text-right tabular-nums font-semibold border-l border-gray-200',
+                    totals.gap <= 0 ? 'text-green-700' : 'text-red-600',
+                  )}>
+                    {totals.gap > 0 ? '+' : ''}{fmtC(totals.gap)}
+                  </td>
+                </tr>
+
+                {/* % Productividad */}
+                <tr className="border-b border-gray-50 hover:bg-gray-50/50">
+                  <td className="py-1.5 px-4 font-semibold text-plum-800">% Productividad</td>
+                  {monthlyData.map((md) => (
+                    <td key={md.yearMonth} className="py-1.5 px-3 text-right">
+                      <ProductividadBadge pct={md.productividad} />
+                    </td>
+                  ))}
+                  <td className="py-1.5 px-3 text-right border-l border-gray-200">
+                    <ProductividadBadge pct={totals.productividad} />
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+
+            {/* Employee breakdown */}
+            {aggregatedEmployees.length > 0 && (
+              <div className="px-4 mt-3">
+                <button
+                  onClick={() => setShowDetail((v) => !v)}
+                  className="text-xs text-plum-700 underline underline-offset-2 hover:text-plum-900 transition-colors"
+                >
+                  {showDetail ? 'Ocultar detalle' : 'Ver detalle por empleado'}
+                </button>
+                {showDetail && <EmpDetailTable employees={aggregatedEmployees} />}
+              </div>
+            )}
+          </>
+        ) : (
+          /* ── Single-month view ── */
+          <>
+            <table className="w-full">
+              <tbody>
+                <tr className="bg-plum-50">
+                  <td colSpan={3} className="py-1.5 px-0 text-xs font-bold text-plum-700 uppercase tracking-wider">
+                    PRODUCTIVIDAD OPERATIVA
+                  </td>
+                </tr>
+                <PLRow label="Costo Operativo Teórico" amount={totals.costoTeorico} indent />
+                <PLRow label="Costo Operativo Real" amount={totals.costoReal} indent />
+                <PLRow
+                  label="GAP (Real − Teórico)"
+                  amount={totals.gap}
+                  bold
+                  highlight={totals.gap <= 0 ? 'green' : 'red'}
+                />
+                <tr className="border-b last:border-0">
+                  <td className="py-2 text-sm font-semibold text-plum-800">% Productividad</td>
+                  <td className="py-2 text-sm text-right pl-6">
+                    <ProductividadBadge pct={totals.productividad} />
+                  </td>
+                  <td className="py-2 pl-4 w-14" />
+                </tr>
+              </tbody>
+            </table>
+
+            {/* Employee breakdown */}
+            {aggregatedEmployees.length > 0 && (
+              <div className="px-4 mt-3">
+                <button
+                  onClick={() => setShowDetail((v) => !v)}
+                  className="text-xs text-plum-700 underline underline-offset-2 hover:text-plum-900 transition-colors"
+                >
+                  {showDetail ? 'Ocultar detalle' : 'Ver detalle por empleado'}
+                </button>
+                {showDetail && <EmpDetailTable employees={aggregatedEmployees} />}
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function EmpDetailTable({ employees }: { employees: EmpMonthDetail[] }) {
+  return (
+    <div className="mt-3 rounded-lg border overflow-hidden">
+      <table className="w-full text-xs">
+        <thead>
+          <tr className="border-b bg-gray-50">
+            <th className="text-left px-3 py-2 font-medium text-muted-foreground">Empleado</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Hs netas</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Tarifa/h</th>
+            <th className="text-right px-3 py-2 font-medium text-muted-foreground">Costo teórico</th>
+          </tr>
+        </thead>
+        <tbody>
+          {employees.map((ed) => (
+            <tr key={ed.name} className="border-b last:border-0 hover:bg-gray-50/50">
+              <td className="px-3 py-2 text-gray-700">{ed.name}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-gray-600">{ed.horasNetas.toFixed(1)}</td>
+              <td className="px-3 py-2 text-right tabular-nums text-gray-600">{fmtC(ed.tarifa)}</td>
+              <td className="px-3 py-2 text-right tabular-nums font-medium text-plum-800">{fmtC(ed.costoTeorico)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }
