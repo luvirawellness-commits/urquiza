@@ -63,6 +63,14 @@ serve(async (req) => {
       if (profileError) throw profileError
       userCreated = true
 
+      // 4. Stamp app_metadata so JWT claims carry tenant_id + role
+      await supabaseAdmin.auth.admin.updateUserById(userId, {
+        app_metadata: {
+          tenant_id: primaryTenantId,
+          role: role ?? 'therapist',
+        },
+      })
+
       // 3. Create user_tenants rows
       if (tenant_assignments?.length > 0) {
         const { error: tenantsError } = await supabaseAdmin.from('user_tenants').insert(
