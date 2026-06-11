@@ -5,6 +5,8 @@ import { queryClient } from '@/lib/queryClient'
 import { UserProfile, Tenant } from '@/types'
 
 const TENANT_KEY = 'luvira_current_tenant'
+const LAST_ACTIVITY_KEY = 'luvira_last_activity'
+const INACTIVITY_TIMEOUT = 8 * 60 * 60 * 1000 // 8 hours
 
 const ALL_PERM_KEYS = [
   'dashboard', 'agenda', 'clientes', 'caja', 'finanzas',
@@ -189,6 +191,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     return () => subscription.unsubscribe()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Inactivity timeout (8 h) ─────────────────────────────────────────────
+  useEffect(() => {
+    if (!user) return
+
+    let lastThrottle = 0
+
+    function updateActivity() {
+      const now = Date.now()
+      if (now - lastThrottle >= 60_000) {
+        localStorage.setItem(LAST_ACTIVITY_KEY, String(now))
+        lastThrottle = now
+      }
+    }
+
+    async function handleInactivity() {
+      sessionStorage.setItem('luvira_session_expired', 'true')
+      localStorage.removeItem(TENANT_KEY)
+      localStorage.removeItem(LAST_ACTIVITY_KEY)
+      await supabase.auth.signOut()
+      // onAuthStateChange handles clearing React state
+    }
+
+    function checkInactivity() {
+      const ts = localStorage.getItem(LAST_ACTIVITY_KEY)
+      if (ts && Date.now() - Number(ts) > INACTIVITY_TIMEOUT) {
+        void handleInactivity()
+      }
+    }
+
+    // Initial check in case the app was idle before this mount
+    checkInactivity()
+    if (!localStorage.getItem(LAST_ACTIVITY_KEY)) {
+      localStorage.setItem(LAST_ACTIVITY_KEY, String(Date.now()))
+    }
+
+    const events = ['mousemove', 'keydown', 'click', 'scroll'] as const
+    events.forEach((ev) => window.addEventListener(ev, updateActivity, { passive: true }))
+
+    function onVisibilityChange() {
+      if (document.visibilityState === 'visible') checkInactivity()
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', checkInactivity)
+
+    return () => {
+      events.forEach((ev) => window.removeEventListener(ev, updateActivity))
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', checkInactivity)
+      localStorage.removeItem(LAST_ACTIVITY_KEY)
+    }
+  }, [user]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function switchTenant(tenantId: string) {
     setCurrentTenantId(tenantId)

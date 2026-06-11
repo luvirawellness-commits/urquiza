@@ -1,10 +1,18 @@
-import { useState, FormEvent } from 'react'
+import { useState, useEffect, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
+import { rateLimiter } from '@/lib/rateLimiter'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Eye, EyeOff, Loader2 } from 'lucide-react'
+import { Eye, EyeOff, Loader2, Lock } from 'lucide-react'
+
+function formatTimeLeft(ms: number): string {
+  const totalSeconds = Math.max(0, Math.ceil(ms / 1000))
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
 
 export default function Auth() {
   const { signIn } = useAuth()
@@ -14,16 +22,85 @@ export default function Auth() {
   const [showPassword, setShowPassword] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sessionExpired, setSessionExpired] = useState(false)
+  const [locked, setLocked] = useState(false)
+  const [timeLeft, setTimeLeft] = useState<number | null>(null)
+
+  // On mount: show session expiry notice + check existing lock
+  useEffect(() => {
+    if (sessionStorage.getItem('luvira_session_expired')) {
+      sessionStorage.removeItem('luvira_session_expired')
+      setSessionExpired(true)
+    }
+
+    const lockStatus = rateLimiter.isLocked()
+    if (lockStatus.locked) {
+      setLocked(true)
+      const attempts = rateLimiter.getAttempts()
+      if (attempts.lockedUntil) {
+        setTimeLeft(attempts.lockedUntil - Date.now())
+      }
+      setError(
+        `Demasiados intentos fallidos. Intentá de nuevo en ${lockStatus.remainingMinutes} minuto${lockStatus.remainingMinutes !== 1 ? 's' : ''}.`,
+      )
+    }
+  }, [])
+
+  // Countdown timer — ticks every second while locked
+  useEffect(() => {
+    if (!locked) return
+    const interval = setInterval(() => {
+      const attempts = rateLimiter.getAttempts()
+      if (!attempts.lockedUntil) {
+        setLocked(false)
+        setTimeLeft(null)
+        setError(null)
+        return
+      }
+      const remaining = attempts.lockedUntil - Date.now()
+      if (remaining <= 0) {
+        rateLimiter.reset()
+        setLocked(false)
+        setTimeLeft(null)
+        setError(null)
+      } else {
+        setTimeLeft(remaining)
+      }
+    }, 1000)
+    return () => clearInterval(interval)
+  }, [locked])
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    setSessionExpired(false)
+
+    const lockStatus = rateLimiter.isLocked()
+    if (lockStatus.locked) {
+      setError(
+        `Demasiados intentos fallidos. Intentá de nuevo en ${lockStatus.remainingMinutes} minuto${lockStatus.remainingMinutes !== 1 ? 's' : ''}.`,
+      )
+      return
+    }
+
     setError(null)
     setLoading(true)
-    const { error } = await signIn(email, password)
+    const { error: signInError } = await signIn(email, password)
     setLoading(false)
-    if (error) {
-      setError('Credenciales incorrectas. Por favor, verificá tu email y contraseña.')
+
+    if (signInError) {
+      const result = rateLimiter.recordFailedAttempt()
+      if (result.locked) {
+        setLocked(true)
+        const attempts = rateLimiter.getAttempts()
+        if (attempts.lockedUntil) setTimeLeft(attempts.lockedUntil - Date.now())
+        setError('Cuenta bloqueada por 15 minutos por demasiados intentos fallidos.')
+      } else {
+        setError(
+          `Contraseña incorrecta. Te quedan ${result.remainingAttempts} intento${result.remainingAttempts !== 1 ? 's' : ''} antes de bloquearte.`,
+        )
+      }
     } else {
+      rateLimiter.recordSuccessfulLogin()
       navigate('/dashboard')
     }
   }
@@ -45,6 +122,13 @@ export default function Auth() {
           <h2 className="text-plum-800 text-xl font-semibold mb-1">Iniciar sesión</h2>
           <p className="text-muted-foreground text-sm mb-6">Ingresá tu email y contraseña</p>
 
+          {/* Session expiry notice */}
+          {sessionExpired && (
+            <div className="bg-blue-50 border border-blue-200 text-blue-700 text-sm rounded-lg px-4 py-3 mb-4">
+              Tu sesión expiró por inactividad. Por favor iniciá sesión nuevamente.
+            </div>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div className="space-y-2">
               <Label htmlFor="email">Email</Label>
@@ -56,6 +140,7 @@ export default function Auth() {
                 onChange={(e) => setEmail(e.target.value)}
                 required
                 autoComplete="email"
+                disabled={locked}
               />
             </div>
 
@@ -71,6 +156,7 @@ export default function Auth() {
                   required
                   autoComplete="current-password"
                   className="pr-10"
+                  disabled={locked}
                 />
                 <button
                   type="button"
@@ -81,25 +167,61 @@ export default function Auth() {
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
               </div>
+              {/*
+               * TODO: Password strength indicator (for future "change password" flow)
+               * Check: length >= 8, has uppercase, has number or special char.
+               * Show: red "Contraseña débil" / yellow "Contraseña regular" / green "Contraseña segura"
+               * Only render when user is on a change-password screen, not on login.
+               */}
             </div>
 
             {error && (
-              <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3">
-                {error}
+              <div
+                className={`border text-sm rounded-lg px-4 py-3 ${
+                  locked
+                    ? 'bg-amber-50 border-amber-200 text-amber-700'
+                    : 'bg-red-50 border-red-200 text-red-700'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  {locked && <Lock className="w-4 h-4 mt-0.5 flex-shrink-0" />}
+                  <div>
+                    <p>{error}</p>
+                    {locked && timeLeft !== null && (
+                      <p className="font-mono font-bold text-lg mt-1 tracking-widest">
+                        {formatTimeLeft(timeLeft)}
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
             )}
 
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="w-full" disabled={loading || locked}>
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                   Ingresando...
+                </>
+              ) : locked ? (
+                <>
+                  <Lock className="w-4 h-4 mr-2" />
+                  Bloqueado
                 </>
               ) : (
                 'Ingresar'
               )}
             </Button>
           </form>
+
+          {/* Privacy notice */}
+          <p className="text-xs text-muted-foreground text-center mt-6 leading-relaxed">
+            Al iniciar sesión aceptás nuestros{' '}
+            <span className="text-plum-600">Términos y Condiciones</span> y la{' '}
+            <span className="text-plum-600">Política de Privacidad</span> de Luvira Wellness.
+            <br />
+            Los datos son procesados conforme a la Ley 25.326.
+          </p>
         </div>
 
         <p className="text-center text-plum-400 text-xs mt-6">
