@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CalendarDays, TrendingUp, Gift,
   ShoppingBag, ShoppingCart, Settings, LogOut, Menu, X, Users2, Building2,
-  ChevronDown, Loader2, Check,
+  ChevronDown, Loader2, Check, CreditCard, ScrollText,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -17,11 +17,13 @@ const navItems = [
   { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
   { to: '/clientes',   label: 'Clientes',   icon: Users },
   { to: '/agenda',     label: 'Agenda',     icon: CalendarDays },
-  { to: '/finanzas',   label: 'Finanzas',   icon: TrendingUp,   permKeys: ['caja', 'finanzas'],  roles: ['owner', 'partner_admin', 'therapist'] },
-  { to: '/rrhh',       label: 'RRHH',       icon: Users2,       permKeys: ['rrhh'],              roles: ['owner', 'partner_admin'] },
-  { to: '/productos',  label: 'Productos',  icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
-  { to: '/gift-cards', label: 'Gift Cards', icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
-  { to: '/compras',    label: 'Compras',    icon: ShoppingCart, permKeys: ['compras'],           roles: ['owner'] },
+  { to: '/finanzas',    label: 'Finanzas',    icon: TrendingUp,   permKeys: ['caja', 'finanzas'],  roles: ['owner', 'partner_admin', 'therapist'] },
+  { to: '/rrhh',        label: 'RRHH',        icon: Users2,       permKeys: ['rrhh'],              roles: ['owner', 'partner_admin'] },
+  { to: '/membresias',  label: 'Membresías',  icon: CreditCard,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
+  { to: '/auditoria',   label: 'Auditoría',   icon: ScrollText,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
+  { to: '/productos',   label: 'Productos',   icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
+  { to: '/gift-cards',  label: 'Gift Cards',  icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
+  { to: '/compras',     label: 'Compras',     icon: ShoppingCart, permKeys: ['compras'],           roles: ['owner'] },
 ]
 
 function TenantSwitcher() {

@@ -1,9 +1,8 @@
-import { useState, useEffect, Fragment } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, CreditCard, ScrollText } from 'lucide-react'
+import { useState, useEffect, ElementType } from 'react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
-import { useServices } from '@/hooks/useAppointments'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,9 +10,9 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
-import type { Tenant, UserProfile, Service } from '@/types'
+import type { Tenant, UserProfile } from '@/types'
 
-type AdminTab = 'locales' | 'usuarios' | 'membresias' | 'roles' | 'auditoria'
+type AdminTab = 'locales' | 'usuarios' | 'roles'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -356,6 +355,7 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [createdTempPassword, setCreatedTempPassword] = useState('')
 
   useEffect(() => {
     if (open) {
@@ -367,7 +367,7 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
       setSelectedRole(user?.role ?? 'therapist')
       setAssignments(user?.user_tenants?.map((ut) => ({ tenant_id: ut.tenant_id, role: ut.role })) ?? [])
       setDefaultTenantId(user?.default_tenant_id ?? user?.tenant_id ?? '')
-      setError(''); setSaved(false)
+      setError(''); setSaved(false); setCreatedTempPassword('')
     }
   }, [open, user])
 
@@ -383,8 +383,36 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
     setAssignments((prev) => prev.map((a) => a.tenant_id === tid ? { ...a, role } : a))
   }
 
+  async function handleCreate() {
+    if (!form.email.trim()) { setError('Email es obligatorio.'); return }
+    if (!form.full_name.trim()) { setError('Nombre es obligatorio.'); return }
+    if (assignments.length === 0) { setError('Asigná al menos un local.'); return }
+    setError('')
+    setSaving(true)
+    try {
+      const { data, error: fnError } = await supabase.functions.invoke('create-user', {
+        body: {
+          email: form.email.trim(),
+          full_name: form.full_name.trim(),
+          role: selectedRole,
+          color_hex: form.color_hex,
+          default_tenant_id: defaultTenantId || assignments[0]?.tenant_id,
+          tenant_assignments: assignments,
+        },
+      })
+      if (fnError) throw fnError
+      if (data?.error) throw new Error(data.error)
+      setCreatedTempPassword(data.temp_password ?? '')
+      await qc.invalidateQueries({ queryKey: ['admin-users'] })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al crear el usuario')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   async function handleSave() {
-    if (!user) { setError('Buscá el usuario por email antes de editar.'); return }
+    if (!user) return
     if (!form.full_name.trim()) { setError('Nombre es obligatorio.'); return }
     if (assignments.length === 0) { setError('Asigná al menos un local.'); return }
     setError('')
@@ -428,14 +456,147 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
     <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{user ? 'Editar usuario' : 'Asignar usuario'}</DialogTitle>
+          <DialogTitle>{user ? 'Editar usuario' : 'Nuevo usuario'}</DialogTitle>
         </DialogHeader>
 
         {!user ? (
-          <div className="py-4 space-y-3">
-            <p className="text-sm text-muted-foreground bg-amber-50 border border-amber-200 rounded-md px-3 py-2.5">
-              Para crear usuarios en Auth, usá el panel de Supabase → Authentication → Users, y luego asignalos acá buscándolos por email.
-            </p>
+          <div className="space-y-4 mt-2">
+            {createdTempPassword ? (
+              <div className="space-y-4">
+                <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+                  <p className="text-sm font-semibold text-green-800 mb-1">Usuario creado correctamente</p>
+                  <p className="text-xs text-green-700">Compartí esta contraseña temporal con el usuario — solo se muestra una vez.</p>
+                </div>
+                <div className="space-y-1">
+                  <Label>Contraseña temporal</Label>
+                  <div className="flex items-center gap-2">
+                    <Input value={createdTempPassword} readOnly className="font-mono text-sm flex-1" />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      onClick={() => navigator.clipboard.writeText(createdTempPassword)}
+                    >
+                      Copiar
+                    </Button>
+                  </div>
+                </div>
+                <div className="flex justify-end pt-2">
+                  <Button onClick={onClose}>Cerrar</Button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <Label>Email *</Label>
+                    <Input
+                      type="email"
+                      value={form.email}
+                      onChange={(e) => setForm((f) => ({ ...f, email: e.target.value }))}
+                      placeholder="usuario@email.com"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <Label>Nombre completo *</Label>
+                    <Input
+                      value={form.full_name}
+                      onChange={(e) => setForm((f) => ({ ...f, full_name: e.target.value }))}
+                      placeholder="Ana García"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Rol principal</Label>
+                  <select
+                    value={selectedRole}
+                    onChange={(e) => setSelectedRole(e.target.value)}
+                    className={selectCls}
+                  >
+                    {availableRoles.length === 0 && (
+                      <option value={selectedRole}>{selectedRole}</option>
+                    )}
+                    {availableRoles.map((r) => (
+                      <option key={r.id} value={r.name}>{r.name}{r.description ? ` — ${r.description}` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Color</Label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      value={form.color_hex}
+                      onChange={(e) => setForm((f) => ({ ...f, color_hex: e.target.value }))}
+                      className="w-10 h-10 rounded cursor-pointer border border-input"
+                    />
+                    <Input
+                      value={form.color_hex}
+                      onChange={(e) => setForm((f) => ({ ...f, color_hex: e.target.value }))}
+                      className="flex-1 font-mono text-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Locales asignados</Label>
+                  <div className="space-y-2 max-h-52 overflow-y-auto pr-1">
+                    {allTenants.map((t) => {
+                      const assigned = assignments.find((a) => a.tenant_id === t.id)
+                      return (
+                        <div key={t.id} className={cn('border rounded-lg p-3 transition-colors', assigned ? 'border-plum-400 bg-plum-50/40' : 'border-gray-200')}>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              id={`new-tenant-${t.id}`}
+                              checked={!!assigned}
+                              onChange={() => toggleTenant(t.id)}
+                              className="w-4 h-4 accent-plum-700"
+                            />
+                            <label htmlFor={`new-tenant-${t.id}`} className="flex-1 text-sm font-medium cursor-pointer text-plum-800">{t.name}</label>
+                            {assigned && (
+                              <button
+                                onClick={() => setDefaultTenantId(t.id)}
+                                className={cn('text-xs px-2 py-0.5 rounded-full border transition-colors', defaultTenantId === t.id ? 'bg-gold-400 border-gold-400 text-plum-900 font-medium' : 'border-gray-300 text-muted-foreground hover:border-gold-400')}
+                              >
+                                {defaultTenantId === t.id ? 'Principal' : 'Hacer principal'}
+                              </button>
+                            )}
+                          </div>
+                          {assigned && (
+                            <div className="mt-2 ml-6">
+                              <select
+                                value={assigned.role}
+                                onChange={(e) => setTenantRole(t.id, e.target.value)}
+                                className={selectCls}
+                              >
+                                {availableRoles.length === 0 && (
+                                  <option value={assigned.role}>{assigned.role}</option>
+                                )}
+                                {availableRoles.map((r) => (
+                                  <option key={r.id} value={r.name}>{r.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {error && <p className="text-sm text-red-600">{error}</p>}
+                <div className="flex justify-end gap-2 pt-2">
+                  <Button variant="outline" onClick={onClose}>Cancelar</Button>
+                  <Button onClick={handleCreate} disabled={saving}>
+                    {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    Crear usuario
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-4 mt-2">
@@ -585,6 +746,7 @@ function TabUsuarios() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<UserWithTenants | undefined>()
 
+  function openCreate() { setEditing(undefined); setModalOpen(true) }
   function openEdit(u: UserWithTenants) { setEditing(u); setModalOpen(true) }
   function closeModal() { setModalOpen(false); setEditing(undefined) }
 
@@ -603,11 +765,9 @@ function TabUsuarios() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{users.length} usuarios registrados</p>
-        <div className="flex items-center gap-2">
-          <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
-            Crear usuarios: Supabase → Authentication → Users
-          </p>
-        </div>
+        <Button size="sm" onClick={openCreate}>
+          <Plus className="w-4 h-4 mr-1" />Nuevo usuario
+        </Button>
       </div>
       <Card>
         <CardContent className="p-0 overflow-x-auto">
@@ -938,703 +1098,6 @@ function TabRoles() {
   )
 }
 
-// ── Membresías Tab ────────────────────────────────────────────────────────────
-
-type MembershipRow = {
-  id: string
-  tenant_id: string
-  name: string
-  price: number
-  sessions_qty: number
-  validity_days: number
-  highlight_badge?: string | null
-  allowed_service_ids?: string[] | null
-  active: boolean
-}
-
-type MembershipForm = {
-  name: string
-  price: string
-  sessions_qty: string
-  validity_days: string
-  highlight_badge: string
-  active: boolean
-}
-
-const EMPTY_MEMBERSHIP: MembershipForm = {
-  name: '', price: '', sessions_qty: '', validity_days: '30', highlight_badge: '', active: true,
-}
-
-function membershipToForm(m: MembershipRow): MembershipForm {
-  return {
-    name: m.name,
-    price: String(m.price),
-    sessions_qty: String(m.sessions_qty),
-    validity_days: String(m.validity_days),
-    highlight_badge: m.highlight_badge ?? '',
-    active: m.active,
-  }
-}
-
-type ServiceOption = Pick<Service, 'id' | 'name' | 'emoji'>
-
-function ServicesBadges({ plan, services }: { plan: MembershipRow; services: ServiceOption[] }) {
-  if (plan.allowed_service_ids == null) {
-    return <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-100 text-green-700">Todos</span>
-  }
-  if (plan.allowed_service_ids.length === 0) {
-    return <span className="text-xs text-muted-foreground">—</span>
-  }
-  const matched = plan.allowed_service_ids
-    .map((id) => services.find((s) => s.id === id))
-    .filter(Boolean) as Service[]
-  const shown = matched.slice(0, 3)
-  const extra = matched.length - shown.length
-  return (
-    <div className="flex flex-wrap gap-1">
-      {shown.map((s) => (
-        <span key={s.id} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-plum-100 text-plum-700">
-          {s.emoji ? `${s.emoji} ` : ''}{s.name}
-        </span>
-      ))}
-      {extra > 0 && <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-gray-100 text-gray-600">+{extra} más</span>}
-    </div>
-  )
-}
-
-function MembershipModal({ open, onClose, plan, tenantId, services }: {
-  open: boolean; onClose: () => void; plan?: MembershipRow
-  tenantId: string; services: ServiceOption[]
-}) {
-  const qc = useQueryClient()
-  const [form, setForm] = useState<MembershipForm>(plan ? membershipToForm(plan) : EMPTY_MEMBERSHIP)
-  const [serviceMode, setServiceMode] = useState<'all' | 'specific'>('all')
-  const [selectedServiceIds, setSelectedServiceIds] = useState<string[]>([])
-  const [error, setError] = useState('')
-  const [saving, setSaving] = useState(false)
-
-  useEffect(() => {
-    if (open) {
-      setForm(plan ? membershipToForm(plan) : EMPTY_MEMBERSHIP)
-      setError('')
-      if (plan?.allowed_service_ids == null) {
-        setServiceMode('all')
-        setSelectedServiceIds([])
-      } else {
-        setServiceMode('specific')
-        setSelectedServiceIds(plan.allowed_service_ids)
-      }
-    }
-  }, [open, plan])
-
-  function toggleService(id: string) {
-    setSelectedServiceIds((prev) => prev.includes(id) ? prev.filter((s) => s !== id) : [...prev, id])
-  }
-
-  async function handleSave() {
-    if (!form.name.trim()) { setError('El nombre es obligatorio.'); return }
-    if (!form.price || isNaN(parseFloat(form.price))) { setError('El precio es obligatorio.'); return }
-    if (!form.sessions_qty || isNaN(parseInt(form.sessions_qty))) { setError('La cantidad de sesiones es obligatoria.'); return }
-    if (!form.validity_days || isNaN(parseInt(form.validity_days))) { setError('Los días de vigencia son obligatorios.'); return }
-    setError(''); setSaving(true)
-    try {
-      const payload = {
-        tenant_id: tenantId,
-        name: form.name.trim(),
-        price: parseFloat(form.price),
-        sessions_qty: parseInt(form.sessions_qty),
-        validity_days: parseInt(form.validity_days),
-        highlight_badge: form.highlight_badge.trim() || null,
-        allowed_service_ids: serviceMode === 'all' ? null : selectedServiceIds,
-        active: form.active,
-      }
-      if (plan) {
-        const { error } = await supabase.from('memberships').update(payload).eq('id', plan.id)
-        if (error) throw error
-      } else {
-        const { error } = await supabase.from('memberships').insert(payload)
-        if (error) throw error
-      }
-      await qc.invalidateQueries({ queryKey: ['admin-memberships'] })
-      await qc.invalidateQueries({ queryKey: ['membership-plans'] })
-      onClose()
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : 'Error al guardar')
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
-      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>{plan ? 'Editar plan' : 'Nuevo plan'}</DialogTitle>
-        </DialogHeader>
-        <div className="space-y-5 mt-2">
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Info básica</p>
-            <div className="space-y-3">
-              <div className="space-y-1">
-                <Label>Nombre *</Label>
-                <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} placeholder="Plan mensual" />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label>Precio *</Label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
-                    <Input type="number" min="0" step="0.01" value={form.price} onChange={(e) => setForm((f) => ({ ...f, price: e.target.value }))} className="pl-7" placeholder="0" />
-                  </div>
-                </div>
-                <div className="space-y-1">
-                  <Label>Sesiones incluidas *</Label>
-                  <Input type="number" min="1" value={form.sessions_qty} onChange={(e) => setForm((f) => ({ ...f, sessions_qty: e.target.value }))} placeholder="8" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <Label>Días de vigencia *</Label>
-                  <Input type="number" min="1" value={form.validity_days} onChange={(e) => setForm((f) => ({ ...f, validity_days: e.target.value }))} placeholder="30" />
-                </div>
-                <div className="space-y-1">
-                  <Label>Badge destacado</Label>
-                  <Input value={form.highlight_badge} onChange={(e) => setForm((f) => ({ ...f, highlight_badge: e.target.value }))} placeholder="El más popular" />
-                </div>
-              </div>
-              <div className="flex items-center justify-between">
-                <Label>Activo</Label>
-                <button
-                  type="button"
-                  onClick={() => setForm((f) => ({ ...f, active: !f.active }))}
-                  className={cn('relative inline-flex h-5 w-9 items-center rounded-full transition-colors', form.active ? 'bg-plum-700' : 'bg-gray-300')}
-                >
-                  <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', form.active ? 'translate-x-5' : 'translate-x-0.5')} />
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Servicios incluidos</p>
-            <div className="flex gap-3 mb-3">
-              <button
-                onClick={() => setServiceMode('all')}
-                className={cn('flex-1 py-2 px-3 rounded-md text-sm border transition-colors', serviceMode === 'all' ? 'border-plum-700 bg-plum-50 text-plum-800 font-medium' : 'border-gray-200 text-muted-foreground hover:border-plum-400')}
-              >
-                Todos los servicios
-              </button>
-              <button
-                onClick={() => setServiceMode('specific')}
-                className={cn('flex-1 py-2 px-3 rounded-md text-sm border transition-colors', serviceMode === 'specific' ? 'border-plum-700 bg-plum-50 text-plum-800 font-medium' : 'border-gray-200 text-muted-foreground hover:border-plum-400')}
-              >
-                Servicios específicos
-              </button>
-            </div>
-            {serviceMode === 'specific' && (
-              <div className="grid grid-cols-2 gap-2">
-                {services.map((s) => {
-                  const checked = selectedServiceIds.includes(s.id)
-                  return (
-                    <label key={s.id} className={cn('flex items-center gap-2 p-2.5 rounded-lg border cursor-pointer transition-colors', checked ? 'border-plum-400 bg-plum-50/40' : 'border-gray-200 hover:border-plum-300')}>
-                      <input type="checkbox" checked={checked} onChange={() => toggleService(s.id)} className="w-4 h-4 accent-plum-700" />
-                      <span className="text-sm">{s.emoji ? `${s.emoji} ` : ''}{s.name}</span>
-                    </label>
-                  )
-                })}
-                {services.length === 0 && <p className="text-sm text-muted-foreground col-span-2">No hay servicios activos.</p>}
-              </div>
-            )}
-          </div>
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-          <div className="flex justify-end gap-2 pt-2">
-            <Button variant="outline" onClick={onClose}>Cancelar</Button>
-            <Button onClick={handleSave} disabled={saving}>
-              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {plan ? 'Guardar cambios' : 'Crear plan'}
-            </Button>
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
-function TabMembresias() {
-  const tenantId = useTenantId()
-  const qc = useQueryClient()
-  const { data: services = [] } = useServices()
-
-  const { data: memberships = [], isLoading } = useQuery({
-    queryKey: ['admin-memberships', tenantId],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('memberships')
-        .select('*')
-        .eq('tenant_id', tenantId)
-        .order('name')
-      if (error) throw error
-      return data as MembershipRow[]
-    },
-    enabled: !!tenantId,
-  })
-
-  const toggleMutation = useMutation({
-    mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
-      const { error } = await supabase.from('memberships').update({ active }).eq('id', id)
-      if (error) throw error
-    },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-memberships'] }),
-  })
-
-  const [modalOpen, setModalOpen] = useState(false)
-  const [editing, setEditing] = useState<MembershipRow | undefined>()
-  const [deleteTarget, setDeleteTarget] = useState<MembershipRow | undefined>()
-  const [deleteError, setDeleteError] = useState('')
-  const [deleting, setDeleting] = useState(false)
-  const [toastMsg, setToastMsg] = useState('')
-
-  function showToast(msg: string) {
-    setToastMsg(msg)
-    setTimeout(() => setToastMsg(''), 3000)
-  }
-
-  function openCreate() { setEditing(undefined); setModalOpen(true) }
-  function openEdit(m: MembershipRow) { setEditing(m); setModalOpen(true) }
-  function closeModal() { setModalOpen(false); setEditing(undefined) }
-
-  async function handleToggle(m: MembershipRow) {
-    const newActive = !m.active
-    await toggleMutation.mutateAsync({ id: m.id, active: newActive })
-    showToast(`Plan "${m.name}" ${newActive ? 'activado' : 'desactivado'}`)
-  }
-
-  async function handleDelete() {
-    if (!deleteTarget) return
-    setDeleting(true)
-    setDeleteError('')
-    try {
-      const { count, error } = await supabase
-        .from('client_memberships')
-        .select('*', { count: 'exact', head: true })
-        .eq('membership_id', deleteTarget.id)
-        .eq('status', 'active')
-      if (error) throw error
-      if ((count ?? 0) > 0) {
-        setDeleteError(`No se puede eliminar este plan porque tiene ${count} membresía${count === 1 ? '' : 's'} activa${count === 1 ? '' : 's'}. Desactivalo en su lugar.`)
-        return
-      }
-      const { error: delErr } = await supabase.from('memberships').delete().eq('id', deleteTarget.id)
-      if (delErr) throw delErr
-      await qc.invalidateQueries({ queryKey: ['admin-memberships'] })
-      await qc.invalidateQueries({ queryKey: ['membership-plans'] })
-      const name = deleteTarget.name
-      setDeleteTarget(undefined)
-      showToast(`Plan "${name}" eliminado`)
-    } catch (e: unknown) {
-      setDeleteError(e instanceof Error ? e.message : 'Error al eliminar')
-    } finally {
-      setDeleting(false)
-    }
-  }
-
-  if (isLoading) {
-    return <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
-  }
-
-  return (
-    <div className="space-y-4">
-      {toastMsg && (
-        <div className="flex items-center gap-2 bg-plum-50 border border-plum-200 rounded-md px-3 py-2.5">
-          <Check className="w-4 h-4 text-plum-700 flex-shrink-0" />
-          <p className="text-sm text-plum-800">{toastMsg}</p>
-        </div>
-      )}
-      <div className="flex justify-between items-center">
-        <p className="text-sm text-muted-foreground">{memberships.length} planes configurados</p>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="w-4 h-4 mr-1" />Nuevo plan
-        </Button>
-      </div>
-      <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b bg-gray-50">
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Nombre del plan</th>
-                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">Precio</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Sesiones</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Vigencia</th>
-                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Servicios</th>
-                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Estado</th>
-                <th className="px-4 py-2.5 w-20"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {memberships.map((m) => (
-                <tr key={m.id} className="border-b last:border-0 hover:bg-gray-50/50">
-                  <td className="px-4 py-3">
-                    <p className="text-sm font-medium text-plum-800">{m.name}</p>
-                    {m.highlight_badge && (
-                      <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-gold-100 text-gold-800 mt-0.5">{m.highlight_badge}</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right text-sm font-medium">${m.price.toLocaleString('es-AR')}</td>
-                  <td className="px-4 py-3 text-center text-sm text-gray-600">{m.sessions_qty}</td>
-                  <td className="px-4 py-3 text-center text-sm text-gray-600">{m.validity_days}d</td>
-                  <td className="px-4 py-3"><ServicesBadges plan={m} services={services} /></td>
-                  <td className="px-4 py-3 text-center">
-                    <button
-                      type="button"
-                      onClick={() => handleToggle(m)}
-                      disabled={toggleMutation.isPending}
-                      className={cn(
-                        'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
-                        m.active ? 'bg-plum-700' : 'bg-gray-300',
-                        toggleMutation.isPending && 'opacity-50 cursor-not-allowed'
-                      )}
-                    >
-                      <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', m.active ? 'translate-x-5' : 'translate-x-0.5')} />
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      <Button variant="ghost" size="icon" className="w-7 h-7 text-muted-foreground hover:text-plum-800" onClick={() => openEdit(m)}>
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="w-7 h-7 text-muted-foreground hover:text-red-600" onClick={() => { setDeleteTarget(m); setDeleteError('') }}>
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {memberships.length === 0 && (
-            <div className="text-center py-12 text-muted-foreground">
-              <CreditCard className="w-10 h-10 mx-auto mb-2 opacity-30" />
-              <p className="text-sm">Sin planes configurados</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      <MembershipModal open={modalOpen} onClose={closeModal} plan={editing} tenantId={tenantId} services={services} />
-
-      <Dialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(undefined)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Eliminar plan</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4 mt-2">
-            {deleteError ? (
-              <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2.5">{deleteError}</p>
-            ) : (
-              <p className="text-sm text-gray-700">¿Eliminar el plan <strong>{deleteTarget?.name}</strong>? Esta acción no se puede deshacer.</p>
-            )}
-            <div className="flex justify-end gap-2">
-              <Button variant="outline" onClick={() => setDeleteTarget(undefined)}>{deleteError ? 'Cerrar' : 'Cancelar'}</Button>
-              {!deleteError && (
-                <Button variant="destructive" onClick={handleDelete} disabled={deleting}>
-                  {deleting && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-                  Eliminar
-                </Button>
-              )}
-            </div>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </div>
-  )
-}
-
-// ── Auditoría Tab ─────────────────────────────────────────────────────────────
-
-const PAGE_SIZE = 50
-
-const ACTION_COLORS: Record<string, string> = {
-  CREATE: 'bg-green-100 text-green-700',
-  UPDATE: 'bg-blue-100 text-blue-700',
-  DELETE: 'bg-red-100 text-red-700',
-  LOGIN: 'bg-gray-100 text-gray-600',
-  LOGOUT: 'bg-gray-100 text-gray-600',
-  VIEW: 'bg-slate-100 text-slate-600',
-}
-
-const MODULE_COLORS: Record<string, string> = {
-  auth: 'bg-slate-100 text-slate-700',
-  clientes: 'bg-purple-100 text-purple-700',
-  agenda: 'bg-blue-100 text-blue-700',
-  finanzas: 'bg-green-100 text-green-700',
-  membresias: 'bg-amber-100 text-amber-700',
-  compras: 'bg-orange-100 text-orange-700',
-}
-
-function formatDateTime(ts: string): string {
-  const d = new Date(ts)
-  const dd = String(d.getDate()).padStart(2, '0')
-  const mm = String(d.getMonth() + 1).padStart(2, '0')
-  const yyyy = d.getFullYear()
-  const hh = String(d.getHours()).padStart(2, '0')
-  const min = String(d.getMinutes()).padStart(2, '0')
-  return `${dd}/${mm}/${yyyy} ${hh}:${min}`
-}
-
-type AuditLogRow = {
-  id: string
-  user_id?: string | null
-  user_name?: string | null
-  action: string
-  module: string
-  entity_type?: string | null
-  entity_id?: string | null
-  entity_name?: string | null
-  old_value?: Record<string, unknown> | null
-  new_value?: Record<string, unknown> | null
-  created_at: string
-}
-
-function TabAuditoria() {
-  const tenantId = useTenantId()
-
-  const [fromDate, setFromDate] = useState(() => {
-    const d = new Date()
-    d.setDate(d.getDate() - 7)
-    return d.toISOString().split('T')[0]
-  })
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
-  const [moduleFilter, setModuleFilter] = useState('')
-  const [actionFilter, setActionFilter] = useState('')
-  const [userFilter, setUserFilter] = useState('')
-  const [page, setPage] = useState(0)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-
-  function resetPage() { setPage(0) }
-
-  const { data: usersData = [] } = useQuery({
-    queryKey: ['admin-users', tenantId],
-    queryFn: async () => {
-      const { data, error } = await supabase.from('users').select('id, full_name').order('full_name')
-      if (error) throw error
-      return data as { id: string; full_name: string }[]
-    },
-    enabled: !!tenantId,
-  })
-
-  const { data, isLoading } = useQuery({
-    queryKey: ['audit-logs', tenantId, fromDate, toDate, moduleFilter, actionFilter, userFilter, page],
-    queryFn: async () => {
-      let query = supabase
-        .from('audit_logs')
-        .select('*', { count: 'exact' })
-        .eq('tenant_id', tenantId)
-        .gte('created_at', `${fromDate}T00:00:00`)
-        .lte('created_at', `${toDate}T23:59:59`)
-        .order('created_at', { ascending: false })
-        .range(page * PAGE_SIZE, (page + 1) * PAGE_SIZE - 1)
-
-      if (moduleFilter) query = query.eq('module', moduleFilter)
-      if (actionFilter) query = query.eq('action', actionFilter)
-      if (userFilter) query = query.eq('user_id', userFilter)
-
-      const { data: rows, count, error } = await query
-      if (error) throw error
-      return { rows: (rows ?? []) as AuditLogRow[], count: count ?? 0 }
-    },
-    enabled: !!tenantId,
-  })
-
-  const rows = data?.rows ?? []
-  const totalCount = data?.count ?? 0
-  const pageCount = Math.ceil(totalCount / PAGE_SIZE)
-
-  const selectCls = 'border border-input rounded-md px-2 py-1.5 text-sm bg-background focus:outline-none w-full h-8'
-
-  return (
-    <div className="space-y-4">
-      {/* Filters */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Desde</label>
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(e) => { setFromDate(e.target.value); resetPage() }}
-                className="border border-input rounded-md px-2 py-1.5 text-sm bg-background focus:outline-none w-full h-8"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Hasta</label>
-              <input
-                type="date"
-                value={toDate}
-                onChange={(e) => { setToDate(e.target.value); resetPage() }}
-                className="border border-input rounded-md px-2 py-1.5 text-sm bg-background focus:outline-none w-full h-8"
-              />
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Módulo</label>
-              <select value={moduleFilter} onChange={(e) => { setModuleFilter(e.target.value); resetPage() }} className={selectCls}>
-                <option value="">Todos</option>
-                <option value="clientes">Clientes</option>
-                <option value="agenda">Agenda</option>
-                <option value="finanzas">Finanzas</option>
-                <option value="membresias">Membresías</option>
-                <option value="compras">Compras</option>
-                <option value="auth">Auth</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Acción</label>
-              <select value={actionFilter} onChange={(e) => { setActionFilter(e.target.value); resetPage() }} className={selectCls}>
-                <option value="">Todas</option>
-                <option value="CREATE">Crear</option>
-                <option value="UPDATE">Actualizar</option>
-                <option value="DELETE">Eliminar</option>
-                <option value="LOGIN">Login</option>
-                <option value="LOGOUT">Logout</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Usuario</label>
-              <select value={userFilter} onChange={(e) => { setUserFilter(e.target.value); resetPage() }} className={selectCls}>
-                <option value="">Todos</option>
-                {usersData.map((u) => (
-                  <option key={u.id} value={u.id}>{u.full_name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Table */}
-      <Card>
-        <CardContent className="p-0 overflow-x-auto">
-          {isLoading ? (
-            <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
-          ) : (
-            <table className="w-full">
-              <thead>
-                <tr className="border-b bg-gray-50">
-                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5 whitespace-nowrap">Fecha y hora</th>
-                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Usuario</th>
-                  <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Acción</th>
-                  <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Módulo</th>
-                  <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Detalle</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => (
-                  <Fragment key={row.id}>
-                    <tr
-                      className="border-b hover:bg-gray-50/50 cursor-pointer"
-                      onClick={() => setExpandedId(expandedId === row.id ? null : row.id)}
-                    >
-                      <td className="px-4 py-3 text-xs font-mono text-muted-foreground whitespace-nowrap">
-                        {formatDateTime(row.created_at)}
-                      </td>
-                      <td className="px-4 py-3 text-sm text-plum-800">{row.user_name ?? '—'}</td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', ACTION_COLORS[row.action] ?? 'bg-gray-100 text-gray-600')}>
-                          {row.action}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', MODULE_COLORS[row.module] ?? 'bg-gray-100 text-gray-600')}>
-                          {row.module}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-gray-700 max-w-xs truncate">{row.entity_name ?? '—'}</td>
-                    </tr>
-                    {expandedId === row.id && (
-                      <tr className="border-b bg-gray-50/70">
-                        <td colSpan={5} className="px-6 py-3">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                            {row.entity_type && (
-                              <div className="md:col-span-2">
-                                <span className="font-medium text-muted-foreground">Entidad: </span>
-                                <span className="text-gray-700">{row.entity_type}{row.entity_id ? ` · ${row.entity_id}` : ''}</span>
-                              </div>
-                            )}
-                            {row.old_value && (
-                              <div>
-                                <p className="font-medium text-muted-foreground mb-1">Valor anterior:</p>
-                                <pre className="bg-white border rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                                  {JSON.stringify(row.old_value, null, 2)}
-                                </pre>
-                              </div>
-                            )}
-                            {row.new_value && (
-                              <div>
-                                <p className="font-medium text-muted-foreground mb-1">Valor nuevo:</p>
-                                <pre className="bg-white border rounded p-2 text-xs overflow-x-auto whitespace-pre-wrap font-mono">
-                                  {JSON.stringify(row.new_value, null, 2)}
-                                </pre>
-                              </div>
-                            )}
-                            {!row.old_value && !row.new_value && !row.entity_type && (
-                              <p className="text-muted-foreground md:col-span-2">Sin detalles adicionales.</p>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    )}
-                  </Fragment>
-                ))}
-                {rows.length === 0 && (
-                  <tr>
-                    <td colSpan={5}>
-                      <div className="text-center py-12 text-muted-foreground">
-                        <ScrollText className="w-10 h-10 mx-auto mb-2 opacity-30" />
-                        <p className="text-sm">Sin registros de auditoría para este período</p>
-                      </div>
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Pagination */}
-      {pageCount > 1 && (
-        <div className="flex items-center justify-between">
-          <p className="text-sm text-muted-foreground">
-            {totalCount} registros · Página {page + 1} de {pageCount}
-          </p>
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.max(0, p - 1))}
-              disabled={page === 0}
-            >
-              Anterior
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              disabled={page >= pageCount - 1}
-            >
-              Siguiente
-            </Button>
-          </div>
-        </div>
-      )}
-      {totalCount > 0 && pageCount <= 1 && (
-        <p className="text-xs text-muted-foreground text-right">{totalCount} registro{totalCount !== 1 ? 's' : ''}</p>
-      )}
-    </div>
-  )
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ConfiguracionAdmin() {
@@ -1649,12 +1112,10 @@ export default function ConfiguracionAdmin() {
     )
   }
 
-  const tabs: { key: AdminTab; label: string; icon: React.ElementType }[] = [
+  const tabs: { key: AdminTab; label: string; icon: ElementType }[] = [
     { key: 'locales', label: 'Locales', icon: Building2 },
     { key: 'usuarios', label: 'Usuarios', icon: Users },
-    { key: 'membresias', label: 'Membresías', icon: CreditCard },
     { key: 'roles', label: 'Roles y Permisos', icon: Shield },
-    { key: 'auditoria', label: 'Auditoría', icon: ScrollText },
   ]
 
   return (
@@ -1686,9 +1147,7 @@ export default function ConfiguracionAdmin() {
 
       {tab === 'locales' && <TabLocales />}
       {tab === 'usuarios' && <TabUsuarios />}
-      {tab === 'membresias' && <TabMembresias />}
       {tab === 'roles' && <TabRoles />}
-      {tab === 'auditoria' && <TabAuditoria />}
     </div>
   )
 }

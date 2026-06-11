@@ -14,6 +14,8 @@ import Productos from '@/pages/Productos'
 import RRHH from '@/pages/RRHH'
 import Configuracion from '@/pages/Configuracion'
 import ConfiguracionAdmin from '@/pages/ConfiguracionAdmin'
+import Membresias from '@/pages/Membresias'
+import Auditoria from '@/pages/Auditoria'
 import ClienteDetalle from '@/pages/ClienteDetalle'
 
 function ProtectedLayout() {
@@ -73,6 +75,22 @@ export default function App() {
                 element={
                   <ProtectedRoute permission="compras">
                     <Configuracion />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/membresias"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                    <Membresias />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/auditoria"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                    <Auditoria />
                   </ProtectedRoute>
                 }
               />
