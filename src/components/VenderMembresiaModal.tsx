@@ -21,6 +21,8 @@ type Props = {
   preSelectedClientId?: string
   preSelectedAppointmentId?: string
   onSuccess?: (membershipId: string) => void
+  restrictToServiceId?: string
+  restrictToServiceName?: string
 }
 
 const PAYMENT_METHODS = [
@@ -37,6 +39,7 @@ const SELECT_CLS =
 
 export default function VenderMembresiaModal({
   open, onClose, preSelectedClientId, preSelectedAppointmentId, onSuccess,
+  restrictToServiceId, restrictToServiceName,
 }: Props) {
   const { user, profile } = useAuth()
   const today = new Date().toISOString().split('T')[0]
@@ -275,6 +278,14 @@ export default function VenderMembresiaModal({
             {/* Sección 2 — Plan */}
             <div className="space-y-2">
               <Label className="text-sm font-semibold text-plum-800">Plan</Label>
+              {restrictToServiceId && (
+                <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-md px-3 py-2.5 text-sm text-amber-800">
+                  <span className="flex-shrink-0">⚠️</span>
+                  <span>
+                    Solo se muestran los planes que incluyen <strong>{restrictToServiceName ?? 'este servicio'}</strong>. Los demás están deshabilitados.
+                  </span>
+                </div>
+              )}
               {plansLoading ? (
                 <div className="flex justify-center py-6">
                   <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
@@ -287,15 +298,21 @@ export default function VenderMembresiaModal({
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                   {plans.map((plan) => {
                     const isSelected = selectedPlan?.id === plan.id
+                    const isAllowed = !restrictToServiceId ||
+                      plan.allowed_service_ids == null ||
+                      plan.allowed_service_ids.includes(restrictToServiceId)
                     const pricePerSes = plan.sessions_qty > 0
                       ? Math.round(plan.price / plan.sessions_qty)
                       : 0
                     return (
                       <div
                         key={plan.id}
-                        onClick={() => handleSelectPlan(plan)}
+                        onClick={() => isAllowed && handleSelectPlan(plan)}
                         className={cn(
-                          'relative flex flex-col gap-1 p-3 rounded-xl border-2 cursor-pointer transition-all hover:border-plum-400',
+                          'relative flex flex-col gap-1 p-3 rounded-xl border-2 transition-all',
+                          isAllowed
+                            ? 'cursor-pointer hover:border-plum-400'
+                            : 'opacity-50 cursor-not-allowed',
                           isSelected
                             ? 'border-plum-800 bg-plum-50 shadow-sm'
                             : 'border-gray-200 bg-white',
@@ -317,12 +334,18 @@ export default function VenderMembresiaModal({
                           <p className="text-xs text-muted-foreground">{formatCurrency(pricePerSes)}/sesión</p>
                         )}
                         <p className="text-xs text-muted-foreground">{plan.validity_days} días</p>
-                        <div className={cn(
-                          'mt-1.5 py-1 rounded-md text-center text-xs font-medium transition-colors',
-                          isSelected ? 'bg-plum-800 text-white' : 'bg-gray-100 text-gray-600',
-                        )}>
-                          {isSelected ? '✓ Seleccionado' : 'Seleccionar'}
-                        </div>
+                        {isAllowed ? (
+                          <div className={cn(
+                            'mt-1.5 py-1 rounded-md text-center text-xs font-medium transition-colors',
+                            isSelected ? 'bg-plum-800 text-white' : 'bg-gray-100 text-gray-600',
+                          )}>
+                            {isSelected ? '✓ Seleccionado' : 'Seleccionar'}
+                          </div>
+                        ) : (
+                          <div className="mt-1.5 py-1 rounded-md text-center text-xs font-medium bg-red-50 text-red-500 border border-red-100">
+                            No incluye este servicio
+                          </div>
+                        )}
                       </div>
                     )
                   })}

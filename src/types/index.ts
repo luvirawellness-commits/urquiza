@@ -146,6 +146,7 @@ export interface MembershipPlan {
   sessions_qty: number
   validity_days: number
   highlight_badge?: string | null
+  allowed_service_ids?: string[] | null
   active: boolean
 }
 
@@ -161,6 +162,7 @@ export interface ClientMembership {
     validity_days?: number | null
     price?: number | null
     highlight_badge?: string | null
+    allowed_service_ids?: string[] | null
   } | null
   sessions_total?: number | null
   sessions_used?: number | null

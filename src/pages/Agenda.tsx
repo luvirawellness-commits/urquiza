@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus } from 'lucide-react'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
@@ -307,6 +308,30 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
     }
   }, [activeMemberships])
 
+  const selectedMembership = activeMemberships?.find((m) => m.id === selectedMembershipId) ?? null
+  const allowedServiceIds = selectedMembership?.plan?.allowed_service_ids ?? null
+
+  const { data: allowedServiceNames = [] } = useQuery({
+    queryKey: ['services-by-ids', allowedServiceIds],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('services')
+        .select('id, name')
+        .in('id', allowedServiceIds!)
+      if (error) throw error
+      return data as { id: string; name: string }[]
+    },
+    enabled: Array.isArray(allowedServiceIds) && allowedServiceIds.length > 0,
+  })
+
+  const membershipServiceBlocked =
+    paymentType === 'membresia' &&
+    membershipSubOpt === 'use_existing' &&
+    selectedMembership != null &&
+    Array.isArray(allowedServiceIds) &&
+    appt.service_id != null &&
+    !allowedServiceIds.includes(appt.service_id)
+
   const [gcCode, setGcCode] = useState('')
   const [gcValid, setGcValid] = useState<ValidatedGiftCard | null>(null)
   const [gcError, setGcError] = useState<string | null>(null)
@@ -363,7 +388,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
   const canConfirm = !busy && (
     paymentType === 'efectivo_digital' ||
-    (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId) ||
+    (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
 
@@ -432,7 +457,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium">Usar membresía existente</p>
               {membershipSubOpt === 'use_existing' && (
-                <div className="mt-2">
+                <div className="mt-2 space-y-2">
                   {!activeMemberships || activeMemberships.length === 0 ? (
                     <p className="text-xs text-muted-foreground">Sin membresías activas para este cliente.</p>
                   ) : activeMemberships.length === 1 ? (
@@ -440,12 +465,12 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
                       const m = activeMemberships[0]
                       const rem = Math.max(0, (m.plan?.sessions_qty ?? 0) - (m.sessions_used ?? 0))
                       return (
-                        <div className="border border-green-200 rounded-lg p-2.5 bg-green-50 space-y-0.5">
-                          <p className="text-sm font-medium text-green-800">{m.plan?.name ?? 'Membresía activa'}</p>
-                          <p className="text-xs text-green-700">
+                        <div className={cn('border rounded-lg p-2.5 space-y-0.5', membershipServiceBlocked ? 'border-red-200 bg-red-50' : 'border-green-200 bg-green-50')}>
+                          <p className={cn('text-sm font-medium', membershipServiceBlocked ? 'text-red-800' : 'text-green-800')}>{m.plan?.name ?? 'Membresía activa'}</p>
+                          <p className={cn('text-xs', membershipServiceBlocked ? 'text-red-700' : 'text-green-700')}>
                             {rem} sesiones restantes · vence {m.expires_at ? formatDate(m.expires_at) : '—'}
                           </p>
-                          <p className="text-xs text-green-600">No se registra cobro — se descuenta una sesión.</p>
+                          {!membershipServiceBlocked && <p className="text-xs text-green-600">No se registra cobro — se descuenta una sesión.</p>}
                         </div>
                       )
                     })()
@@ -465,6 +490,20 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
                         )
                       })}
                     </select>
+                  )}
+                  {membershipServiceBlocked && (
+                    <div className="rounded-md bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+                      <p className="font-medium mb-1">
+                        Este servicio no está incluido en el plan &ldquo;{selectedMembership?.plan?.name}&rdquo;.
+                      </p>
+                      <p>Servicios habilitados:</p>
+                      <ul className="mt-0.5 space-y-0.5 pl-3 list-disc">
+                        {allowedServiceNames.length > 0
+                          ? allowedServiceNames.map((s) => <li key={s.id}>{s.name}</li>)
+                          : <li className="text-red-500">Sin servicios configurados</li>
+                        }
+                      </ul>
+                    </div>
                   )}
                 </div>
               )}
@@ -531,6 +570,8 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
           onClose={() => setShowVenderModal(false)}
           preSelectedClientId={appt.client_id ?? ''}
           preSelectedAppointmentId={appt.id}
+          restrictToServiceId={appt.service_id ?? undefined}
+          restrictToServiceName={appt.service?.name}
           onSuccess={async () => {
             setShowVenderModal(false)
             setBusy(true)

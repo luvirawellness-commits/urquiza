@@ -26,7 +26,7 @@ export function useMembershipPlans() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('memberships')
-        .select('id, name, price, sessions_qty, validity_days, highlight_badge')
+        .select('id, name, price, sessions_qty, validity_days, highlight_badge, allowed_service_ids')
         .eq('tenant_id', tenantId)
         .eq('active', true)
         .order('price')
@@ -45,7 +45,8 @@ const MEMBERSHIP_SELECT = `
     sessions_qty,
     validity_days,
     price,
-    highlight_badge
+    highlight_badge,
+    allowed_service_ids
   ),
   beneficiaries:membership_beneficiaries(
     id,
@@ -142,15 +143,13 @@ export function useSellMembership() {
       const d = new Date(input.startDate + 'T00:00:00')
       d.setDate(d.getDate() + input.validityDays)
       const expiresAt = d.toISOString().split('T')[0]
-      const sessionsUsed = input.preSelectedAppointmentId ? 1 : 0
-
       const { data: cm, error: cmErr } = await supabase
         .from('client_memberships')
         .insert({
           tenant_id: tenantId,
           client_id: input.clientId,
           membership_id: input.planId,
-          sessions_used: sessionsUsed,
+          sessions_used: 0,
           status: 'active',
           purchased_at: new Date().toISOString(),
           expires_at: expiresAt,
