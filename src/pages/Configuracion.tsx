@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check, TrendingUp, RotateCcw } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useAuditLog } from '@/hooks/useAuditLog'
 import { useServices, useUpdateServicePrice } from '@/hooks/useAppointments'
 import { useMembershipPlans, useUpdateMembershipPrice } from '@/hooks/useClientMemberships'
 import {
@@ -1297,6 +1298,7 @@ function TabAnalisisPrecios() {
   const updateServicePrice = useUpdateServicePrice()
   const updateMembershipPrice = useUpdateMembershipPrice()
   const updateSupplySalePrice = useUpdateSupplySalePrice()
+  const { logAction } = useAuditLog()
 
   const [prices, setPrices] = useState<Record<string, string>>({})
   const [filter, setFilter] = useState<PriceFilter>('todos')
@@ -1437,6 +1439,13 @@ function TabAnalisisPrecios() {
       setPrices({})
       setTouched(false)
       setShowConfirm(false)
+      logAction({
+        action: 'UPDATE',
+        module: 'compras',
+        entityType: 'prices',
+        entityName: 'Actualización masiva de precios',
+        newValue: { items_updated: total },
+      })
     } catch (e) {
       setApplyError((e as Error).message || 'Error al aplicar precios')
     } finally {

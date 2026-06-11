@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { useAuditLog } from '@/hooks/useAuditLog'
 import { Appointment, Transaction } from '@/types'
 
 export function useTransactions(month?: string) {
@@ -109,6 +110,7 @@ type InsertTransactionInput = {
 export function useInsertTransaction() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
+  const { logAction } = useAuditLog()
   return useMutation({
     mutationFn: async (tx: InsertTransactionInput) => {
       const { data, error } = await supabase
@@ -119,10 +121,17 @@ export function useInsertTransaction() {
       if (error) throw error
       return data as Transaction
     },
-    onSuccess: () => {
+    onSuccess: (data, variables) => {
       qc.invalidateQueries({ queryKey: ['transactions'] })
       qc.invalidateQueries({ queryKey: ['today-metrics'] })
       qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
+      logAction({
+        action: 'CREATE',
+        module: 'finanzas',
+        entityType: 'transaction',
+        entityId: data.id,
+        entityName: `${variables.description} $${variables.amount}`,
+      })
     },
   })
 }

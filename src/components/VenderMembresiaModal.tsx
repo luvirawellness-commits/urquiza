@@ -118,6 +118,7 @@ export default function VenderMembresiaModal({
         startDate,
         soldBy: user.id,
         preSelectedAppointmentId,
+        clientName: titularName || undefined,
       })
       setPhase('done')
       onSuccess?.(membershipId)

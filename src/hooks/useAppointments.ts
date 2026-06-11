@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { useAuditLog } from '@/hooks/useAuditLog'
 import { Appointment, AppointmentStatus, Service } from '@/types'
 
 export function useAppointments(startDate?: string, endDate?: string) {
@@ -101,12 +102,13 @@ type CreateAppointmentInput = {
 export function useCreateAppointment() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
+  const { logAction } = useAuditLog()
   return useMutation({
     mutationFn: async (appt: CreateAppointmentInput) => {
       const { data, error } = await supabase
         .from('appointments')
         .insert({ ...appt, tenant_id: tenantId })
-        .select()
+        .select('*, client:clients!fk_apt_client(first_name, last_name)')
         .single()
       if (error) {
         console.error('useCreateAppointment error:', error)
@@ -114,7 +116,19 @@ export function useCreateAppointment() {
       }
       return data as Appointment
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['appointments'] }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      const clientName = data.client
+        ? [data.client.first_name, data.client.last_name].filter(Boolean).join(' ')
+        : ''
+      logAction({
+        action: 'CREATE',
+        module: 'agenda',
+        entityType: 'appointment',
+        entityId: data.id,
+        entityName: clientName ? `${clientName} - ${data.scheduled_at}` : data.scheduled_at,
+      })
+    },
   })
 }
 
@@ -137,6 +151,7 @@ export function useUpdateServicePrice() {
 export function useUpdateAppointmentStatus() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
+  const { logAction } = useAuditLog()
   return useMutation({
     mutationFn: async ({ id, status }: { id: string; status: AppointmentStatus }) => {
       const { error } = await supabase
@@ -146,7 +161,20 @@ export function useUpdateAppointmentStatus() {
         .eq('tenant_id', tenantId)
       if (error) throw error
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['appointments'] }),
+    onSuccess: (_, variables) => {
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      if (variables.status === 'completed') {
+        logAction({
+          action: 'UPDATE',
+          module: 'agenda',
+          entityType: 'appointment',
+          entityId: variables.id,
+          entityName: 'Sesión completada',
+          oldValue: { status: 'pending' },
+          newValue: { status: 'completed' },
+        })
+      }
+    },
   })
 }
 

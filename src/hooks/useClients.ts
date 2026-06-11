@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { useAuditLog } from '@/hooks/useAuditLog'
 import { Client } from '@/types'
 
 export function useClients(search?: string) {
@@ -58,6 +59,7 @@ type CreateClientInput = {
 export function useCreateClient() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
+  const { logAction } = useAuditLog()
   return useMutation({
     mutationFn: async (client: CreateClientInput) => {
       const payload = {
@@ -78,6 +80,15 @@ export function useCreateClient() {
       }
       return data as Client
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['clients'] }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['clients'] })
+      logAction({
+        action: 'CREATE',
+        module: 'clientes',
+        entityType: 'client',
+        entityId: data.id,
+        entityName: [data.first_name, data.last_name].filter(Boolean).join(' '),
+      })
+    },
   })
 }

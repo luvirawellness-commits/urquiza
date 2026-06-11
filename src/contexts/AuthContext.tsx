@@ -203,11 +203,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function signIn(email: string, password: string) {
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
+    if (!error && authData.user) {
+      supabase
+        .from('users')
+        .select('tenant_id, default_tenant_id, full_name')
+        .eq('id', authData.user.id)
+        .maybeSingle()
+        .then(({ data: userRow }) => {
+          const tid = userRow?.default_tenant_id ?? userRow?.tenant_id
+          if (tid) {
+            supabase.from('audit_logs').insert({
+              tenant_id: tid,
+              user_id: authData.user!.id,
+              user_name: userRow?.full_name ?? email,
+              action: 'LOGIN',
+              module: 'auth',
+            }).then(() => {})
+          }
+        })
+    }
     return { error: error as Error | null }
   }
 
   async function signOut() {
+    if (user && currentTenantId) {
+      supabase.from('audit_logs').insert({
+        tenant_id: currentTenantId,
+        user_id: user.id,
+        user_name: profile?.full_name ?? '',
+        action: 'LOGOUT',
+        module: 'auth',
+      }).then(() => {})
+    }
     localStorage.removeItem(TENANT_KEY)
     await supabase.auth.signOut()
   }

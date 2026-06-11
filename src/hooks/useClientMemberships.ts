@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { useAuditLog } from '@/hooks/useAuditLog'
 import type { ClientMembership, MembershipPlan } from '@/types'
 
 export function useUpdateMembershipPrice() {
@@ -133,11 +134,13 @@ type SellMembershipInput = {
   startDate: string
   soldBy: string
   preSelectedAppointmentId?: string
+  clientName?: string
 }
 
 export function useSellMembership() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
+  const { logAction } = useAuditLog()
   return useMutation({
     mutationFn: async (input: SellMembershipInput) => {
       const d = new Date(input.startDate + 'T00:00:00')
@@ -214,13 +217,20 @@ export function useSellMembership() {
 
       return membershipId
     },
-    onSuccess: (_, variables) => {
+    onSuccess: (membershipId, variables) => {
       qc.invalidateQueries({ queryKey: ['client-memberships', variables.clientId] })
       qc.invalidateQueries({ queryKey: ['client-active-memberships', variables.clientId] })
       qc.invalidateQueries({ queryKey: ['active-membership'] })
       qc.invalidateQueries({ queryKey: ['transactions'] })
       qc.invalidateQueries({ queryKey: ['today-metrics'] })
       qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
+      logAction({
+        action: 'CREATE',
+        module: 'membresias',
+        entityType: 'membership',
+        entityId: membershipId,
+        entityName: `Membresía ${variables.planName}${variables.clientName ? ' - ' + variables.clientName : ''}`,
+      })
     },
   })
 }
