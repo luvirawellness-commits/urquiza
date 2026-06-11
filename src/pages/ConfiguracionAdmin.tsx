@@ -336,9 +336,9 @@ type UserWithTenants = UserProfile & {
 type UserForm = { full_name: string; email: string; color_hex: string }
 type TenantAssignment = { tenant_id: string; role: string }
 
-function UserModal({ open, onClose, user, allTenants, availableRoles }: {
-  open: boolean; onClose: () => void; user?: UserWithTenants; allTenants: Tenant[]
-  availableRoles: RoleRow[]
+function UserModal({ open, onClose, onSuccess, user, allTenants, availableRoles }: {
+  open: boolean; onClose: () => void; onSuccess?: (tempPassword: string) => void
+  user?: UserWithTenants; allTenants: Tenant[]; availableRoles: RoleRow[]
 }) {
   const qc = useQueryClient()
 
@@ -355,7 +355,6 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
-  const [createdTempPassword, setCreatedTempPassword] = useState('')
 
   useEffect(() => {
     if (open) {
@@ -367,7 +366,7 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
       setSelectedRole(user?.role ?? 'therapist')
       setAssignments(user?.user_tenants?.map((ut) => ({ tenant_id: ut.tenant_id, role: ut.role })) ?? [])
       setDefaultTenantId(user?.default_tenant_id ?? user?.tenant_id ?? '')
-      setError(''); setSaved(false); setCreatedTempPassword('')
+      setError(''); setSaved(false)
     }
   }, [open, user])
 
@@ -390,20 +389,21 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
     setError('')
     setSaving(true)
     try {
-      const { data, error: fnError } = await supabase.functions.invoke('create-user', {
+      const { data, error: fnError } = await supabase.functions.invoke('rapid-processor', {
         body: {
           email: form.email.trim(),
           full_name: form.full_name.trim(),
           role: selectedRole,
           color_hex: form.color_hex,
-          default_tenant_id: defaultTenantId || assignments[0]?.tenant_id,
-          tenant_assignments: assignments,
+          default_tenant_id: assignments[0]?.tenant_id,
+          tenant_assignments: assignments.map((a) => ({ tenant_id: a.tenant_id, role: a.role })),
         },
       })
-      if (fnError) throw fnError
+      if (fnError) throw new Error(fnError.message ?? 'Error al invocar la función')
       if (data?.error) throw new Error(data.error)
-      setCreatedTempPassword(data.temp_password ?? '')
       await qc.invalidateQueries({ queryKey: ['admin-users'] })
+      onSuccess?.(data.temp_password ?? '')
+      onClose()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al crear el usuario')
     } finally {
@@ -461,32 +461,7 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
 
         {!user ? (
           <div className="space-y-4 mt-2">
-            {createdTempPassword ? (
-              <div className="space-y-4">
-                <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
-                  <p className="text-sm font-semibold text-green-800 mb-1">Usuario creado correctamente</p>
-                  <p className="text-xs text-green-700">Compartí esta contraseña temporal con el usuario — solo se muestra una vez.</p>
-                </div>
-                <div className="space-y-1">
-                  <Label>Contraseña temporal</Label>
-                  <div className="flex items-center gap-2">
-                    <Input value={createdTempPassword} readOnly className="font-mono text-sm flex-1" />
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      type="button"
-                      onClick={() => navigator.clipboard.writeText(createdTempPassword)}
-                    >
-                      Copiar
-                    </Button>
-                  </div>
-                </div>
-                <div className="flex justify-end pt-2">
-                  <Button onClick={onClose}>Cerrar</Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-4">
+            <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <Label>Email *</Label>
@@ -595,8 +570,7 @@ function UserModal({ open, onClose, user, allTenants, availableRoles }: {
                     Crear usuario
                   </Button>
                 </div>
-              </div>
-            )}
+            </div>
           </div>
         ) : (
           <div className="space-y-4 mt-2">
@@ -745,10 +719,12 @@ function TabUsuarios() {
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<UserWithTenants | undefined>()
+  const [toastPassword, setToastPassword] = useState('')
 
   function openCreate() { setEditing(undefined); setModalOpen(true) }
   function openEdit(u: UserWithTenants) { setEditing(u); setModalOpen(true) }
   function closeModal() { setModalOpen(false); setEditing(undefined) }
+  function handleUserCreated(tempPassword: string) { setToastPassword(tempPassword) }
 
   const ROLE_COLORS: Record<string, string> = {
     owner: 'bg-purple-100 text-purple-800',
@@ -763,6 +739,36 @@ function TabUsuarios() {
 
   return (
     <div className="space-y-4">
+      {toastPassword && (
+        <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 space-y-2">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm font-semibold text-green-800">Usuario creado. Contraseña temporal:</p>
+              <p className="text-xs text-green-700 mt-0.5">Compartila con el usuario — solo se muestra una vez.</p>
+            </div>
+            <button
+              onClick={() => setToastPassword('')}
+              className="text-green-500 hover:text-green-800 ml-3 text-xl leading-none flex-shrink-0"
+            >
+              ×
+            </button>
+          </div>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 bg-white border border-green-300 rounded px-3 py-2 text-sm font-mono text-green-900 select-all tracking-wide">
+              {toastPassword}
+            </code>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              className="border-green-300 text-green-700 hover:bg-green-100 flex-shrink-0"
+              onClick={() => navigator.clipboard.writeText(toastPassword)}
+            >
+              Copiar
+            </Button>
+          </div>
+        </div>
+      )}
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{users.length} usuarios registrados</p>
         <Button size="sm" onClick={openCreate}>
@@ -832,7 +838,7 @@ function TabUsuarios() {
           )}
         </CardContent>
       </Card>
-      <UserModal open={modalOpen} onClose={closeModal} user={editing} allTenants={tenants} availableRoles={roleRows} />
+      <UserModal open={modalOpen} onClose={closeModal} onSuccess={handleUserCreated} user={editing} allTenants={tenants} availableRoles={roleRows} />
     </div>
   )
 }
