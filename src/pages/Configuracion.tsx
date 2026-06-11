@@ -406,9 +406,101 @@ function AddCostItemModal({
 }
 
 // ── Tab Estructura de Costos ──────────────────────────────────────────────────
-function TabCostos() {
+
+function ProductPriceRow({ supply }: { supply: Supply }) {
+  const [unitVal, setUnitVal] = useState(String(supply.unit_price))
+  const [saleVal, setSaleVal] = useState(String(supply.sale_price ?? ''))
+  const [savedUnit, setSavedUnit] = useState(false)
+  const [savedSale, setSavedSale] = useState(false)
+  const updateSupply = useUpdateSupply()
+  const updateSalePrice = useUpdateSupplySalePrice()
+
+  const unitNum = parseFloat(unitVal) || 0
+  const saleNum = parseFloat(saleVal) || 0
+  const margin = saleNum > 0 ? saleNum - unitNum : null
+  const cmvPctVal = saleNum > 0 ? (unitNum / saleNum) * 100 : null
+
+  async function handleUnitBlur() {
+    const next = parseFloat(unitVal) || 0
+    if (next === supply.unit_price) return
+    const { tenant_id: _t, created_at: _c, updated_at: _u, ...rest } = supply
+    await updateSupply.mutateAsync({ ...rest, unit_price: next })
+    setSavedUnit(true)
+    setTimeout(() => setSavedUnit(false), 2000)
+  }
+
+  async function handleSaleBlur() {
+    const next = parseFloat(saleVal) || 0
+    if (next === (supply.sale_price ?? 0)) return
+    await updateSalePrice.mutateAsync({ id: supply.id, salePrice: next })
+    setSavedSale(true)
+    setTimeout(() => setSavedSale(false), 2000)
+  }
+
+  const marginCls = margin === null ? 'text-muted-foreground' : margin > 0 ? 'text-green-600 font-medium' : 'text-red-600 font-medium'
+  const cmvCls = cmvPctVal === null ? 'text-muted-foreground' : cmvPctVal < 30 ? 'text-green-600' : cmvPctVal <= 50 ? 'text-amber-600' : 'text-red-600'
+
+  return (
+    <tr className="border-b last:border-0 hover:bg-gray-50/50">
+      <td className="px-4 py-2.5">
+        <p className="text-sm font-medium text-plum-800">{supply.name}</p>
+        <span className="inline-block text-[10px] font-mono bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded mt-0.5">{supply.code}</span>
+      </td>
+      <td className="px-4 py-2.5 text-center text-sm text-gray-500">{supply.unit}</td>
+      <td className="px-4 py-2.5">
+        <div className="flex items-center gap-1 justify-end">
+          {updateSupply.isPending
+            ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+            : savedUnit
+              ? <Check className="w-3 h-3 text-green-600" />
+              : null
+          }
+          <div className="relative w-28">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+            <Input
+              type="number" min="0" step="1"
+              value={unitVal}
+              onChange={(e) => setUnitVal(e.target.value)}
+              onBlur={handleUnitBlur}
+              className="pl-5 h-7 text-sm text-right tabular-nums"
+            />
+          </div>
+        </div>
+      </td>
+      <td className="px-4 py-2.5">
+        <div className="flex items-center gap-1 justify-end">
+          {updateSalePrice.isPending
+            ? <Loader2 className="w-3 h-3 animate-spin text-muted-foreground" />
+            : savedSale
+              ? <Check className="w-3 h-3 text-green-600" />
+              : null
+          }
+          <div className="relative w-28">
+            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground pointer-events-none">$</span>
+            <Input
+              type="number" min="0" step="1"
+              value={saleVal}
+              onChange={(e) => setSaleVal(e.target.value)}
+              onBlur={handleSaleBlur}
+              className="pl-5 h-7 text-sm text-right tabular-nums"
+            />
+          </div>
+        </div>
+      </td>
+      <td className={cn('px-4 py-2.5 text-right text-sm tabular-nums', marginCls)}>
+        {margin === null ? '—' : formatCurrency(margin)}
+      </td>
+      <td className={cn('px-4 py-2.5 text-center text-sm font-medium tabular-nums', cmvCls)}>
+        {cmvPctVal === null ? '—' : `${cmvPctVal.toFixed(1)}%`}
+      </td>
+    </tr>
+  )
+}
+
+function TabCostos({ onNavigateToInsumos }: { onNavigateToInsumos?: () => void }) {
   const { data: services = [], isLoading: svLoading } = useServices()
   const { data: costItems = [], isLoading: ciLoading } = useAllServiceCostItems()
+  const { data: products = [], isLoading: productsLoading } = useSellableSupplies()
   const removeMutation = useRemoveCostItem()
   const [selectedServiceId, setSelectedServiceId] = useState<string>('')
   const [addModal, setAddModal] = useState<{ open: boolean; duration: 60 | 90 }>({ open: false, duration: 60 })
@@ -429,7 +521,15 @@ function TabCostos() {
     }, 0)
   }
 
-  if (svLoading || ciLoading) {
+  const avgProductCmv = useMemo(() => {
+    const eligible = products.filter((p) => (p.sale_price ?? 0) > 0)
+    if (eligible.length === 0) return null
+    const totalCost = eligible.reduce((sum, p) => sum + p.unit_price, 0)
+    const totalRevenue = eligible.reduce((sum, p) => sum + (p.sale_price ?? 0), 0)
+    return (totalCost / totalRevenue) * 100
+  }, [products])
+
+  if (svLoading || ciLoading || productsLoading) {
     return (
       <div className="flex justify-center py-16">
         <Loader2 className="w-8 h-8 animate-spin text-plum-800" />
@@ -532,6 +632,53 @@ function TabCostos() {
           })}
         </div>
       )}
+
+      {/* ── Productos a la venta ── */}
+      <div className="space-y-3 pt-2 border-t">
+        <p className="text-sm font-semibold text-plum-800 pt-2">Productos a la venta</p>
+        {products.length === 0 ? (
+          <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-xl space-y-1.5">
+            <p className="text-sm">No hay productos configurados.</p>
+            <button
+              onClick={onNavigateToInsumos}
+              className="text-sm text-plum-700 hover:text-plum-900 underline underline-offset-2"
+            >
+              Agregá productos vendibles en la pestaña Insumos.
+            </button>
+          </div>
+        ) : (
+          <Card>
+            <CardContent className="p-0 overflow-x-auto">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Producto</th>
+                    <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Unidad</th>
+                    <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">Costo unitario ($)</th>
+                    <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">Precio de venta ($)</th>
+                    <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">Margen bruto</th>
+                    <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">CMV %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {products.map((p) => <ProductPriceRow key={p.id} supply={p} />)}
+                </tbody>
+              </table>
+              {avgProductCmv !== null && (
+                <div className="border-t px-4 py-2.5 flex items-center justify-end gap-2 bg-gray-50/50">
+                  <span className="text-xs text-muted-foreground">CMV promedio:</span>
+                  <span className={cn(
+                    'text-xs font-semibold tabular-nums',
+                    avgProductCmv < 30 ? 'text-green-600' : avgProductCmv <= 50 ? 'text-amber-600' : 'text-red-600',
+                  )}>
+                    {avgProductCmv.toFixed(1)}%
+                  </span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       <AddCostItemModal
         open={addModal.open}
@@ -1622,7 +1769,7 @@ export default function Configuracion() {
       </div>
 
       {tab === 'insumos' && <TabInsumos />}
-      {tab === 'costos' && <TabCostos />}
+      {tab === 'costos' && <TabCostos onNavigateToInsumos={() => setTab('insumos')} />}
       {tab === 'inventario' && <TabInventario />}
       {tab === 'precios' && <TabAnalisisPrecios />}
       {tab === 'general' && (
