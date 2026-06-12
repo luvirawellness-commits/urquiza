@@ -50,6 +50,7 @@ export interface Client {
   total_sessions?: number
   source?: 'instagram' | 'google' | 'referral' | 'whatsapp' | 'in_person' | 'other'
   wa_opt_in?: boolean
+  birthdate?: string | null
   created_at: string
 }
 

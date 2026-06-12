@@ -842,8 +842,8 @@ function NuevoTurnoModal({
       set('client_id', newClient.id)
       setShowQuickCreate(false)
       setQcFirst(''); setQcLast(''); setQcPhone(''); setQcSource('whatsapp')
-    } catch {
-      setQcError('Error al crear el cliente. Intentá de nuevo.')
+    } catch (err) {
+      setQcError(err instanceof Error ? err.message : 'Error al crear el cliente. Intentá de nuevo.')
     }
   }
 
