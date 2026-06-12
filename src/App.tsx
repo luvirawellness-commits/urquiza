@@ -73,7 +73,7 @@ export default function App() {
               <Route
                 path="/compras"
                 element={
-                  <ProtectedRoute permission="compras">
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
                     <Configuracion />
                   </ProtectedRoute>
                 }
@@ -91,6 +91,14 @@ export default function App() {
                 element={
                   <ProtectedRoute roles={['owner', 'partner_admin']}>
                     <Auditoria />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/usuarios"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin']}>
+                    <ConfiguracionAdmin defaultTab="usuarios" hideTabs />
                   </ProtectedRoute>
                 }
               />

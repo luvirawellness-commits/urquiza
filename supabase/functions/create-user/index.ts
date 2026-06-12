@@ -18,6 +18,47 @@ serve(async (req) => {
       { auth: { autoRefreshToken: false, persistSession: false } },
     )
 
+    // 0. Verify the requesting user's identity and role
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader) {
+      return new Response(
+        JSON.stringify({ error: 'No autorizado' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const token = authHeader.replace('Bearer ', '')
+    const { data: callerData, error: callerError } = await supabaseAdmin.auth.getUser(token)
+    if (callerError || !callerData.user) {
+      return new Response(
+        JSON.stringify({ error: 'Token inválido' }),
+        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const callerId = callerData.user.id
+    const { data: callerProfile, error: profileError } = await supabaseAdmin
+      .from('users')
+      .select('role')
+      .eq('id', callerId)
+      .single()
+
+    if (profileError || !callerProfile) {
+      return new Response(
+        JSON.stringify({ error: 'Perfil del solicitante no encontrado' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    const callerRole = callerProfile.role as string
+    if (callerRole !== 'owner' && callerRole !== 'partner_admin') {
+      return new Response(
+        JSON.stringify({ error: 'No tenés permiso para crear usuarios' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    // Read body only once, after auth check
     const { email, full_name, role, color_hex, default_tenant_id, tenant_assignments } = await req.json()
 
     if (!email || !full_name) {
@@ -27,7 +68,35 @@ serve(async (req) => {
       )
     }
 
-    // Generate a strong temp password: 8 random chars + 4 uppercase + digit + symbol
+    // partner_admin cannot create owner accounts
+    if (callerRole === 'partner_admin' && role === 'owner') {
+      return new Response(
+        JSON.stringify({ error: 'Un partner_admin no puede crear usuarios owner' }),
+        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+      )
+    }
+
+    // partner_admin can only assign tenants they themselves belong to
+    if (callerRole === 'partner_admin' && tenant_assignments?.length > 0) {
+      const { data: callerTenants, error: tenantsErr } = await supabaseAdmin
+        .from('user_tenants')
+        .select('tenant_id')
+        .eq('user_id', callerId)
+
+      if (tenantsErr) throw tenantsErr
+
+      const allowedTenantIds = new Set((callerTenants ?? []).map((t: { tenant_id: string }) => t.tenant_id))
+      // deno-lint-ignore no-explicit-any
+      const unauthorized = (tenant_assignments as any[]).find((a) => !allowedTenantIds.has(a.tenant_id))
+      if (unauthorized) {
+        return new Response(
+          JSON.stringify({ error: 'No tenés permiso para asignar usuarios a ese local' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+    }
+
+    // Generate a strong temp password: 8 random lower/digit + 3 uppercase + digit + symbol
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
     const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
     let tempPassword = ''
@@ -50,7 +119,7 @@ serve(async (req) => {
     try {
       // 2. Create public.users row
       const primaryTenantId = default_tenant_id ?? tenant_assignments?.[0]?.tenant_id ?? null
-      const { error: profileError } = await supabaseAdmin.from('users').insert({
+      const { error: profileErr } = await supabaseAdmin.from('users').insert({
         id: userId,
         email,
         full_name,
@@ -60,10 +129,10 @@ serve(async (req) => {
         default_tenant_id: primaryTenantId,
         active: true,
       })
-      if (profileError) throw profileError
+      if (profileErr) throw profileErr
       userCreated = true
 
-      // 4. Stamp app_metadata so JWT claims carry tenant_id + role
+      // Stamp app_metadata so JWT claims carry tenant_id + role
       await supabaseAdmin.auth.admin.updateUserById(userId, {
         app_metadata: {
           tenant_id: primaryTenantId,
@@ -75,7 +144,7 @@ serve(async (req) => {
       if (tenant_assignments?.length > 0) {
         const { error: tenantsError } = await supabaseAdmin.from('user_tenants').insert(
           // deno-lint-ignore no-explicit-any
-          tenant_assignments.map((a: any) => ({
+          (tenant_assignments as any[]).map((a) => ({
             user_id: userId,
             tenant_id: a.tenant_id,
             role: a.role,

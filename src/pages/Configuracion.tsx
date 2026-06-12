@@ -1734,10 +1734,10 @@ export default function Configuracion() {
   const { profile } = useAuth()
   const [tab, setTab] = useState<ConfigTab>('insumos')
 
-  if (profile?.role !== 'owner') {
+  if (profile?.role !== 'owner' && profile?.role !== 'partner_admin') {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <p className="text-sm">Solo el propietario puede acceder a esta sección.</p>
+        <p className="text-sm">No tenés permiso para acceder a esta sección.</p>
       </div>
     )
   }

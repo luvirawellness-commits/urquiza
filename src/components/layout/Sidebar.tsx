@@ -21,9 +21,10 @@ const navItems = [
   { to: '/rrhh',        label: 'RRHH',        icon: Users2,       permKeys: ['rrhh'],              roles: ['owner', 'partner_admin'] },
   { to: '/membresias',  label: 'Membresías',  icon: CreditCard,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
   { to: '/auditoria',   label: 'Auditoría',   icon: ScrollText,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
+  { to: '/usuarios',    label: 'Usuarios',    icon: Users,                                         roles: ['owner', 'partner_admin'] },
   { to: '/productos',   label: 'Productos',   icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
   { to: '/gift-cards',  label: 'Gift Cards',  icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
-  { to: '/compras',     label: 'Compras',     icon: ShoppingCart, permKeys: ['compras'],           roles: ['owner'] },
+  { to: '/compras',     label: 'Compras',     icon: ShoppingCart,                                  roles: ['owner', 'partner_admin'] },
 ]
 
 function TenantSwitcher() {

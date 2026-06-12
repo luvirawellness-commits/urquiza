@@ -423,8 +423,6 @@ function UserModal({ open, onClose, onSuccess, user, allTenants, availableRoles 
         role: selectedRole,
         color_hex: form.color_hex,
       }
-      console.log('[UserModal] updating users:', updatePayload)
-
       const { error: updateErr } = await supabase
         .from('users')
         .update(updatePayload)
@@ -690,14 +688,22 @@ function UserModal({ open, onClose, onSuccess, user, allTenants, availableRoles 
 
 function TabUsuarios() {
   const tenantId = useTenantId()
+  const { profile, availableTenants: myTenants } = useAuth()
+  const isOwner = profile?.role === 'owner'
+  const myTenantIds = myTenants.map((t) => t.id)
 
   const { data: users = [], isLoading } = useQuery({
-    queryKey: ['admin-users', tenantId],
+    queryKey: ['admin-users', tenantId, isOwner ? 'all' : myTenantIds.join(',')],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('users')
-        .select(`*, user_tenants(tenant_id, role, tenants(name))`)
+        .select(`*, user_tenants(tenant_id, role, tenant:tenants(name))`)
         .order('full_name')
+      // partner_admin sees only users whose primary tenant they manage
+      if (!isOwner && myTenantIds.length > 0) {
+        query = query.in('tenant_id', myTenantIds)
+      }
+      const { data, error } = await query
       if (error) throw error
       return data as UserWithTenants[]
     },
@@ -716,6 +722,31 @@ function TabUsuarios() {
   // FIX 1: use shared useRoles hook (avoids query key collision with TabRoles)
   const { data: roleRows = [] } = useRoles()
   const roleLabel = (roleName: string) => roleRows.find((r) => r.name === roleName)?.name ?? roleName
+
+  // partner_admin cannot assign owner role or tenants outside their scope
+  const assignableRoles = isOwner ? roleRows : roleRows.filter((r) => r.name !== 'owner')
+  const assignableTenants = isOwner ? tenants : tenants.filter((t) => myTenantIds.includes(t.id))
+
+  // partner_admin cannot edit/delete owner accounts or users outside their tenants
+  function canEdit(u: UserWithTenants) {
+    if (isOwner) return true
+    if (u.role === 'owner') return false
+    return myTenantIds.includes(u.tenant_id ?? '')
+  }
+  function editTooltip(u: UserWithTenants) {
+    if (u.role === 'owner') return 'No podés editar a un propietario'
+    if (!myTenantIds.includes(u.tenant_id ?? '')) return 'Este usuario no pertenece a tus locales'
+    return undefined
+  }
+
+  const qc = useQueryClient()
+  const deactivateMutation = useMutation({
+    mutationFn: async (userId: string) => {
+      const { error } = await supabase.from('users').update({ active: false }).eq('id', userId)
+      if (error) throw error
+    },
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
+  })
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<UserWithTenants | undefined>()
@@ -783,51 +814,79 @@ function TabUsuarios() {
                 <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Usuario</th>
                 <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Rol</th>
                 <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Locales</th>
-                <th className="px-4 py-2.5 w-16"></th>
+                <th className="px-4 py-2.5 w-20"></th>
               </tr>
             </thead>
             <tbody>
-              {users.map((u) => (
-                <tr key={u.id} className="border-b last:border-0 hover:bg-gray-50/50">
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <div
-                        className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
-                        style={{ backgroundColor: u.color_hex ?? '#7C3AED' }}
-                      >
-                        {u.full_name?.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()}
+              {users.map((u) => {
+                const allowed = canEdit(u)
+                const tip = editTooltip(u)
+                return (
+                  <tr key={u.id} className="border-b last:border-0 hover:bg-gray-50/50">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <div
+                          className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                          style={{ backgroundColor: u.color_hex ?? '#7C3AED' }}
+                        >
+                          {u.full_name?.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()}
+                        </div>
+                        <div>
+                          <p className="text-sm font-medium text-plum-800">{u.full_name}</p>
+                          <p className="text-xs text-muted-foreground">{u.email}</p>
+                        </div>
                       </div>
-                      <div>
-                        <p className="text-sm font-medium text-plum-800">{u.full_name}</p>
-                        <p className="text-xs text-muted-foreground">{u.email}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', ROLE_COLORS[u.role] ?? 'bg-gray-100 text-gray-700')}>
+                        {roleLabel(u.role)}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex flex-wrap gap-1">
+                        {u.user_tenants && u.user_tenants.length > 0 ? (
+                          u.user_tenants.map((ut) => (
+                            <span key={ut.tenant_id} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-plum-100 text-plum-700">
+                              {ut.tenant?.name ?? tenants.find((t) => t.id === ut.tenant_id)?.name ?? ut.tenant_id.slice(0, 8)}
+                            </span>
+                          ))
+                        ) : u.tenant_id ? (
+                          // fallback: user_tenants empty (RLS) but tenant_id known
+                          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-plum-100 text-plum-700">
+                            {tenants.find((t) => t.id === u.tenant_id)?.name ?? u.tenant_id.slice(0, 8)}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">Sin locales</span>
+                        )}
                       </div>
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    {/* FIX 1: show role label from roles table */}
-                    <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium', ROLE_COLORS[u.role] ?? 'bg-gray-100 text-gray-700')}>
-                      {roleLabel(u.role)}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex flex-wrap gap-1">
-                      {u.user_tenants?.map((ut) => (
-                        <span key={ut.tenant_id} className="inline-flex items-center px-1.5 py-0.5 rounded text-xs bg-plum-100 text-plum-700">
-                          {(ut.tenant as { name: string } | null)?.name ?? ut.tenant_id.slice(0, 8)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1">
+                        <span title={tip}>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="w-7 h-7 text-muted-foreground hover:text-plum-800"
+                            onClick={() => openEdit(u)}
+                            disabled={!allowed}
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </Button>
                         </span>
-                      ))}
-                      {(!u.user_tenants || u.user_tenants.length === 0) && (
-                        <span className="text-xs text-muted-foreground">Sin locales</span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Button variant="ghost" size="icon" className="w-7 h-7 text-muted-foreground hover:text-plum-800" onClick={() => openEdit(u)}>
-                      <Pencil className="w-3.5 h-3.5" />
-                    </Button>
-                  </td>
-                </tr>
-              ))}
+                        <span title={tip}>
+                          <Button
+                            variant="ghost" size="icon"
+                            className="w-7 h-7 text-muted-foreground hover:text-red-600"
+                            onClick={() => { if (confirm(`¿Desactivar a ${u.full_name}?`)) deactivateMutation.mutate(u.id) }}
+                            disabled={!allowed || deactivateMutation.isPending}
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </Button>
+                        </span>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
           {users.length === 0 && (
@@ -838,7 +897,7 @@ function TabUsuarios() {
           )}
         </CardContent>
       </Card>
-      <UserModal open={modalOpen} onClose={closeModal} onSuccess={handleUserCreated} user={editing} allTenants={tenants} availableRoles={roleRows} />
+      <UserModal open={modalOpen} onClose={closeModal} onSuccess={handleUserCreated} user={editing} allTenants={assignableTenants} availableRoles={assignableRoles} />
     </div>
   )
 }
@@ -1106,23 +1165,49 @@ function TabRoles() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-export default function ConfiguracionAdmin() {
+export default function ConfiguracionAdmin({
+  defaultTab,
+  hideTabs,
+}: {
+  defaultTab?: AdminTab
+  hideTabs?: boolean
+} = {}) {
   const { profile } = useAuth()
-  const [tab, setTab] = useState<AdminTab>('locales')
+  const [tab, setTab] = useState<AdminTab>(defaultTab ?? 'locales')
 
-  if (profile?.role !== 'owner') {
+  if (profile?.role !== 'owner' && profile?.role !== 'partner_admin') {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
-        <p className="text-sm">Solo el propietario puede acceder a esta sección.</p>
+        <p className="text-sm">No tenés permiso para acceder a esta sección.</p>
       </div>
     )
   }
 
-  const tabs: { key: AdminTab; label: string; icon: ElementType }[] = [
-    { key: 'locales', label: 'Locales', icon: Building2 },
-    { key: 'usuarios', label: 'Usuarios', icon: Users },
-    { key: 'roles', label: 'Roles y Permisos', icon: Shield },
+  // /usuarios route: skip all tab logic and render TabUsuarios directly
+  if (hideTabs) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-plum-800">Usuarios</h1>
+          <p className="text-muted-foreground text-sm mt-1">Gestión de usuarios del sistema</p>
+        </div>
+        <TabUsuarios />
+      </div>
+    )
+  }
+
+  const isOwner = profile?.role === 'owner'
+
+  const allTabs: { key: AdminTab; label: string; icon: ElementType; ownerOnly: boolean }[] = [
+    { key: 'locales',   label: 'Locales',          icon: Building2, ownerOnly: true },
+    { key: 'usuarios',  label: 'Usuarios',          icon: Users,     ownerOnly: false },
+    { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,    ownerOnly: true },
   ]
+
+  const tabs = allTabs.filter((t) => !t.ownerOnly || isOwner)
+
+  // If the active tab is not available for this role, reset to usuarios
+  const activeTab = tabs.find((t) => t.key === tab) ? tab : 'usuarios'
 
   return (
     <div className="p-6 space-y-6">
@@ -1139,7 +1224,7 @@ export default function ConfiguracionAdmin() {
               onClick={() => setTab(key)}
               className={cn(
                 'flex items-center gap-2 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors',
-                tab === key
+                activeTab === key
                   ? 'border-plum-700 text-plum-800'
                   : 'border-transparent text-muted-foreground hover:text-plum-700',
               )}
@@ -1151,9 +1236,9 @@ export default function ConfiguracionAdmin() {
         </nav>
       </div>
 
-      {tab === 'locales' && <TabLocales />}
-      {tab === 'usuarios' && <TabUsuarios />}
-      {tab === 'roles' && <TabRoles />}
+      {activeTab === 'locales' && <TabLocales />}
+      {activeTab === 'usuarios' && <TabUsuarios />}
+      {activeTab === 'roles' && <TabRoles />}
     </div>
   )
 }
