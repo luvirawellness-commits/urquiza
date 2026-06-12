@@ -603,14 +603,12 @@ function buildWhatsAppUrl(appt: Appointment): string {
   const min = String(dt.getMinutes()).padStart(2, '0')
 
   const nombre = [appt.client?.first_name, appt.client?.last_name].filter(Boolean).join(' ') || 'cliente'
-  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(LUVIRA_ADDRESS)}`
-
   const text =
     `Hola ${nombre}, recordá que tenés una cita en MASAJES LUVIRA WELLNESS el día ${dd}/${mm}/${yyyy} a las ${hh}:${min}.\n\n` +
     `Servicio: ${appt.service?.name ?? '—'} ${appt.duration_minutes} Min\n` +
     `Profesional: ${appt.therapist?.full_name ?? '—'}\n` +
     `Dirección: ${LUVIRA_ADDRESS}\n` +
-    `Cómo llegar: ${mapsUrl}`
+    `Cómo llegar: https://maps.app.goo.gl/S8ngyx1fioo7xHv3A`
 
   const encoded = encodeURIComponent(text)
   const phone = appt.client?.phone?.replace(/\D/g, '')
