@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle } from 'lucide-react'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useServices, useTherapists, type Therapist,
@@ -592,6 +592,33 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
 // ── AppointmentDetailModal ────────────────────────────────────────────────────
 
+const LUVIRA_ADDRESS = 'Bauness 2325, Villa Urquiza, Ciudad Autónoma de Buenos Aires, Argentina'
+
+function buildWhatsAppUrl(appt: Appointment): string {
+  const dt = new Date(appt.scheduled_at)
+  const dd = String(dt.getDate()).padStart(2, '0')
+  const mm = String(dt.getMonth() + 1).padStart(2, '0')
+  const yyyy = dt.getFullYear()
+  const hh = String(dt.getHours()).padStart(2, '0')
+  const min = String(dt.getMinutes()).padStart(2, '0')
+
+  const nombre = [appt.client?.first_name, appt.client?.last_name].filter(Boolean).join(' ') || 'cliente'
+  const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(LUVIRA_ADDRESS)}`
+
+  const text =
+    `Hola ${nombre}, recordá que tenés una cita en MASAJES LUVIRA WELLNESS el día ${dd}/${mm}/${yyyy} a las ${hh}:${min}.\n\n` +
+    `Servicio: ${appt.service?.name ?? '—'} ${appt.duration_minutes} Min\n` +
+    `Profesional: ${appt.therapist?.full_name ?? '—'}\n` +
+    `Dirección: ${LUVIRA_ADDRESS}\n` +
+    `Cómo llegar: ${mapsUrl}`
+
+  const encoded = encodeURIComponent(text)
+  const phone = appt.client?.phone?.replace(/\D/g, '')
+  return phone
+    ? `https://web.whatsapp.com/send?phone=54${phone}&text=${encoded}`
+    : `https://web.whatsapp.com/send?text=${encoded}`
+}
+
 function Field({ label, value }: { label: string; value: string }) {
   return (
     <div>
@@ -693,6 +720,24 @@ function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose:
                 </div>
               </div>
             )}
+
+            <div className="border-t pt-4 space-y-1.5">
+              <a
+                href={buildWhatsAppUrl(appt)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white transition-opacity hover:opacity-90"
+                style={{ backgroundColor: '#25D366' }}
+              >
+                <MessageCircle className="w-4 h-4" />
+                Enviar recordatorio
+              </a>
+              {!appt.client?.phone && (
+                <p className="text-xs text-muted-foreground">
+                  Este cliente no tiene teléfono registrado
+                </p>
+              )}
+            </div>
           </>
         )}
       </DialogContent>
