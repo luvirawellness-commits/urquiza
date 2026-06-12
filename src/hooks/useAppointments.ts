@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { useTenantId } from '@/contexts/AuthContext'
+import { useTenantId, useAuth } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
 import { Appointment, AppointmentStatus, Service } from '@/types'
 
@@ -152,11 +152,20 @@ export function useUpdateAppointmentStatus() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
   const { logAction } = useAuditLog()
+  const { user } = useAuth()
   return useMutation({
     mutationFn: async ({ id, status }: { id: string; status: AppointmentStatus }) => {
+      const isCancellation = status === 'cancelled' || status === 'no_show'
+      const patch = {
+        status,
+        ...(isCancellation && {
+          cancelled_at: new Date().toISOString(),
+          cancelled_by: user?.id ?? null,
+        }),
+      }
       const { error } = await supabase
         .from('appointments')
-        .update({ status })
+        .update(patch)
         .eq('id', id)
         .eq('tenant_id', tenantId)
       if (error) throw error

@@ -72,6 +72,9 @@ export interface Appointment {
   deposit_paid?: boolean
   notes?: string
   client_membership_id?: string | null
+  cancelled_at?: string | null
+  cancelled_by?: string | null
+  cancellation_reason?: string | null
   client?: { id: string; first_name: string; last_name?: string; phone?: string; status?: string; total_sessions?: number } | null
   therapist?: { id: string; full_name: string; color_hex?: string; avatar_url?: string } | null
   service?: { id: string; name: string; emoji?: string; price_60?: number; price_90?: number } | null

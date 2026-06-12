@@ -742,13 +742,8 @@ function TabUsuarios() {
   const qc = useQueryClient()
   const deactivateMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const payload = { active: false }
-      console.log('[deactivateMutation] userId:', userId, 'payload:', payload)
-      const { data, error } = await supabase.from('users').update(payload).eq('id', userId).select()
-      console.log('[DEBUG] Mutation result:', data, error)
-      if (error) {
-        throw error
-      }
+      const { error } = await supabase.from('users').update({ active: false }).eq('id', userId)
+      if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   })
@@ -886,13 +881,7 @@ function TabUsuarios() {
                           <Button
                             variant="ghost" size="icon"
                             className="w-7 h-7 text-muted-foreground hover:text-red-600"
-                            onClick={() => {
-                              console.log('[DEBUG] Desactivar clicked for user:', u.id)
-                              if (confirm(`¿Desactivar a ${u.full_name}?`)) {
-                                console.log('[DEBUG] Confirm clicked, calling mutation')
-                                deactivateMutation.mutate(u.id)
-                              }
-                            }}
+                            onClick={() => { if (confirm(`¿Desactivar a ${u.full_name}?`)) deactivateMutation.mutate(u.id) }}
                             disabled={!allowed || deactivateMutation.isPending}
                           >
                             <Trash2 className="w-3.5 h-3.5" />

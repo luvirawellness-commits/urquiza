@@ -230,6 +230,7 @@ function DayApptBlock({
   const top = timeToY(new Date(appt.scheduled_at).getHours(), new Date(appt.scheduled_at).getMinutes())
   const height = Math.max(appt.duration_minutes * (HOUR_PX / 60), 22)
   const isBlock = appt.status === 'blocked'
+  const isCancelled = appt.status === 'cancelled' || appt.status === 'no_show'
 
   const bloqueoTipo = isBlock ? parseBloqueoTipo(appt.notes) : null
   const bloqueoStyle = bloqueoTipo
@@ -246,8 +247,9 @@ function DayApptBlock({
       style={{
         top,
         height,
-        backgroundColor: isBlock ? bloqueoStyle.bg : `${color}26`,
-        borderLeft: `3px solid ${isBlock ? bloqueoStyle.border : color}`,
+        opacity: isCancelled ? 0.5 : 1,
+        backgroundColor: isCancelled ? '#f3f4f6' : (isBlock ? bloqueoStyle.bg : `${color}26`),
+        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : (isBlock ? bloqueoStyle.border : color)}`,
       }}
       onClick={(e) => { e.stopPropagation(); onClick() }}
     >
@@ -256,6 +258,11 @@ function DayApptBlock({
           <p className="text-[11px] font-medium leading-tight mt-0.5" style={{ color: bloqueoStyle.text }}>
             {blockLabel}{blockMotivo ? ` · ${blockMotivo}` : ''}
           </p>
+        ) : isCancelled ? (
+          <>
+            <p className="text-[11px] font-medium text-gray-400 truncate leading-tight line-through">{clientName(appt)}</p>
+            <p className="text-[10px] text-gray-400 leading-tight">{appt.status === 'cancelled' ? 'Cancelado' : 'No se presentó'}</p>
+          </>
         ) : (
           <>
             <div className="flex items-center gap-1">
@@ -853,11 +860,12 @@ function NuevoTurnoModal({
     if (!form.client_id) { setFormError('Por favor seleccioná un cliente.'); return }
     const service = services?.find(s => s.id === form.service_id)
     try {
+      const scheduledAtValue = new Date(`${form.date}T${form.time}:00`).toISOString()
       await createAppt.mutateAsync({
         client_id: form.client_id,
         service_id: form.service_id,
         therapist_id: form.therapist_id,
-        scheduled_at: new Date(`${form.date}T${form.time}:00`).toISOString(),
+        scheduled_at: scheduledAtValue,
         duration_minutes: form.duration_minutes,
         box_number: form.box_number,
         status: 'pending',
@@ -869,11 +877,18 @@ function NuevoTurnoModal({
         notes: form.notes || undefined,
       })
       onClose()
-    } catch { setFormError('No se pudo guardar el turno. Intentá de nuevo.') }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.toLowerCase() : ''
+      if (msg.includes('box') || msg.includes('conflict') || msg.includes('ocupado') || msg.includes('duplicate') || msg.includes('unique')) {
+        setFormError('Box ocupado en ese horario. Elegí otro horario o box disponible.')
+      } else {
+        setFormError((err instanceof Error && err.message) ? err.message : 'No se pudo guardar el turno. Intentá de nuevo.')
+      }
+    }
   }
 
   return (
-    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+    <Dialog open={open} onOpenChange={v => { if (!v && !createAppt.isPending) onClose() }}>
       <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Nuevo Turno</DialogTitle>
@@ -1278,9 +1293,10 @@ function SlotMenu({ target, therapists, onNewTurno, onBloqueo, onSobreTurno, onC
 const HOURS = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR + i)
 
 function DayView({
-  date, therapists, appointments, onSlotClick, onAppointmentClick,
+  date, therapists, appointments, showCancelled, onSlotClick, onAppointmentClick,
 }: {
   date: Date; therapists: Therapist[]; appointments: Appointment[]
+  showCancelled: boolean
   onSlotClick: (t: SlotTarget) => void; onAppointmentClick: (a: Appointment) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -1314,7 +1330,10 @@ function DayView({
   }, []) // scroll to now once on mount
 
   const dateStr = dateKey(date)
-  const dayAppts = appointments.filter(a => dateKey(new Date(a.scheduled_at)) === dateStr)
+  const dayAppts = appointments.filter(a =>
+    dateKey(new Date(a.scheduled_at)) === dateStr &&
+    (showCancelled || (a.status !== 'cancelled' && a.status !== 'no_show'))
+  )
 
   function handleColumnClick(e: React.MouseEvent<HTMLDivElement>, therapistId: string) {
     const rect = e.currentTarget.getBoundingClientRect()
@@ -1428,16 +1447,21 @@ function DayView({
 // ── WeekView ──────────────────────────────────────────────────────────────────
 
 function WeekView({
-  weekStart, appointments, onDayClick, onAppointmentClick,
+  weekStart, appointments, showCancelled, onDayClick, onAppointmentClick,
 }: {
   weekStart: Date; appointments: Appointment[]
+  showCancelled: boolean
   onDayClick: (d: Date) => void; onAppointmentClick: (a: Appointment) => void
 }) {
   const today = new Date(); today.setHours(0,0,0,0)
   const days = Array.from({ length: 7 }, (_, i) => { const d = new Date(weekStart); d.setDate(d.getDate() + i); return d })
   function dayAppts(day: Date) {
     const dk = dateKey(day)
-    return appointments.filter(a => dateKey(new Date(a.scheduled_at)) === dk)
+    return appointments
+      .filter(a =>
+        dateKey(new Date(a.scheduled_at)) === dk &&
+        (showCancelled || (a.status !== 'cancelled' && a.status !== 'no_show'))
+      )
       .sort((a, b) => new Date(a.scheduled_at).getTime() - new Date(b.scheduled_at).getTime())
   }
 
@@ -1478,16 +1502,24 @@ function WeekView({
               ) : (
                 appts.map(appt => {
                   const color = appt.therapist?.color_hex ?? '#7c3aed'
+                  const isCancelled = appt.status === 'cancelled' || appt.status === 'no_show'
                   return (
                     <button key={appt.id}
                       className="w-full text-left rounded-lg p-2 hover:opacity-80 transition-opacity"
-                      style={{ backgroundColor: `${color}18`, borderLeft: `3px solid ${color}` }}
+                      style={{
+                        backgroundColor: isCancelled ? '#f3f4f6' : `${color}18`,
+                        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : color}`,
+                        opacity: isCancelled ? 0.6 : 1,
+                      }}
                       onClick={() => onAppointmentClick(appt)}>
                       <p className="text-[10px] font-semibold text-gray-700 truncate">{formatTime(appt.scheduled_at)}</p>
-                      <p className="text-[11px] font-bold text-plum-800 truncate mt-0.5">
+                      <p className={cn('text-[11px] font-bold truncate mt-0.5', isCancelled ? 'text-gray-400 line-through' : 'text-plum-800')}>
                         {appt.status === 'blocked' ? '🚫 Bloqueado' : clientName(appt)}
                       </p>
-                      {appt.service && (
+                      {isCancelled && (
+                        <p className="text-[10px] text-gray-400">{appt.status === 'cancelled' ? 'Cancelado' : 'No se presentó'}</p>
+                      )}
+                      {!isCancelled && appt.service && (
                         <p className="text-[10px] text-gray-500 truncate">{appt.service.name}</p>
                       )}
                     </button>
@@ -1516,12 +1548,20 @@ export default function Agenda() {
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null)
   const [isSobreTurno, setIsSobreTurno] = useState(false)
   const [prefill, setPrefill] = useState<TurnoPrefill | null>(null)
+  const [showCancelled, setShowCancelled] = useState(false)
 
   const { data: therapists = [] } = useTherapists()
 
   const [startISO, endISO] = useMemo(() => {
     const dk = dateKey(currentDate)
-    if (view === 'day') return [`${dk}T07:00:00`, `${dk}T21:00:00`]
+    if (view === 'day') {
+      // dk is a UTC date string; ART is UTC-3.
+      // 07:00 ART = 10:00 UTC; 23:59 ART = 02:59 UTC next day.
+      // Use next calendar day + T03:00:00 UTC to cover the full ART business day.
+      const nextDay = new Date(currentDate)
+      nextDay.setDate(nextDay.getDate() + 1)
+      return [`${dk}T10:00:00`, `${dateKey(nextDay)}T03:00:00`]
+    }
     const mon = getMonday(currentDate)
     const sun = new Date(mon); sun.setDate(sun.getDate() + 6); sun.setHours(23, 59, 59)
     return [`${dateKey(mon)}T00:00:00`, sun.toISOString()]
@@ -1577,6 +1617,18 @@ export default function Agenda() {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowCancelled(v => !v)}
+            className={cn(
+              'text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors',
+              showCancelled
+                ? 'bg-gray-100 text-gray-700 border-gray-300'
+                : 'bg-white text-muted-foreground border-input hover:bg-gray-50',
+            )}
+          >
+            {showCancelled ? 'Ocultar cancelados' : 'Ver cancelados'}
+          </button>
           <Button size="sm" onClick={() => { setPrefill(null); setIsSobreTurno(false); setNewTurnoOpen(true) }}>
             <Plus className="w-4 h-4 mr-1.5" />
             Nuevo turno
@@ -1612,6 +1664,7 @@ export default function Agenda() {
             date={currentDate}
             therapists={therapists}
             appointments={appointments}
+            showCancelled={showCancelled}
             onSlotClick={setSlotTarget}
             onAppointmentClick={setSelectedAppt}
           />
@@ -1619,6 +1672,7 @@ export default function Agenda() {
           <WeekView
             weekStart={getMonday(currentDate)}
             appointments={appointments}
+            showCancelled={showCancelled}
             onDayClick={(d) => { setCurrentDate(d); setView('day') }}
             onAppointmentClick={setSelectedAppt}
           />
