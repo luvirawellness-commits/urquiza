@@ -742,8 +742,13 @@ function TabUsuarios() {
   const qc = useQueryClient()
   const deactivateMutation = useMutation({
     mutationFn: async (userId: string) => {
-      const { error } = await supabase.from('users').update({ active: false }).eq('id', userId)
-      if (error) throw error
+      const payload = { active: false }
+      console.log('[deactivateMutation] userId:', userId, 'payload:', payload)
+      const { data, error } = await supabase.from('users').update(payload).eq('id', userId).select()
+      console.log('[DEBUG] Mutation result:', data, error)
+      if (error) {
+        throw error
+      }
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-users'] }),
   })
@@ -832,7 +837,12 @@ function TabUsuarios() {
                           {u.full_name?.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()}
                         </div>
                         <div>
-                          <p className="text-sm font-medium text-plum-800">{u.full_name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="text-sm font-medium text-plum-800">{u.full_name}</p>
+                            {u.active === false && (
+                              <Badge variant="secondary" className="text-xs px-1.5 py-0">Inactivo</Badge>
+                            )}
+                          </div>
                           <p className="text-xs text-muted-foreground">{u.email}</p>
                         </div>
                       </div>
@@ -876,7 +886,13 @@ function TabUsuarios() {
                           <Button
                             variant="ghost" size="icon"
                             className="w-7 h-7 text-muted-foreground hover:text-red-600"
-                            onClick={() => { if (confirm(`¿Desactivar a ${u.full_name}?`)) deactivateMutation.mutate(u.id) }}
+                            onClick={() => {
+                              console.log('[DEBUG] Desactivar clicked for user:', u.id)
+                              if (confirm(`¿Desactivar a ${u.full_name}?`)) {
+                                console.log('[DEBUG] Confirm clicked, calling mutation')
+                                deactivateMutation.mutate(u.id)
+                              }
+                            }}
                             disabled={!allowed || deactivateMutation.isPending}
                           >
                             <Trash2 className="w-3.5 h-3.5" />

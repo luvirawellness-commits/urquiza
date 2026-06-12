@@ -32,6 +32,7 @@ export interface UserProfile {
   role: UserRole
   color_hex?: string
   avatar_url?: string
+  active?: boolean
   created_at: string
 }
 
