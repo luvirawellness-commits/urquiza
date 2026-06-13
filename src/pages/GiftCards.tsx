@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { cn, formatCurrency, formatDate } from '@/lib/utils'
+import { cn, formatCurrency, formatDate, exportToExcel } from '@/lib/utils'
 import { CARD_BASE64 } from '@/lib/cardBase64'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -346,9 +346,38 @@ function GiftCardList() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base text-plum-800">
-          Historial ({giftCards?.length ?? 0})
-        </CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base text-plum-800">
+            Historial ({giftCards?.length ?? 0})
+          </CardTitle>
+          {giftCards && giftCards.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                exportToExcel(
+                  giftCards.map((gc) => ({
+                    'Código': gc.code,
+                    'Servicio': gc.service?.name ?? '',
+                    'Destinatario': gc.recipient_name ?? '',
+                    'Monto': gc.amount,
+                    'Vendida': gc.sold_at ? formatDate(gc.sold_at) : '',
+                    'Vence': gc.expires_at ? formatDate(gc.expires_at) : '',
+                    'Estado': STATUS_LABEL[gc.status] ?? gc.status,
+                    'Usado por': gc.used_by
+                      ? `${gc.used_by.first_name} ${gc.used_by.last_name ?? ''}`.trim()
+                      : '',
+                  })),
+                  'giftcards.xlsx',
+                  'Gift Cards',
+                )
+              }
+            >
+              <Download className="w-4 h-4 mr-1.5" />
+              Exportar Excel
+            </Button>
+          )}
+        </div>
       </CardHeader>
       <CardContent className="p-0">
         {isLoading ? (

@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check, TrendingUp, RotateCcw } from 'lucide-react'
+import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check, TrendingUp, RotateCcw, FileDown } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
 import { useServices, useUpdateServicePrice } from '@/hooks/useAppointments'
@@ -34,7 +34,7 @@ import {
   useInsertMovement,
   useCreateCount,
 } from '@/hooks/useInventario'
-import { cn, formatCurrency } from '@/lib/utils'
+import { cn, formatCurrency, exportToExcel } from '@/lib/utils'
 import type { Supply, InventoryCount } from '@/types'
 
 const UNITS = ['unidad', 'ml', 'litro', 'kg', 'gramo', 'min']
@@ -251,9 +251,32 @@ function TabInsumos() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{supplies.length} insumos registrados</p>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="w-4 h-4 mr-1" />Nuevo insumo
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() =>
+              exportToExcel(
+                supplies.map((s) => ({
+                  'Código': s.code,
+                  'Nombre': s.name,
+                  'Unidad': s.unit,
+                  'Precio unitario': s.unit_price,
+                  'Categoría': s.category === 'product' ? 'Producto' : 'Interno',
+                  'Estado': s.active ? 'Activo' : 'Inactivo',
+                })),
+                'insumos.xlsx',
+                'Insumos',
+              )
+            }
+            disabled={supplies.length === 0}
+          >
+            <FileDown className="w-4 h-4 mr-1" />Exportar Excel
+          </Button>
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="w-4 h-4 mr-1" />Nuevo insumo
+          </Button>
+        </div>
       </div>
       <Card>
         <CardContent className="p-0 overflow-x-auto">
@@ -1114,6 +1137,44 @@ function TabInventario() {
   return (
     <div className="space-y-6">
       <div className="flex gap-2 justify-end">
+        <Button
+          variant="outline"
+          onClick={() => {
+            const activeSupplies = supplies.filter((s) => s.active)
+            exportToExcel(
+              activeSupplies.map((s) => {
+                const st = statsMap[s.id] ?? {
+                  entries: 0, sessions: 0, sales: 0, adjustments: 0, theoretical: 0, lastCount: null,
+                }
+                const diff = st.lastCount != null ? st.lastCount.physical_qty - st.theoretical : ''
+                return {
+                  'Nombre': s.name,
+                  'Código': s.code,
+                  'Tipo': s.category === 'product' ? 'Producto' : 'Insumo',
+                  'Unidad': s.unit,
+                  'Ingresado': st.entries,
+                  'Sesiones': st.sessions,
+                  'Vendido': st.sales,
+                  'Ajustes': st.adjustments,
+                  'Teórico': st.theoretical,
+                  'Último conteo': st.lastCount?.physical_qty ?? '',
+                  'Fecha conteo': st.lastCount
+                    ? new Date(st.lastCount.counted_at).toLocaleDateString('es-AR', {
+                        day: '2-digit', month: '2-digit', year: '2-digit',
+                      })
+                    : '',
+                  'Diferencia': diff,
+                }
+              }),
+              'inventario.xlsx',
+              'Inventario',
+            )
+          }}
+          disabled={supplies.filter((s) => s.active).length === 0}
+        >
+          <FileDown className="w-4 h-4 mr-2" />
+          Exportar Excel
+        </Button>
         <Button onClick={() => setShowIngresar(true)}>
           <PackagePlus className="w-4 h-4 mr-2" />
           Ingresar stock
@@ -1486,6 +1547,29 @@ function TabAnalisisPrecios() {
             </button>
           ))}
         </div>
+
+        {/* Export */}
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs px-2.5 gap-1"
+          onClick={() =>
+            exportToExcel(
+              visibleRows.map((r) => ({
+                'Sección': SECTION_LABELS[r.section as PriceSection] ?? r.section,
+                'Nombre': r.nombre,
+                'CMV Teórico': r.cmv ?? '',
+                'Precio actual': r.precioActual,
+              })),
+              'analisis-precios.xlsx',
+              'Análisis de Precios',
+            )
+          }
+          disabled={visibleRows.length === 0}
+        >
+          <FileDown className="w-3 h-3" />
+          Exportar Excel
+        </Button>
 
         {/* Bulk increase */}
         <div className="flex items-center gap-1.5 ml-auto">

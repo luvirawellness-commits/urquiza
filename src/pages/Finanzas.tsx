@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
-  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark,
+  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown,
 } from 'lucide-react'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useAuth } from '@/contexts/AuthContext'
@@ -31,7 +31,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
-import { cn, formatCurrency, MONTHS_ES } from '@/lib/utils'
+import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
 import type { Transaction, ServiceCostItem } from '@/types'
 
 type Tab = 'caja' | 'pl'
@@ -852,10 +852,28 @@ const fmtC = (n: number) =>
 function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: string }) {
   const total = sumPLFields(months)
 
+  function exportPL() {
+    const data = PL_ROWS
+      .filter((r) => r.type !== 'section')
+      .map((r) => {
+        const row: Record<string, unknown> = { 'Concepto': r.label }
+        months.forEach((m) => { row[m.month] = m[r.key] })
+        row['Total'] = total[r.key]
+        return row
+      })
+    exportToExcel(data, `pl-${title.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.xlsx`, 'P&L')
+  }
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base text-plum-800">{title}</CardTitle>
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base text-plum-800">{title}</CardTitle>
+          <Button variant="outline" size="sm" onClick={exportPL}>
+            <FileDown className="w-4 h-4 mr-1.5" />
+            Exportar Excel
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="overflow-x-auto p-0 pb-4">
         <table className="w-full text-xs">
@@ -1530,9 +1548,29 @@ function TabPL() {
             {/* Single-month P&L table */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base text-plum-800">
-                  Estado de Resultados — {periodLabel}
-                </CardTitle>
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base text-plum-800">
+                    Estado de Resultados — {periodLabel}
+                  </CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      if (!pl) return
+                      exportToExcel(
+                        PL_ROWS.filter((r) => r.type !== 'section').map((r) => ({
+                          'Concepto': r.label,
+                          'Monto': pl[r.key],
+                        })),
+                        `pl-${periodLabel.replace(/[^a-z0-9]/gi, '-').toLowerCase()}.xlsx`,
+                        'P&L',
+                      )
+                    }}
+                  >
+                    <FileDown className="w-4 h-4 mr-1.5" />
+                    Exportar Excel
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent className="overflow-x-auto">
                 <table className="w-full">

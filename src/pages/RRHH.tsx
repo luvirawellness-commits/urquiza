@@ -1,4 +1,7 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import * as XLSX from 'xlsx'
+import html2canvas from 'html2canvas'
+import { jsPDF } from 'jspdf'
 import {
   Plus, Pencil, Loader2, Download, Check, ChevronLeft, ChevronRight, UserCheck, Trash2,
 } from 'lucide-react'
@@ -22,7 +25,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { cn, MONTHS_ES } from '@/lib/utils'
+import { cn, MONTHS_ES, exportToExcel } from '@/lib/utils'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -456,7 +459,33 @@ function EmpleadosTab() {
 
   return (
     <div className="space-y-4">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() =>
+            exportToExcel(
+              employees.map((emp) => ({
+                'Empleado': emp.user?.full_name ?? '',
+                'Puesto': emp.position?.name ?? '',
+                'Contrato': emp.position?.contract_type === 'hourly' ? 'Por hora' : 'Mensual',
+                'Inicio': emp.start_date ?? '',
+                'Hs/mes': emp.expected_monthly_hours ?? '',
+                'Umbral 1 (ses.)': emp.productivity_threshold_1 ?? '',
+                'Bono 1': emp.productivity_bonus_1 ?? '',
+                'Umbral 2 (ses.)': emp.productivity_threshold_2 ?? '',
+                'Bono 2': emp.productivity_bonus_2 ?? '',
+                'Activo': emp.active ? 'Sí' : 'No',
+              })),
+              'empleados.xlsx',
+              'Empleados',
+            )
+          }
+          disabled={employees.length === 0}
+        >
+          <Download className="w-4 h-4 mr-1.5" />
+          Exportar Excel
+        </Button>
         <Button size="sm" onClick={() => { setEditing(null); setModalOpen(true) }}>
           <Plus className="w-4 h-4 mr-1.5" />Nuevo Empleado
         </Button>
@@ -668,20 +697,64 @@ function CcssSection({ card, yearMonth }: { card: CardData; yearMonth: string })
 function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMonth: string }) {
   const emp = card.emp
   const isHourly = emp.position?.contract_type === 'hourly'
+  const cardRef = useRef<HTMLDivElement>(null)
+  const btnRef = useRef<HTMLButtonElement>(null)
+  const [pdfLoading, setPdfLoading] = useState(false)
+
+  async function downloadPDF() {
+    if (!cardRef.current) return
+    setPdfLoading(true)
+    if (btnRef.current) btnRef.current.style.visibility = 'hidden'
+    try {
+      const canvas = await html2canvas(cardRef.current, { scale: 2, useCORS: true })
+      const imgData = canvas.toDataURL('image/png')
+      const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
+      const pageWidth = pdf.internal.pageSize.getWidth()
+      const margin = 10
+      const imgWidth = pageWidth - margin * 2
+      const imgHeight = (canvas.height * imgWidth) / canvas.width
+      pdf.addImage(imgData, 'PNG', margin, margin, imgWidth, imgHeight)
+      const [y, m] = yearMonth.split('-')
+      const monthName = MONTHS_ES[parseInt(m) - 1]?.toLowerCase() ?? m
+      const safeName = (emp.user?.full_name ?? 'empleado')
+        .normalize('NFD')
+        .replace(/[̀-ͯ]/g, '')
+        .replace(/\s+/g, '_')
+      pdf.save(`liquidacion_${safeName}_${monthName}_${y}.pdf`)
+    } finally {
+      if (btnRef.current) btnRef.current.style.visibility = ''
+      setPdfLoading(false)
+    }
+  }
 
   return (
-    <Card>
+    <Card ref={cardRef}>
       <CardContent className="p-4 space-y-4">
         {/* Header */}
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-            style={{ backgroundColor: emp.user?.color_hex ?? '#7c3aed' }}>
-            {initials(emp.user?.full_name)}
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+              style={{ backgroundColor: emp.user?.color_hex ?? '#7c3aed' }}>
+              {initials(emp.user?.full_name)}
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-plum-800 truncate">{emp.user?.full_name}</p>
+              <p className="text-xs text-muted-foreground">{emp.position?.name} · {isHourly ? 'Por hora' : 'Mensual'}</p>
+            </div>
           </div>
-          <div>
-            <p className="font-semibold text-plum-800">{emp.user?.full_name}</p>
-            <p className="text-xs text-muted-foreground">{emp.position?.name} · {isHourly ? 'Por hora' : 'Mensual'}</p>
-          </div>
+          <Button
+            ref={btnRef}
+            variant="outline"
+            size="sm"
+            onClick={downloadPDF}
+            disabled={pdfLoading}
+            className="flex-shrink-0"
+          >
+            {pdfLoading
+              ? <Loader2 className="w-4 h-4 animate-spin" />
+              : <><Download className="w-4 h-4 mr-1.5" />Descargar PDF</>
+            }
+          </Button>
         </div>
 
         {/* Horas */}
@@ -787,31 +860,27 @@ function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMont
   )
 }
 
-function exportCSV(cards: CardData[], yearMonth: string) {
-  const header = ['Empleado', 'Puesto', 'Tipo', 'H.Esperadas', 'H.Schedule', 'H.Ausentes', 'H.Netas', 'Sesiones', 'Bono', 'Base Sueldo', 'Adicional Feriados', 'Subtotal', 'CCSS', 'Total']
-  const rows = cards.map(c => [
-    c.emp.user?.full_name ?? '',
-    c.emp.position?.name ?? '',
-    c.emp.position?.contract_type === 'hourly' ? 'Por hora' : 'Mensual',
-    c.horasEsperadas,
-    c.horasSchedule,
-    c.horasAusentes,
-    c.horasNetas,
-    c.sessionCount,
-    c.bonusTotal,
-    c.baseSueldo,
-    c.holidayBonus,
-    c.subtotal,
-    c.ccssEntry?.amount ?? 0,
-    c.subtotal + (c.ccssEntry?.amount ?? 0),
-  ])
-  const csv = [header, ...rows].map(r => r.join(',')).join('\n')
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url; a.download = `liquidacion-${yearMonth}.csv`
-  document.body.appendChild(a); a.click()
-  document.body.removeChild(a); URL.revokeObjectURL(url)
+function exportExcel(cards: CardData[], yearMonth: string) {
+  const data = cards.map(c => ({
+    'Empleado': c.emp.user?.full_name ?? '',
+    'Puesto': c.emp.position?.name ?? '',
+    'Tipo': c.emp.position?.contract_type === 'hourly' ? 'Por hora' : 'Mensual',
+    'H.Esperadas': c.horasEsperadas,
+    'H.Schedule': c.horasSchedule,
+    'H.Ausentes': c.horasAusentes,
+    'H.Netas': c.horasNetas,
+    'Sesiones': c.sessionCount,
+    'Bono': c.bonusTotal,
+    'Base Sueldo': c.baseSueldo,
+    'Adicional Feriados': c.holidayBonus,
+    'Subtotal': c.subtotal,
+    'CCSS': c.ccssEntry?.amount ?? 0,
+    'Total': c.subtotal + (c.ccssEntry?.amount ?? 0),
+  }))
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Liquidación')
+  XLSX.writeFile(wb, `liquidacion-${yearMonth}.xlsx`)
 }
 
 function LiquidacionTab() {
@@ -852,7 +921,7 @@ function LiquidacionTab() {
           </span>
           <Button variant="outline" size="icon" className="w-8 h-8" onClick={nextMonth}><ChevronRight className="w-4 h-4" /></Button>
         </div>
-        <Button variant="outline" size="sm" onClick={() => exportCSV(cards, yearMonth)} disabled={cards.length === 0}>
+        <Button variant="outline" size="sm" onClick={() => exportExcel(cards, yearMonth)} disabled={cards.length === 0}>
           <Download className="w-4 h-4 mr-1.5" />Exportar resumen
         </Button>
       </div>

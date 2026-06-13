@@ -1,11 +1,11 @@
 import { Fragment, useState } from 'react'
-import { Loader2, ScrollText } from 'lucide-react'
+import { Loader2, ScrollText, FileDown } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
-import { cn } from '@/lib/utils'
+import { cn, exportToExcel } from '@/lib/utils'
 
 const PAGE_SIZE = 50
 
@@ -109,9 +109,32 @@ export default function Auditoria() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-plum-800">Auditoría</h1>
-        <p className="text-muted-foreground text-sm mt-1">Registro de acciones del sistema</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-plum-800">Auditoría</h1>
+          <p className="text-muted-foreground text-sm mt-1">Registro de acciones del sistema</p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            exportToExcel(
+              rows.map((r) => ({
+                'Fecha y hora': r.created_at,
+                'Usuario': r.user_name ?? '',
+                'Acción': r.action,
+                'Módulo': r.module,
+                'Detalle': r.entity_name ?? '',
+              })),
+              `auditoria-${fromDate}-${toDate}.xlsx`,
+              'Auditoría',
+            )
+          }}
+          disabled={rows.length === 0}
+        >
+          <FileDown className="w-4 h-4 mr-1.5" />
+          Exportar Excel
+        </Button>
       </div>
 
       <div className="space-y-4">

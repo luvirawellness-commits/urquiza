@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Search, UserPlus, Phone, ChevronRight, Loader2, Users, Pencil, UserX, UserCheck, Eye } from 'lucide-react'
+import { Search, UserPlus, Phone, ChevronRight, Loader2, Users, Pencil, UserX, UserCheck, Eye, FileDown } from 'lucide-react'
 import {
   useClients, useCreateClient, useUpdateClient,
   useDeactivateClient, useReactivateClient,
@@ -12,7 +12,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
-import { formatDate } from '@/lib/utils'
+import { formatDate, exportToExcel } from '@/lib/utils'
 import { Client } from '@/types'
 
 const STATUS_LABELS: Record<string, string> = {
@@ -275,10 +275,37 @@ export default function Clientes() {
             {clients?.length ?? 0} cliente{(clients?.length ?? 0) !== 1 ? 's' : ''} registrado{(clients?.length ?? 0) !== 1 ? 's' : ''}
           </p>
         </div>
-        <Button onClick={() => setDialogOpen(true)} className="flex items-center gap-2">
-          <UserPlus className="w-4 h-4" />
-          <span className="hidden sm:inline">Nuevo Cliente</span>
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (!clients?.length) return
+              exportToExcel(
+                clients.map((c) => ({
+                  'Nombre': [c.first_name, c.last_name].filter(Boolean).join(' ') || c.full_name || '',
+                  'Teléfono': c.phone ?? '',
+                  'Email': c.email ?? '',
+                  'Fecha de nacimiento': c.birthdate ?? '',
+                  'Canal': c.source ?? '',
+                  'Estado': STATUS_LABELS[c.status ?? 'active'] ?? c.status ?? '',
+                  'Última visita': c.last_visit_at ? formatDate(c.last_visit_at) : '',
+                  'Sesiones': c.total_sessions ?? 0,
+                })),
+                'clientes.xlsx',
+                'Clientes',
+              )
+            }}
+            disabled={!clients?.length}
+          >
+            <FileDown className="w-4 h-4 mr-1.5" />
+            <span className="hidden sm:inline">Exportar Excel</span>
+          </Button>
+          <Button onClick={() => setDialogOpen(true)} className="flex items-center gap-2">
+            <UserPlus className="w-4 h-4" />
+            <span className="hidden sm:inline">Nuevo Cliente</span>
+          </Button>
+        </div>
       </div>
 
       <div className="flex items-center gap-3 flex-wrap">
