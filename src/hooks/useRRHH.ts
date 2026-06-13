@@ -5,6 +5,17 @@ import { useTenantId } from '@/contexts/AuthContext'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
+export type WeeklyScheduleInterval = { from: string; to: string }
+export type WeeklySchedule = {
+  monday?: WeeklyScheduleInterval[]
+  tuesday?: WeeklyScheduleInterval[]
+  wednesday?: WeeklyScheduleInterval[]
+  thursday?: WeeklyScheduleInterval[]
+  friday?: WeeklyScheduleInterval[]
+  saturday?: WeeklyScheduleInterval[]
+  sunday?: WeeklyScheduleInterval[]
+}
+
 export type JobPosition = {
   id: string; tenant_id: string; name: string
   contract_type: 'hourly' | 'monthly'
@@ -23,7 +34,8 @@ export type EmployeeProfile = {
   start_date: string; expected_monthly_hours: number
   productivity_threshold_1?: number | null; productivity_bonus_1?: number | null
   productivity_threshold_2?: number | null; productivity_bonus_2?: number | null
-  active: boolean; notes?: string | null; created_at: string; updated_at: string
+  active: boolean; notes?: string | null; weekly_schedule?: WeeklySchedule | null
+  created_at: string; updated_at: string
   user?: EmployeeUser | null
   position?: JobPosition | null
 }
@@ -199,6 +211,26 @@ export function useCompletedApptsByTherapist(yearMonth: string) {
       const { data, error } = await supabase
         .from('appointments').select('therapist_id,duration_minutes,scheduled_at')
         .eq('tenant_id', tenantId).eq('status', 'completed')
+        .gte('scheduled_at', `${yearMonth}-01T00:00:00`)
+        .lte('scheduled_at', `${endDate}T23:59:59`)
+      if (error) throw error
+      return data as { therapist_id: string; duration_minutes: number; scheduled_at: string }[]
+    },
+    enabled: !!yearMonth && !!tenantId,
+  })
+}
+
+export function useNonCancelledApptsByTherapist(yearMonth: string) {
+  const tenantId = useTenantId()
+  const [y, m] = yearMonth.split('-').map(Number)
+  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  return useQuery({
+    queryKey: ['non-cancelled-appts-therapist-month', tenantId, yearMonth],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('appointments').select('therapist_id,duration_minutes,scheduled_at')
+        .eq('tenant_id', tenantId)
+        .in('status', ['pending', 'confirmed', 'completed'])
         .gte('scheduled_at', `${yearMonth}-01T00:00:00`)
         .lte('scheduled_at', `${endDate}T23:59:59`)
       if (error) throw error
@@ -397,6 +429,7 @@ type CreateEmployeeInput = {
   productivity_threshold_1?: number | null; productivity_bonus_1?: number | null
   productivity_threshold_2?: number | null; productivity_bonus_2?: number | null
   notes?: string | null
+  weekly_schedule?: WeeklySchedule | null
 }
 
 export function useCreateEmployee() {
@@ -501,5 +534,26 @@ export function useDeleteHoliday() {
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['holidays'] }),
+  })
+}
+
+export function useEmployeeSchedules() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['employee-schedules', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('employee_profiles')
+        .select('user_id, weekly_schedule')
+        .eq('tenant_id', tenantId)
+        .eq('active', true)
+      if (error) throw error
+      const map = new Map<string, WeeklySchedule>()
+      for (const row of (data ?? [])) {
+        if (row.weekly_schedule) map.set(row.user_id, row.weekly_schedule as WeeklySchedule)
+      }
+      return map
+    },
+    enabled: !!tenantId,
   })
 }

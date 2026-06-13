@@ -8,7 +8,7 @@ import {
 import { useAuth } from '@/contexts/AuthContext'
 import {
   useJobPositions, useEmployeeProfiles, useAllTenantUsers,
-  useAbsences, useCCSSByMonth, useCompletedApptsByTherapist, useAbsencesByMonth,
+  useAbsences, useCCSSByMonth, useCompletedApptsByTherapist, useAbsencesByMonth, useNonCancelledApptsByTherapist,
   useHolidaysForYear, useHolidaysForMonth,
   useCreateJobPosition, useUpdateJobPosition,
   useCreateEmployee, useUpdateEmployee,
@@ -16,6 +16,7 @@ import {
   useCreateHoliday, useDeleteHoliday,
   calcMonthScheduleHours, calcHolidayBonus,
   type JobPosition, type EmployeeProfile, type EmployeeCCSS, type Holiday, type HolidayDetail,
+  type WeeklySchedule,
 } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -269,7 +270,18 @@ type EmpleadoForm = {
   productivity_threshold_1: string; productivity_bonus_1: string
   productivity_threshold_2: string; productivity_bonus_2: string
   notes: string; active: boolean
+  weekly_schedule: WeeklySchedule
 }
+
+const WEEK_DAYS: { key: keyof WeeklySchedule; label: string }[] = [
+  { key: 'monday', label: 'Lunes' },
+  { key: 'tuesday', label: 'Martes' },
+  { key: 'wednesday', label: 'Miércoles' },
+  { key: 'thursday', label: 'Jueves' },
+  { key: 'friday', label: 'Viernes' },
+  { key: 'saturday', label: 'Sábado' },
+  { key: 'sunday', label: 'Domingo' },
+]
 
 function EmpleadoModal({
   open, onClose, editing,
@@ -285,7 +297,7 @@ function EmpleadoModal({
     expected_monthly_hours: '160',
     productivity_threshold_1: '', productivity_bonus_1: '',
     productivity_threshold_2: '', productivity_bonus_2: '',
-    notes: '', active: true,
+    notes: '', active: true, weekly_schedule: {},
   })
   const [error, setError] = useState('')
 
@@ -302,6 +314,7 @@ function EmpleadoModal({
         productivity_bonus_2: editing.productivity_bonus_2?.toString() ?? '',
         notes: editing.notes ?? '',
         active: editing.active,
+        weekly_schedule: editing.weekly_schedule ?? {},
       })
     } else {
       setForm({
@@ -309,7 +322,7 @@ function EmpleadoModal({
         expected_monthly_hours: '160',
         productivity_threshold_1: '', productivity_bonus_1: '',
         productivity_threshold_2: '', productivity_bonus_2: '',
-        notes: '', active: true,
+        notes: '', active: true, weekly_schedule: {},
       })
     }
     setError('')
@@ -347,6 +360,7 @@ function EmpleadoModal({
       productivity_threshold_2: form.productivity_threshold_2 ? parseFloat(form.productivity_threshold_2) : null,
       productivity_bonus_2: form.productivity_bonus_2 ? parseFloat(form.productivity_bonus_2) : null,
       notes: form.notes || null,
+      weekly_schedule: Object.keys(form.weekly_schedule).length > 0 ? form.weekly_schedule : null,
     }
     try {
       if (editing) {
@@ -426,6 +440,66 @@ function EmpleadoModal({
                   value={form.productivity_bonus_2} onChange={e => set('productivity_bonus_2', e.target.value)} />
               </div>
             </div>
+          </div>
+          <div className="border rounded-lg p-3 space-y-2 bg-gray-50">
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Horario semanal</p>
+            {WEEK_DAYS.map(({ key, label }) => {
+              const intervals = form.weekly_schedule[key] ?? []
+              const enabled = intervals.length > 0
+              return (
+                <div key={key} className="flex items-start gap-3 py-1 border-b border-gray-100 last:border-b-0">
+                  <label className="flex items-center gap-2 w-28 flex-shrink-0 pt-1.5 cursor-pointer">
+                    <input type="checkbox" checked={enabled}
+                      onChange={e => {
+                        if (e.target.checked) {
+                          setForm(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [key]: [{ from: '09:00', to: '18:00' }] } }))
+                        } else {
+                          setForm(p => {
+                            const { [key]: _removed, ...rest } = p.weekly_schedule
+                            return { ...p, weekly_schedule: rest }
+                          })
+                        }
+                      }}
+                      className="w-4 h-4 rounded" />
+                    <span className="text-sm">{label}</span>
+                  </label>
+                  {enabled && (
+                    <div className="flex-1 space-y-1.5">
+                      {intervals.map((interval, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                          <Input type="time" value={interval.from}
+                            onChange={e => {
+                              const updated = intervals.map((iv, i) => i === idx ? { ...iv, from: e.target.value } : iv)
+                              setForm(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [key]: updated } }))
+                            }}
+                            className="h-8 text-sm w-28" />
+                          <span className="text-muted-foreground text-xs">–</span>
+                          <Input type="time" value={interval.to}
+                            onChange={e => {
+                              const updated = intervals.map((iv, i) => i === idx ? { ...iv, to: e.target.value } : iv)
+                              setForm(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [key]: updated } }))
+                            }}
+                            className="h-8 text-sm w-28" />
+                          {intervals.length > 1 && (
+                            <button type="button"
+                              onClick={() => {
+                                const updated = intervals.filter((_, i) => i !== idx)
+                                setForm(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [key]: updated } }))
+                              }}
+                              className="text-muted-foreground hover:text-red-500 text-lg leading-none">×</button>
+                          )}
+                        </div>
+                      ))}
+                      <button type="button"
+                        onClick={() => {
+                          setForm(p => ({ ...p, weekly_schedule: { ...p.weekly_schedule, [key]: [...intervals, { from: '09:00', to: '18:00' }] } }))
+                        }}
+                        className="text-xs text-plum-700 hover:underline">+ Agregar intervalo</button>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
           </div>
           <div className="space-y-1.5">
             <Label>Notas</Label>
@@ -1253,7 +1327,142 @@ function FeriadosTab() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados'
+// ── Tab 6: Productividad ──────────────────────────────────────────────────────
+
+type ProdRating = {
+  label: string
+  bgClass: string
+  textClass: string
+  hexColor: string
+}
+
+function prodRating(index: number | null, sessionCount: number): ProdRating {
+  if (sessionCount === 0 || index === null)
+    return { label: 'Sin sesiones', bgClass: 'bg-gray-100', textClass: 'text-gray-600', hexColor: '#6b7280' }
+  if (index <= 1.5)
+    return { label: 'Excelente', bgClass: 'bg-green-100', textClass: 'text-green-700', hexColor: '#16a34a' }
+  if (index <= 2.25)
+    return { label: 'Bien', bgClass: 'bg-yellow-100', textClass: 'text-yellow-700', hexColor: '#ca8a04' }
+  if (index <= 3.6)
+    return { label: 'Regular', bgClass: 'bg-orange-100', textClass: 'text-orange-700', hexColor: '#ea580c' }
+  return { label: 'Bajo', bgClass: 'bg-red-100', textClass: 'text-red-700', hexColor: '#dc2626' }
+}
+
+function ProductividadTab() {
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const yearMonth = `${year}-${String(month).padStart(2, '0')}`
+
+  const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
+  const { data: appts = [], isLoading: apptLoading } = useNonCancelledApptsByTherapist(yearMonth)
+  const { data: absences = [], isLoading: absLoading } = useAbsencesByMonth(yearMonth)
+
+  const isLoading = empLoading || apptLoading || absLoading
+  const activeEmployees = employees.filter((e) => e.active)
+
+  const rows = activeEmployees.map((emp) => {
+    const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, year, month) || emp.expected_monthly_hours
+    const horasDeductibles = Math.round(
+      absences
+        .filter((a) => a.user_id === emp.user_id && a.deduct_from_salary)
+        .reduce((s, a) => s + a.hours_absent, 0) * 100,
+    ) / 100
+    const horasNetas = Math.max(0, Math.round((horasSchedule - horasDeductibles) * 100) / 100)
+    const sessionCount = appts.filter((a) => a.therapist_id === emp.user_id).length
+    const index = sessionCount > 0 ? Math.round((horasNetas / sessionCount) * 100) / 100 : null
+    return { emp, horasNetas, sessionCount, index }
+  })
+
+  function prevMonth() {
+    if (month === 1) { setMonth(12); setYear((y) => y - 1) } else setMonth((m) => m - 1)
+  }
+  function nextMonth() {
+    if (month === 12) { setMonth(1); setYear((y) => y + 1) } else setMonth((m) => m + 1)
+  }
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="icon" className="w-8 h-8" onClick={prevMonth}>
+            <ChevronLeft className="w-4 h-4" />
+          </Button>
+          <span className="text-base font-semibold text-plum-800 min-w-[130px] text-center capitalize">
+            {MONTHS_ES[month - 1]} {year}
+          </span>
+          <Button variant="outline" size="icon" className="w-8 h-8" onClick={nextMonth}>
+            <ChevronRight className="w-4 h-4" />
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground italic">Índice = horas netas ÷ sesiones. Menor es mejor.</p>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-plum-800" />
+        </div>
+      ) : activeEmployees.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground bg-gray-50 rounded-xl">
+          <UserCheck className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No hay empleados activos</p>
+        </div>
+      ) : (
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+          {rows.map(({ emp, horasNetas, sessionCount, index }) => {
+            const rating = prodRating(index, sessionCount)
+            return (
+              <Card key={emp.id}>
+                <CardContent className="p-4 space-y-3">
+                  {/* Employee header */}
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+                      style={{ backgroundColor: emp.user?.color_hex ?? '#7c3aed' }}
+                    >
+                      {initials(emp.user?.full_name)}
+                    </div>
+                    <div>
+                      <p className="font-semibold text-plum-800 text-sm">{emp.user?.full_name}</p>
+                      <p className="text-xs text-muted-foreground">{emp.position?.name}</p>
+                    </div>
+                  </div>
+
+                  {/* Metrics grid */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="bg-gray-50 rounded-lg p-2.5 text-center">
+                      <p className="text-[10px] text-muted-foreground">Sesiones</p>
+                      <p className="text-xl font-bold text-plum-800 mt-0.5">{sessionCount}</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-2.5 text-center">
+                      <p className="text-[10px] text-muted-foreground">Horas netas</p>
+                      <p className="text-xl font-bold text-plum-800 mt-0.5">{horasNetas}h</p>
+                    </div>
+                    <div className="bg-gray-50 rounded-lg p-2.5 text-center">
+                      <p className="text-[10px] text-muted-foreground">Índice</p>
+                      <p className="text-xl font-bold mt-0.5" style={{ color: rating.hexColor }}>
+                        {index !== null ? index.toFixed(2) : '—'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Rating badge */}
+                  <div className="flex justify-center pt-0.5">
+                    <span className={cn('px-3 py-1 rounded-full text-xs font-semibold', rating.bgClass, rating.textClass)}>
+                      {rating.label}
+                    </span>
+                  </div>
+                </CardContent>
+              </Card>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados' | 'productividad'
 
 const TABS: { key: RRHHTab; label: string }[] = [
   { key: 'puestos', label: 'Puestos' },
@@ -1261,6 +1470,7 @@ const TABS: { key: RRHHTab; label: string }[] = [
   { key: 'liquidacion', label: 'Liquidación Mensual' },
   { key: 'ausencias', label: 'Ausencias' },
   { key: 'feriados', label: 'Feriados' },
+  { key: 'productividad', label: 'Productividad' },
 ]
 
 export default function RRHH() {
@@ -1297,6 +1507,7 @@ export default function RRHH() {
       {tab === 'liquidacion' && <LiquidacionTab />}
       {tab === 'ausencias' && <AusenciasTab />}
       {tab === 'feriados' && <FeriadosTab />}
+      {tab === 'productividad' && <ProductividadTab />}
     </div>
   )
 }

@@ -12,7 +12,7 @@ import { useValidateGiftCard, useRedeemGiftCard, type ValidatedGiftCard } from '
 import { useClients, useCreateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { useCreateAbsence } from '@/hooks/useRRHH'
+import { useCreateAbsence, useEmployeeSchedules, type WeeklySchedule } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -156,6 +156,36 @@ function getUnavailableSegments(
     segs.push({ top: toY(lastEnd), height: toY(GRID_END) - toY(lastEnd) })
   }
 
+  return segs
+}
+
+const WEEKLY_DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const
+
+function getWeeklyScheduleUnavailableSegs(
+  ws: WeeklySchedule | null | undefined,
+  date: Date,
+): { top: number; height: number }[] {
+  if (!ws) return []
+  const GRID_START = START_HOUR * 60
+  const GRID_END = END_HOUR * 60
+  function toY(mins: number) { return ((mins - GRID_START) * HOUR_PX) / 60 }
+  const dayKey = WEEKLY_DAY_KEYS[date.getDay()] as keyof WeeklySchedule
+  const intervals = ws[dayKey] ?? []
+  if (intervals.length === 0) return [{ top: 0, height: TOTAL_HEIGHT }]
+  const sorted = [...intervals]
+    .map(iv => ({
+      s: iv.from.split(':').map(Number).reduce((h, m) => h * 60 + m),
+      e: iv.to.split(':').map(Number).reduce((h, m) => h * 60 + m),
+    }))
+    .sort((a, b) => a.s - b.s)
+  const segs: { top: number; height: number }[] = []
+  if (sorted[0].s > GRID_START) segs.push({ top: 0, height: toY(sorted[0].s) })
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const gs = sorted[i].e; const ge = sorted[i + 1].s
+    if (ge > gs) segs.push({ top: toY(gs), height: toY(ge) - toY(gs) })
+  }
+  const lastEnd = sorted[sorted.length - 1].e
+  if (lastEnd < GRID_END) segs.push({ top: toY(lastEnd), height: toY(GRID_END) - toY(lastEnd) })
   return segs
 }
 
@@ -980,6 +1010,7 @@ function NuevoTurnoModal({
   const createAppt = useCreateAppointment()
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
+  const { data: employeeSchedules } = useEmployeeSchedules()
 
   const createClient = useCreateClient()
   const [showQuickCreate, setShowQuickCreate] = useState(false)
@@ -1015,6 +1046,30 @@ function NuevoTurnoModal({
     e.preventDefault()
     setFormError(null)
     if (!form.client_id) { setFormError('Por favor seleccioná un cliente.'); return }
+
+    if (!isSobreTurno && form.therapist_id && form.date && form.time) {
+      const ws = employeeSchedules?.get(form.therapist_id)
+      if (ws) {
+        const dayKey = WEEKLY_DAY_KEYS[new Date(form.date).getDay()] as keyof WeeklySchedule
+        const intervals = ws[dayKey] ?? []
+        if (intervals.length === 0) {
+          setFormError("La terapeuta no trabaja en ese horario. Usá 'Sobreturno' para agendar fuera de su schedule.")
+          return
+        }
+        const [h, m] = form.time.split(':').map(Number)
+        const apptMins = h * 60 + m
+        const fits = intervals.some(iv => {
+          const [fh, fm] = iv.from.split(':').map(Number)
+          const [th, tm] = iv.to.split(':').map(Number)
+          return apptMins >= fh * 60 + fm && apptMins < th * 60 + tm
+        })
+        if (!fits) {
+          setFormError("La terapeuta no trabaja en ese horario. Usá 'Sobreturno' para agendar fuera de su schedule.")
+          return
+        }
+      }
+    }
+
     const service = services?.find(s => s.id === form.service_id)
     try {
       const scheduledAtValue = new Date(`${form.date}T${form.time}:00`).toISOString()
@@ -1486,6 +1541,8 @@ function DayView({
     }
   }, []) // scroll to now once on mount
 
+  const { data: employeeSchedules } = useEmployeeSchedules()
+
   const dateStr = dateKey(date)
   const dayAppts = appointments.filter(a =>
     dateKey(new Date(a.scheduled_at)) === dateStr &&
@@ -1563,6 +1620,10 @@ function DayView({
               const colAppts = dayAppts.filter(a => a.therapist_id === t.id)
 
               const unavailableSegs = getUnavailableSegments(t.schedule, date)
+              const weeklyUnavailableSegs = getWeeklyScheduleUnavailableSegs(
+                employeeSchedules?.get(t.id),
+                date,
+              )
 
               return (
                 <div key={t.id}
@@ -1580,10 +1641,16 @@ function DayView({
                       style={{ top: timeToY(h, 30) }} />
                   ))}
 
-                  {/* Unavailability shading */}
+                  {/* Unavailability shading (users.schedule) */}
                   {unavailableSegs.map((seg, idx) => (
                     <div key={idx} className="absolute left-0 right-0 pointer-events-none"
                       style={{ top: seg.top, height: seg.height, backgroundColor: '#F3F4F6' }} />
+                  ))}
+
+                  {/* Weekly schedule shading (employee_profiles.weekly_schedule) */}
+                  {weeklyUnavailableSegs.map((seg, idx) => (
+                    <div key={`ws-${idx}`} className="absolute left-0 right-0 pointer-events-none"
+                      style={{ top: seg.top, height: seg.height, backgroundColor: 'rgba(0,0,0,0.04)' }} />
                   ))}
 
                   {/* Appointment blocks */}
