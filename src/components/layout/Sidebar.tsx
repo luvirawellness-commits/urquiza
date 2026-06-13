@@ -128,7 +128,7 @@ export function Sidebar() {
       <TenantSwitcher />
 
       {/* Navigation */}
-      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto scrollbar-sidebar">
         {filteredNav.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
@@ -197,7 +197,7 @@ export function Sidebar() {
   return (
     <>
       {/* Desktop sidebar */}
-      <aside className="hidden lg:flex flex-col w-56 bg-plum-800 min-h-screen fixed top-0 left-0 z-30">
+      <aside className="hidden lg:flex flex-col w-56 bg-plum-800 h-screen overflow-hidden fixed top-0 left-0 z-30">
         {sidebarContent}
       </aside>
 

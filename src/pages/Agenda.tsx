@@ -188,7 +188,7 @@ const STATUS_LABELS: Record<AppointmentStatus, string> = {
 const STATUS_PILL: Record<AppointmentStatus, string> = {
   pending: 'bg-gray-100 text-gray-700',
   confirmed: 'bg-blue-100 text-blue-700',
-  completed: 'bg-green-100 text-green-700',
+  completed: 'bg-blue-100 text-blue-700',
   cancelled: 'bg-red-100 text-red-700',
   no_show: 'bg-orange-100 text-orange-700',
   blocked: 'bg-slate-100 text-slate-700',
@@ -197,7 +197,7 @@ const STATUS_PILL: Record<AppointmentStatus, string> = {
 const STATUS_DOT: Record<AppointmentStatus, string> = {
   pending: 'bg-gray-400',
   confirmed: 'bg-blue-500',
-  completed: 'bg-green-500',
+  completed: 'bg-blue-600',
   cancelled: 'bg-red-500',
   no_show: 'bg-orange-500',
   blocked: 'bg-slate-400',
@@ -231,6 +231,7 @@ function DayApptBlock({
   const height = Math.max(appt.duration_minutes * (HOUR_PX / 60), 22)
   const isBlock = appt.status === 'blocked'
   const isCancelled = appt.status === 'cancelled' || appt.status === 'no_show'
+  const isCompleted = appt.status === 'completed'
 
   const bloqueoTipo = isBlock ? parseBloqueoTipo(appt.notes) : null
   const bloqueoStyle = bloqueoTipo
@@ -248,8 +249,8 @@ function DayApptBlock({
         top,
         height,
         opacity: isCancelled ? 0.5 : 1,
-        backgroundColor: isCancelled ? '#f3f4f6' : (isBlock ? bloqueoStyle.bg : `${color}26`),
-        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : (isBlock ? bloqueoStyle.border : color)}`,
+        backgroundColor: isCancelled ? '#f3f4f6' : isBlock ? bloqueoStyle.bg : isCompleted ? '#2563EB26' : `${color}26`,
+        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : isBlock ? bloqueoStyle.border : isCompleted ? '#2563EB' : color}`,
       }}
       onClick={(e) => { e.stopPropagation(); onClick() }}
     >
@@ -1659,12 +1660,13 @@ function WeekView({
                 appts.map(appt => {
                   const color = appt.therapist?.color_hex ?? '#7c3aed'
                   const isCancelled = appt.status === 'cancelled' || appt.status === 'no_show'
+                  const isCompleted = appt.status === 'completed'
                   return (
                     <button key={appt.id}
                       className="w-full text-left rounded-lg p-2 hover:opacity-80 transition-opacity"
                       style={{
-                        backgroundColor: isCancelled ? '#f3f4f6' : `${color}18`,
-                        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : color}`,
+                        backgroundColor: isCancelled ? '#f3f4f6' : isCompleted ? '#2563EB18' : `${color}18`,
+                        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : isCompleted ? '#2563EB' : color}`,
                         opacity: isCancelled ? 0.6 : 1,
                       }}
                       onClick={() => onAppointmentClick(appt)}>
