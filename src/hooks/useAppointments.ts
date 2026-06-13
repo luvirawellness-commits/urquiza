@@ -132,6 +132,43 @@ export function useCreateAppointment() {
   })
 }
 
+type UpdateAppointmentInput = {
+  id: string
+  service_id: string
+  therapist_id: string
+  scheduled_at: string
+  duration_minutes: number
+  box_number: number
+  price_charged?: number | null
+}
+
+export function useUpdateAppointment() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  const { logAction } = useAuditLog()
+  return useMutation({
+    mutationFn: async ({ id, ...patch }: UpdateAppointmentInput) => {
+      const { error } = await supabase
+        .from('appointments')
+        .update(patch)
+        .eq('id', id)
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+    },
+    onSuccess: (_, variables) => {
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      logAction({
+        action: 'UPDATE',
+        module: 'agenda',
+        entityType: 'appointment',
+        entityId: variables.id,
+        entityName: 'Turno editado',
+        newValue: { scheduled_at: variables.scheduled_at },
+      })
+    },
+  })
+}
+
 export function useUpdateServicePrice() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
@@ -154,14 +191,15 @@ export function useUpdateAppointmentStatus() {
   const { logAction } = useAuditLog()
   const { user } = useAuth()
   return useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: AppointmentStatus }) => {
+    mutationFn: async ({ id, status, client_membership_id }: { id: string; status: AppointmentStatus; client_membership_id?: string }) => {
       const isCancellation = status === 'cancelled' || status === 'no_show'
-      const patch = {
+      const patch: Record<string, unknown> = {
         status,
         ...(isCancellation && {
           cancelled_at: new Date().toISOString(),
           cancelled_by: user?.id ?? null,
         }),
+        ...(client_membership_id != null && { client_membership_id }),
       }
       const { error } = await supabase
         .from('appointments')
@@ -173,6 +211,8 @@ export function useUpdateAppointmentStatus() {
     onSuccess: (_, variables) => {
       qc.invalidateQueries({ queryKey: ['appointments'] })
       if (variables.status === 'completed') {
+        qc.invalidateQueries({ queryKey: ['active-membership'] })
+        qc.invalidateQueries({ queryKey: ['client-active-memberships'] })
         logAction({
           action: 'UPDATE',
           module: 'agenda',

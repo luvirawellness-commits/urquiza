@@ -1,10 +1,9 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil } from 'lucide-react'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
-  useServices, useTherapists, type Therapist,
-  useUseMembershipSession, useUpdateClientAfterSession,
+  useUpdateAppointment, useServices, useTherapists, type Therapist,
 } from '@/hooks/useAppointments'
 import { useClientActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
@@ -219,6 +218,7 @@ const PAYMENT_METHODS = [
 ] as const
 
 type PaymentType = 'efectivo_digital' | 'membresia' | 'gift_card'
+type SplitRow = { method: string; amount: string }
 
 // ── DayApptBlock ──────────────────────────────────────────────────────────────
 
@@ -296,24 +296,29 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [monto, setMonto] = useState(String(basePrice))
   const [descAmt, setDescAmt] = useState('0')
   const [descPct, setDescPct] = useState('0')
-  const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [splitRows, setSplitRows] = useState<SplitRow[]>([{ method: 'cash', amount: String(basePrice) }])
 
   const montoNum = Number(monto) || 0
   const descAmtNum = Number(descAmt) || 0
   const descPctNum = Number(descPct) || 0
   const montoFinal = Math.max(0, montoNum - descAmtNum - (montoNum * descPctNum / 100))
+  const splitTotal = splitRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0)
+  const splitBalanced = Math.abs(splitTotal - montoFinal) < 0.01
 
   const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
   const [membershipSubOpt, setMembershipSubOpt] = useState<'use_existing' | 'sell_new'>('use_existing')
   const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(null)
   const [showVenderModal, setShowVenderModal] = useState(false)
-  const useMembershipSession = useUseMembershipSession()
 
   useEffect(() => {
     if (activeMemberships && activeMemberships.length >= 1 && !selectedMembershipId) {
       setSelectedMembershipId(activeMemberships[0].id)
     }
   }, [activeMemberships])
+
+  useEffect(() => {
+    setSplitRows(prev => prev.length === 1 ? [{ ...prev[0], amount: String(montoFinal) }] : prev)
+  }, [montoFinal])
 
   const selectedMembership = activeMemberships?.find((m) => m.id === selectedMembershipId) ?? null
   const allowedServiceIds = selectedMembership?.plan?.allowed_service_ids ?? null
@@ -347,7 +352,6 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
   const insertTx = useInsertTransaction()
   const updateStatus = useUpdateAppointmentStatus()
-  const updateClient = useUpdateClientAfterSession()
 
   async function handleValidateGC() {
     setGcError(null); setGcValid(null)
@@ -374,19 +378,23 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
     const today = new Date().toISOString().split('T')[0]
     try {
       if (paymentType === 'efectivo_digital') {
-        await insertTx.mutateAsync({
-          type: 'income', category: 'session', amount: montoFinal,
-          payment_method: paymentMethod, description: buildDescription(),
-          date: today, user_id: user!.id, status: 'paid',
-          is_recurring: false, appointment_id: appt.id,
-        })
-      } else if (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && selectedMembershipId) {
-        await useMembershipSession.mutateAsync({ membershipId: selectedMembershipId, appointmentId: appt.id })
+        const desc = buildDescription()
+        for (const row of splitRows) {
+          await insertTx.mutateAsync({
+            type: 'income', category: 'session', amount: Number(row.amount) || 0,
+            payment_method: row.method, description: desc,
+            date: today, user_id: user!.id, status: 'paid',
+            is_recurring: false, appointment_id: appt.id,
+          })
+        }
       } else if (paymentType === 'gift_card' && gcValid) {
         await redeemGC.mutateAsync({ giftCardId: gcValid.id, clientId: appt.client_id ?? '', appointmentId: appt.id })
       }
-      await updateStatus.mutateAsync({ id: appt.id, status: 'completed' })
-      await updateClient.mutateAsync(appt.client_id ?? '')
+      const membershipId =
+        paymentType === 'membresia' && membershipSubOpt === 'use_existing' && selectedMembershipId
+          ? selectedMembershipId
+          : undefined
+      await updateStatus.mutateAsync({ id: appt.id, status: 'completed', client_membership_id: membershipId })
       onClose()
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la sesión')
@@ -394,7 +402,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }
 
   const canConfirm = !busy && (
-    paymentType === 'efectivo_digital' ||
+    (paymentType === 'efectivo_digital' && splitBalanced) ||
     (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
@@ -437,15 +445,51 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
             <div className="space-y-1"><Label className="text-xs">Descuento $</Label><Input type="number" min="0" step="1" value={descAmt} onChange={(e) => setDescAmt(e.target.value)} /></div>
             <div className="space-y-1"><Label className="text-xs">Descuento %</Label><Input type="number" min="0" max="100" step="1" value={descPct} onChange={(e) => setDescPct(e.target.value)} /></div>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-plum-800">Monto final:</span>
+          <div className="flex items-center justify-between text-sm">
+            <span className="font-medium text-plum-800">A cobrar:</span>
             <span className="text-lg font-bold text-plum-800">{formatCurrency(montoFinal)}</span>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Medio de pago</Label>
-            <select className={SELECT_CLS} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-              {PAYMENT_METHODS.map((pm) => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
-            </select>
+          <div className="space-y-2">
+            <Label className="text-xs">Métodos de pago</Label>
+            {splitRows.map((row, i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <select
+                  className={cn(SELECT_CLS, 'flex-1')}
+                  value={row.method}
+                  onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, method: e.target.value } : r))}
+                >
+                  {PAYMENT_METHODS.map((pm) => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+                </select>
+                <Input
+                  type="number" min="0" step="1"
+                  className="w-28"
+                  value={row.amount}
+                  onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, amount: e.target.value } : r))}
+                />
+                {splitRows.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => setSplitRows(prev => prev.filter((_, j) => j !== i))}
+                    className="text-muted-foreground hover:text-red-600 px-1 text-base leading-none"
+                  >✕</button>
+                )}
+              </div>
+            ))}
+            {splitRows.length < 3 && (
+              <button
+                type="button"
+                onClick={() => setSplitRows(prev => [...prev, { method: 'transfer', amount: '0' }])}
+                className="text-xs text-plum-800 hover:underline"
+              >+ Agregar método de pago</button>
+            )}
+          </div>
+          <div className="flex items-center justify-between text-xs">
+            <span className={splitBalanced ? 'text-green-700 font-medium' : 'text-red-600 font-medium'}>
+              Ingresado: {formatCurrency(splitTotal)}
+            </span>
+            {!splitBalanced && (
+              <span className="text-red-600">debe sumar {formatCurrency(montoFinal)}</span>
+            )}
           </div>
         </div>
       )}
@@ -584,7 +628,6 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
             setBusy(true)
             try {
               await updateStatus.mutateAsync({ id: appt.id, status: 'completed' })
-              await updateClient.mutateAsync(appt.client_id ?? '')
               onClose()
             } catch (e) {
               setError((e as Error).message || 'Error al cerrar la sesión')
@@ -594,6 +637,112 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
         />
       )}
     </div>
+  )
+}
+
+// ── EditarTurnoForm ───────────────────────────────────────────────────────────
+
+function EditarTurnoForm({ appt, onCancel, onSaved }: { appt: Appointment; onCancel: () => void; onSaved: () => void }) {
+  const { data: services } = useServices()
+  const { data: therapists } = useTherapists()
+  const updateAppt = useUpdateAppointment()
+
+  const dt = new Date(appt.scheduled_at)
+  const [form, setForm] = useState({
+    service_id: appt.service_id ?? '',
+    therapist_id: appt.therapist_id,
+    duration_minutes: (appt.duration_minutes ?? 60) as 60 | 90,
+    box_number: (appt.box_number ?? 1) as 1 | 2 | 3,
+    date: `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`,
+    time: `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`,
+  })
+  const [formError, setFormError] = useState<string | null>(null)
+
+  function set<K extends keyof typeof form>(key: K, value: (typeof form)[K]) {
+    setForm(prev => ({ ...prev, [key]: value }))
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    setFormError(null)
+    try {
+      const service = services?.find(s => s.id === form.service_id)
+      const price_charged = form.service_id
+        ? (form.duration_minutes === 90 ? (service?.price_90 ?? service?.price_60) : (service?.price_60 ?? service?.price_90))
+        : undefined
+      await updateAppt.mutateAsync({
+        id: appt.id,
+        service_id: form.service_id,
+        therapist_id: form.therapist_id,
+        scheduled_at: new Date(`${form.date}T${form.time}:00`).toISOString(),
+        duration_minutes: form.duration_minutes,
+        box_number: form.box_number,
+        price_charged,
+      })
+      onSaved()
+    } catch (err) {
+      const msg = err instanceof Error ? err.message.toLowerCase() : ''
+      if (msg.includes('box') || msg.includes('conflict') || msg.includes('overlap') || msg.includes('ocupado') || msg.includes('duplicate') || msg.includes('unique')) {
+        setFormError('Box ocupado en ese horario. Elegí otro horario o box disponible.')
+      } else {
+        setFormError((err instanceof Error && err.message) ? err.message : 'No se pudo guardar el turno. Intentá de nuevo.')
+      }
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4 mt-2">
+      <div className="space-y-1.5">
+        <Label>Servicio</Label>
+        <select value={form.service_id} onChange={e => set('service_id', e.target.value)} required className={SELECT_CLS}>
+          <option value="">Seleccionar servicio...</option>
+          {services?.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+        </select>
+      </div>
+      <div className="space-y-1.5">
+        <Label>Terapeuta</Label>
+        <select value={form.therapist_id} onChange={e => set('therapist_id', e.target.value)} required className={SELECT_CLS}>
+          <option value="">Seleccionar terapeuta...</option>
+          {therapists?.map(t => <option key={t.id} value={t.id}>{t.full_name}</option>)}
+        </select>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Duración</Label>
+          <select value={form.duration_minutes} onChange={e => set('duration_minutes', Number(e.target.value) as 60 | 90)} className={SELECT_CLS}>
+            <option value={60}>60 minutos</option>
+            <option value={90}>90 minutos</option>
+          </select>
+        </div>
+        <div className="space-y-1.5">
+          <Label>Box</Label>
+          <select value={form.box_number} onChange={e => set('box_number', Number(e.target.value) as 1 | 2 | 3)} className={SELECT_CLS}>
+            <option value={1}>Box 1</option>
+            <option value={2}>Box 2</option>
+            <option value={3}>Box 3</option>
+          </select>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label>Fecha</Label>
+          <Input type="date" value={form.date} onChange={e => set('date', e.target.value)} required />
+        </div>
+        <div className="space-y-1.5">
+          <Label>Hora</Label>
+          <Input type="time" value={form.time} onChange={e => set('time', e.target.value)} required />
+        </div>
+      </div>
+      {formError && <p className="text-sm text-destructive">{formError}</p>}
+      <div className="flex gap-2 pt-2">
+        <Button type="button" variant="outline" onClick={onCancel} className="flex-1">Cancelar</Button>
+        <Button type="submit" className="flex-1" disabled={updateAppt.isPending}>
+          {updateAppt.isPending
+            ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+            : 'Guardar cambios'}
+        </Button>
+      </div>
+    </form>
   )
 }
 
@@ -636,6 +785,7 @@ function Field({ label, value }: { label: string; value: string }) {
 function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose: () => void }) {
   const updateStatus = useUpdateAppointmentStatus()
   const [showPayment, setShowPayment] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
 
   async function changeStatus(status: AppointmentStatus) {
     await updateStatus.mutateAsync({ id: appt.id, status })
@@ -674,11 +824,13 @@ function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose:
     <Dialog open onOpenChange={onClose}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>{showPayment ? `Cerrar sesión — ${clientName(appt)}` : 'Detalle del Turno'}</DialogTitle>
+          <DialogTitle>{showEdit ? `Editar turno — ${clientName(appt)}` : showPayment ? `Cerrar sesión — ${clientName(appt)}` : 'Detalle del Turno'}</DialogTitle>
           <DialogDescription>{formatDate(appt.scheduled_at)} · {formatTime(appt.scheduled_at)}</DialogDescription>
         </DialogHeader>
 
-        {showPayment ? (
+        {showEdit ? (
+          <EditarTurnoForm appt={appt} onCancel={() => setShowEdit(false)} onSaved={onClose} />
+        ) : showPayment ? (
           <CerrarSesionStep appt={appt} onClose={onClose} />
         ) : (
           <>
@@ -713,6 +865,10 @@ function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose:
                   <Button size="sm" className="bg-green-600 hover:bg-green-700 text-white"
                     onClick={() => setShowPayment(true)} disabled={updateStatus.isPending}>
                     Completar
+                  </Button>
+                  <Button size="sm" variant="outline"
+                    onClick={() => setShowEdit(true)} disabled={updateStatus.isPending}>
+                    <Pencil className="w-3.5 h-3.5 mr-1.5" />Editar turno
                   </Button>
                   <Button size="sm" variant="destructive"
                     onClick={() => changeStatus('cancelled')} disabled={updateStatus.isPending}>
