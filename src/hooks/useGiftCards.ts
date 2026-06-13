@@ -58,6 +58,7 @@ type CreateGiftCardInput = {
   service_name: string
   duration_minutes: 60 | 90
   amount: number
+  payment_method: string
   sold_by: string
   expires_at: string
   notes: string
@@ -107,10 +108,10 @@ export function useCreateGiftCard() {
       const { error: txError } = await supabase.from('transactions').insert({
         tenant_id: tenantId,
         type: 'income',
-        category: 'other',
+        category: 'gift_card',
         amount: input.amount,
-        payment_method: 'cash',
-        description: `Gift Card: ${input.service_name} ${input.duration_minutes}min - Código: ${code}`,
+        payment_method: input.payment_method,
+        description: `Gift Card #${code}`,
         date: today,
         user_id: input.user_id,
         status: 'paid',

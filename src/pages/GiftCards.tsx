@@ -140,6 +140,7 @@ function GiftCardForm() {
   const [serviceId, setServiceId] = useState('')
   const [duration, setDuration] = useState<60 | 90>(60)
   const [amount, setAmount] = useState('')
+  const [paymentMethod, setPaymentMethod] = useState('cash')
   const [soldBy, setSoldBy] = useState('')
   const [expiresAt, setExpiresAt] = useState(defaultExpiry)
   const [notes, setNotes] = useState('')
@@ -175,6 +176,7 @@ function GiftCardForm() {
         service_name: selectedService?.name ?? 'Servicio',
         duration_minutes: duration,
         amount: Number(amount),
+        payment_method: paymentMethod,
         sold_by: soldBy,
         expires_at: expiresAt,
         notes,
@@ -209,7 +211,7 @@ function GiftCardForm() {
         message: message.trim(),
         imageDataUrl,
       })
-      setServiceId(''); setAmount(''); setSoldBy('')
+      setServiceId(''); setAmount(''); setPaymentMethod('cash'); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
       setRecipientName(''); setSenderName(''); setMessage('')
     } catch (_) { /* error shown below */ }
@@ -250,6 +252,20 @@ function GiftCardForm() {
                 <Label>Precio *</Label>
                 <Input type="number" min="0" step="1" value={amount}
                   onChange={(e) => setAmount(e.target.value)} required placeholder="0" />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label>Método de pago *</Label>
+                <select className={selectCls} value={paymentMethod}
+                  onChange={(e) => setPaymentMethod(e.target.value)} required>
+                  <option value="cash">Efectivo</option>
+                  <option value="debit">Débito</option>
+                  <option value="credit">Crédito</option>
+                  <option value="transfer">Transferencia</option>
+                  <option value="qr">QR</option>
+                  <option value="mp">Mercado Pago</option>
+                  <option value="other">Otro</option>
+                </select>
               </div>
 
               <div className="space-y-1.5">
