@@ -67,7 +67,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return (row?.permissions as Record<string, boolean>) ?? null
   }
 
-  async function fetchProfileAndTenants(userId: string, userEmail?: string) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  async function fetchProfileAndTenants(userId: string, userEmail?: string, appMetadata?: Record<string, any>) {
     // ── 1. Profile ──────────────────────────────────────────────────────────
     // maybeSingle() returns null (not 406) when RLS hides the row or it doesn't exist yet
     const { data: profileData } = await supabase
@@ -96,6 +97,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Fall back to email if full_name is blank
     if (!resolvedProfile.full_name && userEmail) {
       resolvedProfile = { ...resolvedProfile, full_name: userEmail }
+    }
+
+    // app_metadata.role takes precedence over the users table for super_admin.
+    // This lets us grant super_admin via Supabase auth without touching the users table.
+    const appRole = appMetadata?.role as string | undefined
+    if (appRole === 'super_admin') {
+      resolvedProfile = { ...resolvedProfile, role: 'super_admin' }
     }
 
     setProfile(resolvedProfile as UserProfile)
@@ -163,7 +171,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (resolvedTenantId) setCurrentTenantId(resolvedTenantId)
 
     // ── 5. Permissions ───────────────────────────────────────────────────────
-    if (resolvedProfile?.role && resolvedTenantId) {
+    // super_admin gets all permissions immediately, regardless of tenant context
+    if (resolvedProfile?.role === 'super_admin') {
+      setPermissions(Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true])))
+    } else if (resolvedProfile?.role && resolvedTenantId) {
       const perms = await fetchPermissionsForRole(resolvedProfile.role, resolvedTenantId)
       if (perms) setPermissions(perms)
     }
@@ -174,7 +185,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(session)
       setUser(session?.user ?? null)
       if (session?.user) {
-        fetchProfileAndTenants(session.user.id, session.user.email ?? undefined)
+        fetchProfileAndTenants(session.user.id, session.user.email ?? undefined, session.user.app_metadata)
           .finally(() => setLoading(false))
       } else {
         setLoading(false)
@@ -185,7 +196,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setSession(session)
       setUser(session?.user ?? null)
       if (session?.user) {
-        fetchProfileAndTenants(session.user.id, session.user.email ?? undefined)
+        fetchProfileAndTenants(session.user.id, session.user.email ?? undefined, session.user.app_metadata)
       } else {
         setProfile(null)
         setAvailableTenants([])
