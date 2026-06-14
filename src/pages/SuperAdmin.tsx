@@ -1,21 +1,27 @@
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Loader2, Building2, LogIn } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Tenant } from '@/types'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type TenantRow = Tenant & { trial_ends_at?: string | null }
+type TenantStatus = 'active' | 'trial_active' | 'trial_expired' | 'inactive'
+type BusyAction = 'activar' | 'extender' | 'desactivar'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function getTenantStatus(t: TenantRow): 'active' | 'trial' | 'inactive' {
+function getTenantStatus(t: TenantRow): TenantStatus {
   if (!t.active) return 'inactive'
-  if (t.trial_ends_at && new Date(t.trial_ends_at) > new Date()) return 'trial'
+  if (t.trial_ends_at) {
+    return new Date(t.trial_ends_at) > new Date() ? 'trial_active' : 'trial_expired'
+  }
   return 'active'
 }
 
@@ -30,23 +36,39 @@ function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
-const STATUS_CLS: Record<'active' | 'trial' | 'inactive', string> = {
-  active: 'bg-green-100 text-green-700',
-  trial: 'bg-amber-100 text-amber-700',
-  inactive: 'bg-red-100 text-red-700',
+const STATUS_CLS: Record<TenantStatus, string> = {
+  active:        'bg-green-100 text-green-700',
+  trial_active:  'bg-amber-100 text-amber-700',
+  trial_expired: 'bg-red-100 text-red-700',
+  inactive:      'bg-gray-100 text-gray-500',
 }
 
-const STATUS_LABEL: Record<'active' | 'trial' | 'inactive', string> = {
-  active: 'Activo',
-  trial: 'Trial',
-  inactive: 'Inactivo',
+const STATUS_LABEL: Record<TenantStatus, string> = {
+  active:        'Activo',
+  trial_active:  'Trial activo',
+  trial_expired: 'Trial vencido',
+  inactive:      'Inactivo',
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function SuperAdmin() {
   const navigate = useNavigate()
+  const qc = useQueryClient()
   const { enterTenantAsAdmin, superAdminViewingTenant, exitSuperAdminView } = useAuth()
+
+  // Per-row loading state
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const [busyAction, setBusyAction] = useState<BusyAction | null>(null)
+
+  // Inline "Extender trial" input state
+  const [extendOpen, setExtendOpen] = useState<string | null>(null)
+  const [extendDays, setExtendDays] = useState('7')
+
+  // Inline "Desactivar" confirmation state
+  const [confirmId, setConfirmId] = useState<string | null>(null)
+
+  // ── Queries ────────────────────────────────────────────────────────────────
 
   const { data: tenants = [], isLoading: loadingTenants } = useQuery({
     queryKey: ['sa-tenants'],
@@ -81,15 +103,10 @@ export default function SuperAdmin() {
   const { data: userCounts = {} } = useQuery({
     queryKey: ['sa-user-counts'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('users')
-        .select('tenant_id')
-        .eq('active', true)
+      const { data, error } = await supabase.from('users').select('tenant_id').eq('active', true)
       if (error) throw error
       const counts: Record<string, number> = {}
-      for (const row of data ?? []) {
-        counts[row.tenant_id] = (counts[row.tenant_id] ?? 0) + 1
-      }
+      for (const row of data ?? []) counts[row.tenant_id] = (counts[row.tenant_id] ?? 0) + 1
       return counts
     },
   })
@@ -97,28 +114,55 @@ export default function SuperAdmin() {
   const { data: clientCounts = {} } = useQuery({
     queryKey: ['sa-client-counts'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('clients')
-        .select('tenant_id')
+      const { data, error } = await supabase.from('clients').select('tenant_id')
       if (error) throw error
       const counts: Record<string, number> = {}
-      for (const row of data ?? []) {
-        counts[row.tenant_id] = (counts[row.tenant_id] ?? 0) + 1
-      }
+      for (const row of data ?? []) counts[row.tenant_id] = (counts[row.tenant_id] ?? 0) + 1
       return counts
     },
   })
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+
+  function isBusy(id: string, action: BusyAction) {
+    return busyId === id && busyAction === action
+  }
+
+  async function handleActivar(id: string) {
+    setBusyId(id); setBusyAction('activar')
+    await supabase.from('tenants').update({ trial_ends_at: null }).eq('id', id)
+    await qc.invalidateQueries({ queryKey: ['sa-tenants'] })
+    setBusyId(null); setBusyAction(null)
+  }
+
+  async function handleExtender(id: string) {
+    setBusyId(id); setBusyAction('extender')
+    const days = Math.max(1, parseInt(extendDays) || 7)
+    const newDate = new Date()
+    newDate.setDate(newDate.getDate() + days)
+    await supabase.from('tenants').update({ trial_ends_at: newDate.toISOString() }).eq('id', id)
+    await qc.invalidateQueries({ queryKey: ['sa-tenants'] })
+    setExtendOpen(null)
+    setExtendDays('7')
+    setBusyId(null); setBusyAction(null)
+  }
+
+  async function handleDesactivar(id: string) {
+    setBusyId(id); setBusyAction('desactivar')
+    const yesterday = new Date()
+    yesterday.setDate(yesterday.getDate() - 1)
+    await supabase.from('tenants').update({ trial_ends_at: yesterday.toISOString() }).eq('id', id)
+    await qc.invalidateQueries({ queryKey: ['sa-tenants'] })
+    setConfirmId(null)
+    setBusyId(null); setBusyAction(null)
+  }
 
   async function handleEnter(tenant: TenantRow) {
     await enterTenantAsAdmin(tenant)
     navigate('/dashboard')
   }
 
-  function handleExit() {
-    exitSuperAdminView()
-  }
-
-  const loading = loadingTenants
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
@@ -134,24 +178,18 @@ export default function SuperAdmin() {
           </div>
         </div>
         {superAdminViewingTenant && (
-          <Button variant="outline" size="sm" onClick={handleExit} className="gap-2 text-amber-700 border-amber-300">
+          <Button variant="outline" size="sm" onClick={exitSuperAdminView} className="gap-2 text-amber-700 border-amber-300">
             <LogIn className="w-4 h-4" />
             Salir de {superAdminViewingTenant.name}
           </Button>
         )}
       </div>
 
-      {/* Stats row */}
-      <div className="grid grid-cols-3 gap-4 mb-8">
+      {/* Stats */}
+      <div className="grid grid-cols-4 gap-4 mb-8">
         <div className="bg-white rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">Total locales</p>
           <p className="text-2xl font-bold text-gray-900">{tenants.length}</p>
-        </div>
-        <div className="bg-white rounded-xl border p-4">
-          <p className="text-sm text-muted-foreground">En trial</p>
-          <p className="text-2xl font-bold text-amber-600">
-            {tenants.filter(t => getTenantStatus(t) === 'trial').length}
-          </p>
         </div>
         <div className="bg-white rounded-xl border p-4">
           <p className="text-sm text-muted-foreground">Activos</p>
@@ -159,11 +197,23 @@ export default function SuperAdmin() {
             {tenants.filter(t => getTenantStatus(t) === 'active').length}
           </p>
         </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-sm text-muted-foreground">En trial</p>
+          <p className="text-2xl font-bold text-amber-600">
+            {tenants.filter(t => getTenantStatus(t) === 'trial_active').length}
+          </p>
+        </div>
+        <div className="bg-white rounded-xl border p-4">
+          <p className="text-sm text-muted-foreground">Trial vencido</p>
+          <p className="text-2xl font-bold text-red-500">
+            {tenants.filter(t => getTenantStatus(t) === 'trial_expired').length}
+          </p>
+        </div>
       </div>
 
       {/* Table */}
       <div className="bg-white rounded-xl border overflow-hidden">
-        {loading ? (
+        {loadingTenants ? (
           <div className="flex items-center justify-center py-20">
             <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
           </div>
@@ -174,13 +224,14 @@ export default function SuperAdmin() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-gray-50 text-xs text-muted-foreground uppercase tracking-wide">
-                  <th className="text-left px-4 py-3 font-medium">Nombre del local</th>
+                  <th className="text-left px-4 py-3 font-medium">Local</th>
                   <th className="text-left px-4 py-3 font-medium">Owner</th>
                   <th className="text-left px-4 py-3 font-medium">Registro</th>
                   <th className="text-left px-4 py-3 font-medium">Estado</th>
                   <th className="text-left px-4 py-3 font-medium">Trial</th>
                   <th className="text-right px-4 py-3 font-medium">Usuarios</th>
                   <th className="text-right px-4 py-3 font-medium">Clientes</th>
+                  <th className="text-right px-4 py-3 font-medium">Acciones</th>
                   <th className="px-4 py-3" />
                 </tr>
               </thead>
@@ -189,8 +240,15 @@ export default function SuperAdmin() {
                   const status = getTenantStatus(t)
                   const days = trialDaysLeft(t)
                   const isViewing = superAdminViewingTenant?.id === t.id
+                  const anyBusy = busyId === t.id
+                  const showActivar = t.trial_ends_at != null
+                  const showDesactivar = status === 'active' || status === 'trial_active'
+                  const isExtendOpen = extendOpen === t.id
+                  const isConfirmOpen = confirmId === t.id
+
                   return (
                     <tr key={t.id} className={cn('hover:bg-gray-50 transition-colors', isViewing && 'bg-amber-50')}>
+                      {/* Local */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
                           <div className="w-7 h-7 rounded-lg bg-plum-100 flex items-center justify-center flex-shrink-0">
@@ -202,31 +260,150 @@ export default function SuperAdmin() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
+
+                      {/* Owner */}
+                      <td className="px-4 py-3 text-gray-600 text-xs">
                         {ownerMap[t.id] ?? <span className="text-muted-foreground italic">—</span>}
                       </td>
-                      <td className="px-4 py-3 text-gray-500">{fmtDate(t.created_at)}</td>
+
+                      {/* Registro */}
+                      <td className="px-4 py-3 text-gray-500 text-xs">{fmtDate(t.created_at)}</td>
+
+                      {/* Estado */}
                       <td className="px-4 py-3">
-                        <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold', STATUS_CLS[status])}>
+                        <span className={cn('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap', STATUS_CLS[status])}>
                           {STATUS_LABEL[status]}
                         </span>
                       </td>
+
+                      {/* Días de trial */}
                       <td className="px-4 py-3">
                         {days !== null ? (
-                          <span className="text-amber-700 font-medium">{days}d</span>
+                          <span className="text-amber-700 font-medium text-xs">{days}d</span>
                         ) : (
-                          <span className="text-muted-foreground">—</span>
+                          <span className="text-muted-foreground text-xs">—</span>
                         )}
                       </td>
-                      <td className="px-4 py-3 text-right font-medium text-gray-700">
-                        {userCounts[t.id] ?? 0}
+
+                      {/* Usuarios */}
+                      <td className="px-4 py-3 text-right font-medium text-gray-700">{userCounts[t.id] ?? 0}</td>
+
+                      {/* Clientes */}
+                      <td className="px-4 py-3 text-right font-medium text-gray-700">{clientCounts[t.id] ?? 0}</td>
+
+                      {/* Acciones */}
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col gap-1.5 items-end min-w-[160px]">
+
+                          {/* Activar */}
+                          {showActivar && (
+                            <Button
+                              size="sm"
+                              className="h-7 text-xs bg-green-600 hover:bg-green-700 text-white w-full"
+                              disabled={anyBusy}
+                              onClick={() => handleActivar(t.id)}
+                            >
+                              {isBusy(t.id, 'activar')
+                                ? <Loader2 className="w-3 h-3 animate-spin" />
+                                : 'Activar'}
+                            </Button>
+                          )}
+
+                          {/* Extender trial */}
+                          {isExtendOpen ? (
+                            <div className="flex gap-1 w-full">
+                              <Input
+                                type="number"
+                                min="1"
+                                max="365"
+                                value={extendDays}
+                                onChange={e => setExtendDays(e.target.value)}
+                                className="h-7 text-xs w-16 px-2"
+                                autoFocus
+                              />
+                              <span className="text-xs text-muted-foreground self-center">días</span>
+                              <Button
+                                size="sm"
+                                className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white flex-1"
+                                disabled={anyBusy}
+                                onClick={() => handleExtender(t.id)}
+                              >
+                                {isBusy(t.id, 'extender')
+                                  ? <Loader2 className="w-3 h-3 animate-spin" />
+                                  : 'OK'}
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                className="h-7 text-xs"
+                                onClick={() => { setExtendOpen(null); setExtendDays('7') }}
+                              >
+                                ✕
+                              </Button>
+                            </div>
+                          ) : (
+                            <Button
+                              size="sm"
+                              className="h-7 text-xs bg-blue-600 hover:bg-blue-700 text-white w-full"
+                              disabled={anyBusy}
+                              onClick={() => { setExtendOpen(t.id); setConfirmId(null) }}
+                            >
+                              Extender trial
+                            </Button>
+                          )}
+
+                          {/* Desactivar */}
+                          {showDesactivar && (
+                            isConfirmOpen ? (
+                              <div className="flex flex-col gap-1 w-full">
+                                <p className="text-[11px] text-red-600 font-medium leading-tight">
+                                  ¿Desactivar &ldquo;{t.name}&rdquo;? El local quedará bloqueado inmediatamente.
+                                </p>
+                                <div className="flex gap-1">
+                                  <Button
+                                    size="sm"
+                                    className="h-7 text-xs bg-red-600 hover:bg-red-700 text-white flex-1"
+                                    disabled={anyBusy}
+                                    onClick={() => handleDesactivar(t.id)}
+                                  >
+                                    {isBusy(t.id, 'desactivar')
+                                      ? <Loader2 className="w-3 h-3 animate-spin" />
+                                      : 'Sí, desactivar'}
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 text-xs"
+                                    onClick={() => setConfirmId(null)}
+                                  >
+                                    No
+                                  </Button>
+                                </div>
+                              </div>
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs border-red-200 text-red-600 hover:bg-red-50 hover:border-red-400 w-full"
+                                disabled={anyBusy}
+                                onClick={() => { setConfirmId(t.id); setExtendOpen(null) }}
+                              >
+                                Desactivar
+                              </Button>
+                            )
+                          )}
+                        </div>
                       </td>
-                      <td className="px-4 py-3 text-right font-medium text-gray-700">
-                        {clientCounts[t.id] ?? 0}
-                      </td>
+
+                      {/* Ingresar / Salir */}
                       <td className="px-4 py-3 text-right">
                         {isViewing ? (
-                          <Button size="sm" variant="outline" onClick={handleExit} className="text-amber-700 border-amber-300 hover:bg-amber-50">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={exitSuperAdminView}
+                            className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                          >
                             Salir
                           </Button>
                         ) : (
