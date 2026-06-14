@@ -31,8 +31,6 @@ const TOTAL_HEIGHT = (END_HOUR - START_HOUR) * HOUR_PX // 1120px
 const DEFAULT_COLORS = ['#7c3aed', '#0891b2', '#16a34a', '#dc2626', '#d97706']
 const DAY_NAMES_LONG = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 const DAY_NAMES_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
-const DAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
-
 type BloqueoTipo = 'descanso' | 'ausencia'
 
 const BLOQUEO_COLORS: Record<BloqueoTipo, { bg: string; border: string; text: string }> = {
@@ -105,58 +103,6 @@ function getMonday(d: Date): Date {
   date.setDate(date.getDate() - (day === 0 ? 6 : day - 1))
   date.setHours(0, 0, 0, 0)
   return date
-}
-
-// Returns pixel segments [top, height] for all unavailable gaps in the day grid.
-function getUnavailableSegments(
-  schedule: Therapist['schedule'],
-  date: Date,
-): { top: number; height: number }[] {
-  const GRID_START = START_HOUR * 60
-  const GRID_END = END_HOUR * 60
-
-  function toY(totalMins: number) {
-    return ((totalMins - GRID_START) * HOUR_PX) / 60
-  }
-
-  if (!schedule) return []
-
-  const dayKey = DAY_KEYS[date.getDay()]
-  const ranges = (schedule[dayKey] ?? []) as { start: string; end: string }[]
-
-  if (ranges.length === 0) {
-    return [{ top: 0, height: TOTAL_HEIGHT }]
-  }
-
-  const sorted = [...ranges]
-    .map(r => ({
-      s: r.start.split(':').map(Number).reduce((h, m) => h * 60 + m),
-      e: r.end.split(':').map(Number).reduce((h, m) => h * 60 + m),
-    }))
-    .sort((a, b) => a.s - b.s)
-
-  const segs: { top: number; height: number }[] = []
-
-  if (sorted[0].s > GRID_START) {
-    const top = 0
-    const height = toY(sorted[0].s)
-    if (height > 0) segs.push({ top, height })
-  }
-
-  for (let i = 0; i < sorted.length - 1; i++) {
-    const gapStart = sorted[i].e
-    const gapEnd = sorted[i + 1].s
-    if (gapEnd > gapStart) {
-      segs.push({ top: toY(gapStart), height: toY(gapEnd) - toY(gapStart) })
-    }
-  }
-
-  const lastEnd = sorted[sorted.length - 1].e
-  if (lastEnd < GRID_END) {
-    segs.push({ top: toY(lastEnd), height: toY(GRID_END) - toY(lastEnd) })
-  }
-
-  return segs
 }
 
 const WEEKLY_DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const
@@ -1050,22 +996,22 @@ function NuevoTurnoModal({
     if (!isSobreTurno && form.therapist_id && form.date && form.time) {
       const ws = employeeSchedules?.get(form.therapist_id)
       if (ws) {
-        const dayKey = WEEKLY_DAY_KEYS[new Date(form.date).getDay()] as keyof WeeklySchedule
+        // Parse at noon to avoid UTC-vs-local timezone issues (ART = UTC-3)
+        const dayKey = WEEKLY_DAY_KEYS[new Date(form.date + 'T12:00:00').getDay()] as keyof WeeklySchedule
         const intervals = ws[dayKey] ?? []
-        if (intervals.length === 0) {
-          setFormError("La terapeuta no trabaja en ese horario. Usá 'Sobreturno' para agendar fuera de su schedule.")
-          return
-        }
-        const [h, m] = form.time.split(':').map(Number)
-        const apptMins = h * 60 + m
-        const fits = intervals.some(iv => {
-          const [fh, fm] = iv.from.split(':').map(Number)
-          const [th, tm] = iv.to.split(':').map(Number)
-          return apptMins >= fh * 60 + fm && apptMins < th * 60 + tm
-        })
-        if (!fits) {
-          setFormError("La terapeuta no trabaja en ese horario. Usá 'Sobreturno' para agendar fuera de su schedule.")
-          return
+        // No intervals for this day = therapist has no restriction (ALLOW)
+        if (intervals.length > 0) {
+          const [h, m] = form.time.split(':').map(Number)
+          const apptMins = h * 60 + m
+          const fits = intervals.some(iv => {
+            const [fh, fm] = iv.from.split(':').map(Number)
+            const [th, tm] = iv.to.split(':').map(Number)
+            return apptMins >= fh * 60 + fm && apptMins < th * 60 + tm
+          })
+          if (!fits) {
+            setFormError("La terapeuta no trabaja en ese horario. Usá 'Sobreturno' para agendar fuera de su schedule.")
+            return
+          }
         }
       }
     }
@@ -1619,7 +1565,6 @@ function DayView({
               const color = therapistColor(t, i)
               const colAppts = dayAppts.filter(a => a.therapist_id === t.id)
 
-              const unavailableSegs = getUnavailableSegments(t.schedule, date)
               const weeklyUnavailableSegs = getWeeklyScheduleUnavailableSegs(
                 employeeSchedules?.get(t.id),
                 date,
@@ -1641,16 +1586,10 @@ function DayView({
                       style={{ top: timeToY(h, 30) }} />
                   ))}
 
-                  {/* Unavailability shading (users.schedule) */}
-                  {unavailableSegs.map((seg, idx) => (
-                    <div key={idx} className="absolute left-0 right-0 pointer-events-none"
-                      style={{ top: seg.top, height: seg.height, backgroundColor: '#F3F4F6' }} />
-                  ))}
-
                   {/* Weekly schedule shading (employee_profiles.weekly_schedule) */}
                   {weeklyUnavailableSegs.map((seg, idx) => (
                     <div key={`ws-${idx}`} className="absolute left-0 right-0 pointer-events-none"
-                      style={{ top: seg.top, height: seg.height, backgroundColor: 'rgba(0,0,0,0.04)' }} />
+                      style={{ top: seg.top, height: seg.height, backgroundColor: '#F3F4F6' }} />
                   ))}
 
                   {/* Appointment blocks */}
