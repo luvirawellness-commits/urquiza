@@ -27,9 +27,10 @@ export function ProtectedRoute({ children, roles, permission, anyPermission }: P
 
   if (!user) return <Navigate to="/auth" replace />
 
-  // Owner bypasses every permission check
-  const isOwner = profile?.role === 'owner'
-  if (isOwner) return children ? <>{children}</> : <Outlet />
+  // Owner and super_admin bypass every permission check
+  if (profile?.role === 'owner' || profile?.role === 'super_admin') {
+    return children ? <>{children}</> : <Outlet />
+  }
 
   // Permission-based checks (preferred over role names)
   if (permission !== undefined || anyPermission !== undefined) {

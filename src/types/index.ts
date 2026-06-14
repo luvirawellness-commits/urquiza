@@ -1,4 +1,4 @@
-export type UserRole = 'owner' | 'partner_admin' | 'therapist' | 'receptionist'
+export type UserRole = 'owner' | 'partner_admin' | 'therapist' | 'receptionist' | 'super_admin'
 
 export interface Tenant {
   id: string
@@ -11,6 +11,7 @@ export interface Tenant {
   royalty_pct?: number
   active: boolean
   created_at: string
+  trial_ends_at?: string | null
 }
 
 export interface UserTenant {

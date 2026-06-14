@@ -1,12 +1,93 @@
-import { Outlet } from 'react-router-dom'
+import { Outlet, useNavigate } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
+import { useAuth } from '@/contexts/AuthContext'
+import { Button } from '@/components/ui/button'
+import { LogOut, MessageCircle } from 'lucide-react'
+
+function TrialExpiredScreen() {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-plum-800">
+      <div className="text-center px-6 max-w-sm">
+        <div className="w-16 h-16 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-6">
+          <span className="text-4xl">⏰</span>
+        </div>
+        <h1 className="text-white text-2xl font-bold mb-3">Período de prueba vencido</h1>
+        <p className="text-plum-300 text-sm mb-8">
+          Tu período de prueba ha vencido. Contactanos para continuar usando Luvira OS.
+        </p>
+        <a
+          href="https://wa.me/5491133230906"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
+          style={{ backgroundColor: '#25D366' }}
+        >
+          <MessageCircle className="w-4 h-4" />
+          Contactar por WhatsApp
+        </a>
+      </div>
+    </div>
+  )
+}
 
 export function AppLayout() {
+  const navigate = useNavigate()
+  const { profile, currentTenant, superAdminViewingTenant, exitSuperAdminView } = useAuth()
+
+  const isSuperAdmin = profile?.role === 'super_admin'
+  const viewedTenant = superAdminViewingTenant ?? currentTenant
+
+  const trialEndsAt = viewedTenant?.trial_ends_at ? new Date(viewedTenant.trial_ends_at) : null
+  const now = new Date()
+  const trialExpired = trialEndsAt !== null && trialEndsAt <= now
+  const trialDaysLeft = trialEndsAt !== null && trialEndsAt > now
+    ? Math.ceil((trialEndsAt.getTime() - now.getTime()) / (1000 * 60 * 60 * 24))
+    : null
+
+  if (trialExpired && !isSuperAdmin) {
+    return <TrialExpiredScreen />
+  }
+
   return (
     <div className="min-h-screen bg-gray-50">
       <Sidebar />
       <main className="lg:ml-56 min-h-screen">
         <div className="pt-14 lg:pt-0">
+          {/* Super admin impersonation banner */}
+          {isSuperAdmin && superAdminViewingTenant && (
+            <div className="flex items-center justify-between px-4 py-2 bg-amber-500 text-amber-950 text-sm font-medium">
+              <span>
+                Estás viendo el local: <strong>{superAdminViewingTenant.name}</strong>
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-amber-950 hover:bg-amber-600 hover:text-white gap-1.5"
+                onClick={() => { exitSuperAdminView(); navigate('/super-admin') }}
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Salir
+              </Button>
+            </div>
+          )}
+
+          {/* Trial banner */}
+          {trialDaysLeft !== null && (
+            <div className="flex items-center justify-between px-4 py-2 bg-blue-600 text-white text-sm">
+              <span>
+                Tu período de prueba vence en <strong>{trialDaysLeft} {trialDaysLeft === 1 ? 'día' : 'días'}</strong>.
+              </span>
+              <a
+                href="https://wa.me/5491133230906"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-semibold underline hover:no-underline"
+              >
+                Contratar plan
+              </a>
+            </div>
+          )}
+
           <Outlet />
         </div>
       </main>

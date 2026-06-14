@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CalendarDays, TrendingUp, Gift,
   ShoppingBag, ShoppingCart, Settings, LogOut, Menu, X, Users2, Building2,
-  ChevronDown, Loader2, Check, CreditCard, ScrollText,
+  ChevronDown, Loader2, Check, CreditCard, ScrollText, ShieldAlert,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -164,6 +164,25 @@ export function Sidebar() {
           >
             <Settings className="w-4 h-4 flex-shrink-0" />
             Configuración
+          </NavLink>
+        )}
+
+        {/* Super Admin panel — only for super_admin role */}
+        {profile?.role === 'super_admin' && (
+          <NavLink
+            to="/super-admin"
+            onClick={() => setMobileOpen(false)}
+            className={({ isActive }) =>
+              cn(
+                'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+                isActive
+                  ? 'bg-amber-500 text-amber-950'
+                  : 'text-amber-400 hover:bg-plum-700 hover:text-amber-300'
+              )
+            }
+          >
+            <ShieldAlert className="w-4 h-4 flex-shrink-0" />
+            Super Admin
           </NavLink>
         )}
       </nav>

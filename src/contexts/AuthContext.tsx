@@ -22,7 +22,10 @@ interface AuthContextValue {
   currentTenant: Tenant | null
   availableTenants: Tenant[]
   permissions: Record<string, boolean> | null
+  superAdminViewingTenant: Tenant | null
   switchTenant: (tenantId: string) => Promise<void>
+  enterTenantAsAdmin: (tenant: Tenant) => Promise<void>
+  exitSuperAdminView: () => void
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>
   signOut: () => Promise<void>
 }
@@ -37,14 +40,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([])
   const [currentTenantId, setCurrentTenantId] = useState<string>('')
   const [permissions, setPermissions] = useState<Record<string, boolean> | null>(null)
+  const [superAdminViewingTenant, setSuperAdminViewingTenant] = useState<Tenant | null>(null)
 
-  const currentTenant = availableTenants.find((t) => t.id === currentTenantId) ?? null
+  const currentTenant = superAdminViewingTenant ?? availableTenants.find((t) => t.id === currentTenantId) ?? null
 
   async function fetchPermissionsForRole(
     roleName: string,
     tenantId: string,
   ): Promise<Record<string, boolean> | null> {
-    if (roleName === 'owner') {
+    if (roleName === 'owner' || roleName === 'super_admin') {
       return Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true]))
     }
     if (!tenantId) return null
@@ -110,7 +114,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           slug,
           address,
           phone,
-          active
+          active,
+          trial_ends_at
         )
       `)
       .eq('user_id', userId)
@@ -257,6 +262,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function enterTenantAsAdmin(tenant: Tenant) {
+    setSuperAdminViewingTenant(tenant)
+    setCurrentTenantId(tenant.id)
+    localStorage.setItem(TENANT_KEY, tenant.id)
+    queryClient.invalidateQueries()
+    setPermissions(Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true])))
+  }
+
+  function exitSuperAdminView() {
+    setSuperAdminViewingTenant(null)
+    setCurrentTenantId('')
+    localStorage.removeItem(TENANT_KEY)
+    queryClient.invalidateQueries()
+  }
+
   async function signIn(email: string, password: string) {
     const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
     if (!error && authData.user) {
@@ -300,7 +320,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user, session, profile, loading,
       currentTenantId, currentTenant, availableTenants,
       permissions,
-      switchTenant, signIn, signOut,
+      superAdminViewingTenant,
+      switchTenant, enterTenantAsAdmin, exitSuperAdminView,
+      signIn, signOut,
     }}>
       {children}
     </AuthContext.Provider>

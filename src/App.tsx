@@ -17,6 +17,7 @@ import ConfiguracionAdmin from '@/pages/ConfiguracionAdmin'
 import Membresias from '@/pages/Membresias'
 import Auditoria from '@/pages/Auditoria'
 import ClienteDetalle from '@/pages/ClienteDetalle'
+import SuperAdmin from '@/pages/SuperAdmin'
 
 function ProtectedLayout() {
   return (
@@ -107,6 +108,14 @@ export default function App() {
                 element={
                   <ProtectedRoute roles={['owner']}>
                     <ConfiguracionAdmin />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/super-admin"
+                element={
+                  <ProtectedRoute roles={['super_admin']}>
+                    <SuperAdmin />
                   </ProtectedRoute>
                 }
               />
