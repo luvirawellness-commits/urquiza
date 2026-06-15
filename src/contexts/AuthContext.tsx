@@ -22,10 +22,7 @@ interface AuthContextValue {
   currentTenant: Tenant | null
   availableTenants: Tenant[]
   permissions: Record<string, boolean> | null
-  superAdminViewingTenant: Tenant | null
   switchTenant: (tenantId: string) => Promise<void>
-  enterTenantAsAdmin: (tenant: Tenant) => Promise<void>
-  exitSuperAdminView: () => void
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>
   signOut: () => Promise<void>
 }
@@ -40,9 +37,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [availableTenants, setAvailableTenants] = useState<Tenant[]>([])
   const [currentTenantId, setCurrentTenantId] = useState<string>('')
   const [permissions, setPermissions] = useState<Record<string, boolean> | null>(null)
-  const [superAdminViewingTenant, setSuperAdminViewingTenant] = useState<Tenant | null>(null)
 
-  const currentTenant = superAdminViewingTenant ?? availableTenants.find((t) => t.id === currentTenantId) ?? null
+  const currentTenant = availableTenants.find((t) => t.id === currentTenantId) ?? null
 
   async function fetchPermissionsForRole(
     roleName: string,
@@ -273,25 +269,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function enterTenantAsAdmin(tenant: Tenant) {
-    const allPerms = Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true]))
-    console.log('[DEBUG enterTenantAsAdmin] tenant:', tenant.id, tenant.name)
-    console.log('[DEBUG enterTenantAsAdmin] profile.role at call time:', profile?.role)
-    console.log('[DEBUG enterTenantAsAdmin] setting permissions:', allPerms)
-    setSuperAdminViewingTenant(tenant)
-    setCurrentTenantId(tenant.id)
-    localStorage.setItem(TENANT_KEY, tenant.id)
-    queryClient.invalidateQueries()
-    setPermissions(allPerms)
-  }
-
-  function exitSuperAdminView() {
-    setSuperAdminViewingTenant(null)
-    setCurrentTenantId('')
-    localStorage.removeItem(TENANT_KEY)
-    queryClient.invalidateQueries()
-  }
-
   async function signIn(email: string, password: string) {
     const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
     if (!error && authData.user) {
@@ -335,8 +312,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user, session, profile, loading,
       currentTenantId, currentTenant, availableTenants,
       permissions,
-      superAdminViewingTenant,
-      switchTenant, enterTenantAsAdmin, exitSuperAdminView,
+      switchTenant,
       signIn, signOut,
     }}>
       {children}

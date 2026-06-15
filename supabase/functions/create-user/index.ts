@@ -37,21 +37,29 @@ serve(async (req) => {
     }
 
     const callerId = callerData.user.id
-    const { data: callerProfile, error: profileError } = await supabaseAdmin
-      .from('users')
-      .select('role')
-      .eq('id', callerId)
-      .single()
+    const callerAppRole = callerData.user.app_metadata?.role as string | undefined
+    const isSuperAdminCaller = callerAppRole === 'super_admin'
 
-    if (profileError || !callerProfile) {
-      return new Response(
-        JSON.stringify({ error: 'Perfil del solicitante no encontrado' }),
-        { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
-      )
+    let callerRole: string
+    if (isSuperAdminCaller) {
+      callerRole = 'super_admin'
+    } else {
+      const { data: callerProfile, error: profileError } = await supabaseAdmin
+        .from('users')
+        .select('role')
+        .eq('id', callerId)
+        .single()
+
+      if (profileError || !callerProfile) {
+        return new Response(
+          JSON.stringify({ error: 'Perfil del solicitante no encontrado' }),
+          { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
+        )
+      }
+      callerRole = callerProfile.role as string
     }
 
-    const callerRole = callerProfile.role as string
-    if (callerRole !== 'owner' && callerRole !== 'partner_admin') {
+    if (callerRole !== 'owner' && callerRole !== 'partner_admin' && callerRole !== 'super_admin') {
       return new Response(
         JSON.stringify({ error: 'No tenés permiso para crear usuarios' }),
         { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
@@ -59,7 +67,7 @@ serve(async (req) => {
     }
 
     // Read body only once, after auth check
-    const { email, full_name, role, color_hex, default_tenant_id, tenant_assignments } = await req.json()
+    const { email, full_name, role, color_hex, default_tenant_id, tenant_assignments, password: providedPassword } = await req.json()
 
     if (!email || !full_name) {
       return new Response(
@@ -76,8 +84,8 @@ serve(async (req) => {
       )
     }
 
-    // partner_admin can only assign tenants they themselves belong to
-    if (callerRole === 'partner_admin' && tenant_assignments?.length > 0) {
+    // partner_admin can only assign tenants they themselves belong to (super_admin skips this)
+    if (!isSuperAdminCaller && callerRole === 'partner_admin' && tenant_assignments?.length > 0) {
       const { data: callerTenants, error: tenantsErr } = await supabaseAdmin
         .from('user_tenants')
         .select('tenant_id')
@@ -96,13 +104,15 @@ serve(async (req) => {
       }
     }
 
-    // Generate a strong temp password: 8 random lower/digit + 3 uppercase + digit + symbol
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-    let tempPassword = ''
-    for (let i = 0; i < 8; i++) tempPassword += chars[Math.floor(Math.random() * chars.length)]
-    for (let i = 0; i < 3; i++) tempPassword += upper[Math.floor(Math.random() * upper.length)]
-    tempPassword += '1!'
+    // Use caller-provided password if given, otherwise generate one
+    let tempPassword = (providedPassword as string | undefined) ?? ''
+    if (!tempPassword) {
+      const chars = 'abcdefghijklmnopqrstuvwxyz0123456789'
+      const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+      for (let i = 0; i < 8; i++) tempPassword += chars[Math.floor(Math.random() * chars.length)]
+      for (let i = 0; i < 3; i++) tempPassword += upper[Math.floor(Math.random() * upper.length)]
+      tempPassword += '1!'
+    }
 
     // 1. Create auth user
     const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({

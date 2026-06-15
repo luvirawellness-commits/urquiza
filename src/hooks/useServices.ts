@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { useTenantId } from '@/contexts/AuthContext'
+import { useTenantId, useAuth } from '@/contexts/AuthContext'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -61,9 +61,12 @@ export function serviceRowToForm(s: ServiceRow): ServiceForm {
 
 export function useAdminServices() {
   const tenantId = useTenantId()
+  const { profile } = useAuth()
   return useQuery({
     queryKey: ['admin-services', tenantId],
     queryFn: async () => {
+      console.log('[DEBUG useServices] tenantId:', tenantId)
+      console.log('[DEBUG useServices] role:', profile?.role)
       const { data, error } = await supabase
         .from('services')
         .select('*')

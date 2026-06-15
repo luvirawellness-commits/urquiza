@@ -1,8 +1,7 @@
-import { Outlet, useNavigate } from 'react-router-dom'
+import { Outlet } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { useAuth } from '@/contexts/AuthContext'
-import { Button } from '@/components/ui/button'
-import { LogOut, MessageCircle } from 'lucide-react'
+import { MessageCircle } from 'lucide-react'
 
 function TrialExpiredScreen() {
   return (
@@ -31,13 +30,11 @@ function TrialExpiredScreen() {
 }
 
 export function AppLayout() {
-  const navigate = useNavigate()
-  const { profile, currentTenant, superAdminViewingTenant, exitSuperAdminView } = useAuth()
+  const { profile, currentTenant } = useAuth()
 
   const isSuperAdmin = profile?.role === 'super_admin'
-  const viewedTenant = superAdminViewingTenant ?? currentTenant
 
-  const trialEndsAt = viewedTenant?.trial_ends_at ? new Date(viewedTenant.trial_ends_at) : null
+  const trialEndsAt = currentTenant?.trial_ends_at ? new Date(currentTenant.trial_ends_at) : null
   const now = new Date()
   const trialExpired = trialEndsAt !== null && trialEndsAt <= now
   const trialDaysLeft = trialEndsAt !== null && trialEndsAt > now
@@ -53,24 +50,6 @@ export function AppLayout() {
       <Sidebar />
       <main className="lg:ml-56 min-h-screen">
         <div className="pt-14 lg:pt-0">
-          {/* Super admin impersonation banner */}
-          {isSuperAdmin && superAdminViewingTenant && (
-            <div className="flex items-center justify-between px-4 py-2 bg-amber-500 text-amber-950 text-sm font-medium">
-              <span>
-                Estás viendo el local: <strong>{superAdminViewingTenant.name}</strong>
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-amber-950 hover:bg-amber-600 hover:text-white gap-1.5"
-                onClick={() => { exitSuperAdminView(); navigate('/super-admin') }}
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                Salir
-              </Button>
-            </div>
-          )}
-
           {/* Trial banner */}
           {trialDaysLeft !== null && (
             <div className="flex items-center justify-between px-4 py-2 bg-blue-600 text-white text-sm">

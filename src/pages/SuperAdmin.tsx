@@ -1,9 +1,7 @@
 import { useState, Fragment } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import { Loader2, Building2, LogIn, ChevronDown, ChevronUp, Users } from 'lucide-react'
+import { Loader2, Building2, ChevronDown, ChevronUp, Users, Eye, EyeOff, Copy, Wrench } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
-import { useAuth } from '@/contexts/AuthContext'
 import { Tenant } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -34,6 +32,11 @@ function trialDaysLeft(t: TenantRow): number | null {
 
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+}
+
+function generatePassword(): string {
+  const chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#'
+  return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
 }
 
 const STATUS_CLS: Record<TenantStatus, string> = {
@@ -174,12 +177,181 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
   )
 }
 
+// ── Soporte modal ─────────────────────────────────────────────────────────────
+
+type SoporteState = 'form' | 'loading' | 'success'
+
+function SoporteModal({
+  tenant,
+  onClose,
+  onSuccess,
+}: {
+  tenant: TenantRow
+  onClose: () => void
+  onSuccess: (tenantName: string) => void
+}) {
+  const [email, setEmail] = useState(`soporte+${tenant.slug}@luvirawellness.com.ar`)
+  const [password, setPassword] = useState(() => generatePassword())
+  const [showPw, setShowPw] = useState(false)
+  const [state, setState] = useState<SoporteState>('form')
+  const [error, setError] = useState('')
+  const [createdEmail, setCreatedEmail] = useState('')
+  const [createdPw, setCreatedPw] = useState('')
+  const [copied, setCopied] = useState(false)
+
+  async function handleCreate() {
+    setState('loading')
+    setError('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('Sin sesión activa')
+
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-user`
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          password,
+          full_name: 'Soporte Luvira OS',
+          role: 'owner',
+          default_tenant_id: tenant.id,
+          tenant_assignments: [{ tenant_id: tenant.id, role: 'owner' }],
+        }),
+      })
+      const json = await resp.json()
+      if (!resp.ok || json.error) throw new Error(json.error ?? 'Error al crear usuario')
+
+      setCreatedEmail(email.trim())
+      setCreatedPw(password)
+      setState('success')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error desconocido')
+      setState('form')
+    }
+  }
+
+  function handleCopy() {
+    navigator.clipboard.writeText(`Email: ${createdEmail}\nContraseña: ${createdPw}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  function handleClose() {
+    if (state === 'success') onSuccess(tenant.name)
+    onClose()
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+        <div className="px-6 py-4 border-b">
+          <h2 className="text-base font-semibold text-gray-900">Crear usuario de soporte</h2>
+          <p className="text-sm text-muted-foreground">{tenant.name}</p>
+        </div>
+
+        {state === 'success' ? (
+          <div className="p-6 space-y-4">
+            <div className="rounded-lg bg-green-50 border border-green-200 p-4 space-y-2">
+              <p className="text-sm font-semibold text-green-800">Usuario creado exitosamente</p>
+              <p className="text-xs text-green-700 font-mono break-all">Email: {createdEmail}</p>
+              <p className="text-xs text-green-700 font-mono">Contraseña: {createdPw}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleCopy}
+                className="h-7 text-xs gap-1.5 mt-1 border-green-300 text-green-700 hover:bg-green-100"
+              >
+                {copied ? '✓ Copiado' : <><Copy className="w-3 h-3" /> Copiar credenciales</>}
+              </Button>
+            </div>
+            <div className="rounded-lg bg-amber-50 border border-amber-200 p-3">
+              <p className="text-xs text-amber-800">
+                Este usuario temporal tiene rol <strong>owner</strong>.
+                Eliminalo cuando termines el soporte.
+              </p>
+            </div>
+            <Button className="w-full" onClick={handleClose}>Cerrar</Button>
+          </div>
+        ) : (
+          <div className="p-6 space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-700">Email</label>
+              <Input
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="text-sm"
+                disabled={state === 'loading'}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-700">Contraseña</label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    type={showPw ? 'text' : 'password'}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    className="text-sm pr-9 font-mono"
+                    disabled={state === 'loading'}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPw(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gray-700"
+                  >
+                    {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPassword(generatePassword())}
+                  disabled={state === 'loading'}
+                  className="text-xs px-3 whitespace-nowrap"
+                >
+                  Nueva
+                </Button>
+              </div>
+            </div>
+
+            {error && (
+              <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-md">{error}</p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <Button
+                variant="outline"
+                className="flex-1"
+                onClick={handleClose}
+                disabled={state === 'loading'}
+              >
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleCreate}
+                disabled={state === 'loading' || !email.trim() || !password}
+              >
+                {state === 'loading'
+                  ? <Loader2 className="w-4 h-4 animate-spin" />
+                  : 'Crear usuario'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function SuperAdmin() {
-  const navigate = useNavigate()
   const qc = useQueryClient()
-  const { enterTenantAsAdmin, superAdminViewingTenant, exitSuperAdminView } = useAuth()
 
   // Per-row loading state
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -194,6 +366,10 @@ export default function SuperAdmin() {
 
   // Expanded users panel per tenant
   const [expandedId, setExpandedId] = useState<string | null>(null)
+
+  // Soporte modal
+  const [soporteTenant, setSoporteTenant] = useState<TenantRow | null>(null)
+  const [cleanupReminder, setCleanupReminder] = useState<string | null>(null)
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
@@ -284,33 +460,36 @@ export default function SuperAdmin() {
     setBusyId(null); setBusyAction(null)
   }
 
-  async function handleEnter(tenant: TenantRow) {
-    await enterTenantAsAdmin(tenant)
-    navigate('/dashboard')
-  }
-
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div className="p-6 lg:p-8 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
-            <Building2 className="w-5 h-5 text-amber-700" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold text-gray-900">Super Admin</h1>
-            <p className="text-sm text-muted-foreground">Panel de gestión de locales</p>
-          </div>
+      <div className="flex items-center gap-3 mb-8">
+        <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
+          <Building2 className="w-5 h-5 text-amber-700" />
         </div>
-        {superAdminViewingTenant && (
-          <Button variant="outline" size="sm" onClick={exitSuperAdminView} className="gap-2 text-amber-700 border-amber-300">
-            <LogIn className="w-4 h-4" />
-            Salir de {superAdminViewingTenant.name}
-          </Button>
-        )}
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Super Admin</h1>
+          <p className="text-sm text-muted-foreground">Panel de gestión de locales</p>
+        </div>
       </div>
+
+      {/* Cleanup reminder */}
+      {cleanupReminder && (
+        <div className="flex items-center gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl mb-6 text-sm">
+          <span className="flex-1 text-amber-800">
+            Recordá eliminar el usuario de soporte de <strong>{cleanupReminder}</strong> cuando termines.
+            Podés hacerlo desde Usuarios del local.
+          </span>
+          <button
+            onClick={() => setCleanupReminder(null)}
+            className="text-amber-600 hover:text-amber-900 font-bold text-lg leading-none flex-shrink-0"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-8">
@@ -359,14 +538,13 @@ export default function SuperAdmin() {
                   <th className="text-right px-4 py-3 font-medium">Usuarios</th>
                   <th className="text-right px-4 py-3 font-medium">Clientes</th>
                   <th className="text-right px-4 py-3 font-medium">Acciones</th>
-                  <th className="px-4 py-3" />
+                  <th className="px-4 py-3 font-medium">Gestionar</th>
                 </tr>
               </thead>
               <tbody className="divide-y">
                 {tenants.map((t) => {
                   const status = getTenantStatus(t)
                   const days = trialDaysLeft(t)
-                  const isViewing = superAdminViewingTenant?.id === t.id
                   const anyBusy = busyId === t.id
                   const showActivar = t.trial_ends_at != null
                   const showDesactivar = status === 'active' || status === 'trial_active'
@@ -375,7 +553,7 @@ export default function SuperAdmin() {
 
                   return (
                     <Fragment key={t.id}>
-                    <tr className={cn('hover:bg-gray-50 transition-colors', isViewing && 'bg-amber-50')}>
+                    <tr className="hover:bg-gray-50 transition-colors">
                       {/* Local */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -524,22 +702,8 @@ export default function SuperAdmin() {
                       </td>
 
                       {/* Ingresar / Salir + Gestionar usuarios */}
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex flex-col items-end gap-1.5">
-                          {isViewing ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={exitSuperAdminView}
-                              className="text-amber-700 border-amber-300 hover:bg-amber-50"
-                            >
-                              Salir
-                            </Button>
-                          ) : (
-                            <Button size="sm" onClick={() => handleEnter(t)}>
-                              Ingresar
-                            </Button>
-                          )}
+                      <td className="px-4 py-3">
+                        <div className="flex flex-col items-start gap-1">
                           <Button
                             size="sm"
                             variant="ghost"
@@ -554,6 +718,15 @@ export default function SuperAdmin() {
                             {expandedId === t.id
                               ? <ChevronUp className="w-3 h-3" />
                               : <ChevronDown className="w-3 h-3" />}
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => setSoporteTenant(t)}
+                            className="h-7 text-xs gap-1 px-2 text-muted-foreground hover:text-orange-700 hover:bg-orange-50"
+                          >
+                            <Wrench className="w-3 h-3" />
+                            Soporte
                           </Button>
                         </div>
                       </td>
@@ -577,6 +750,14 @@ export default function SuperAdmin() {
           </div>
         )}
       </div>
+
+      {soporteTenant && (
+        <SoporteModal
+          tenant={soporteTenant}
+          onClose={() => setSoporteTenant(null)}
+          onSuccess={(name) => { setSoporteTenant(null); setCleanupReminder(name) }}
+        />
+      )}
     </div>
   )
 }
