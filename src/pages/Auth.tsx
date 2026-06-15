@@ -1,5 +1,5 @@
 import { useState, useEffect, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { rateLimiter } from '@/lib/rateLimiter'
 import { Button } from '@/components/ui/button'
@@ -214,8 +214,16 @@ export default function Auth() {
             </Button>
           </form>
 
+          {/* Registration link */}
+          <p className="text-sm text-center mt-5 text-muted-foreground">
+            ¿No tenés cuenta?{' '}
+            <Link to="/registro" className="text-plum-600 hover:underline font-medium">
+              Registrá tu centro gratis →
+            </Link>
+          </p>
+
           {/* Privacy notice */}
-          <p className="text-xs text-muted-foreground text-center mt-6 leading-relaxed">
+          <p className="text-xs text-muted-foreground text-center mt-4 leading-relaxed">
             Al iniciar sesión aceptás nuestros{' '}
             <span className="text-plum-600">Términos y Condiciones</span> y la{' '}
             <span className="text-plum-600">Política de Privacidad</span> de Luvira Wellness.

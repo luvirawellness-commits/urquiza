@@ -29,6 +29,7 @@ type GeneratedGiftCard = {
   senderName: string
   message: string
   imageDataUrl: string
+  tenantName: string
 }
 
 // ── Canvas generator ───────────────────────────────────────────────────────────
@@ -40,52 +41,148 @@ async function generateGiftCardImage(
   whatsapp: string,
   senderName?: string,
   message?: string,
+  tenantConfig?: { name: string; slug: string },
 ): Promise<string> {
+  const isLuvira =
+    !tenantConfig ||
+    tenantConfig.slug.toLowerCase().includes('luvira') ||
+    tenantConfig.name.toLowerCase().includes('luvira')
+
   return new Promise((resolve) => {
     const canvas = document.createElement('canvas')
     canvas.width = 1050
     canvas.height = 600
     const ctx = canvas.getContext('2d')!
-    const bg = new Image()
-    bg.onload = () => {
-      ctx.drawImage(bg, 0, 0, 1050, 600)
+
+    if (isLuvira) {
+      // ── Luvira branded: overlay text on background image ──────────────────
+      const bg = new Image()
+      bg.onload = () => {
+        ctx.drawImage(bg, 0, 0, 1050, 600)
+        ctx.textAlign = 'center'
+        ctx.fillStyle = '#E8D5E8'
+        ctx.font = 'italic 20px Georgia, serif'
+        ctx.fillText('Vale por: ' + serviceName + ' · ' + durationMinutes + ' minutos', 560, 445)
+        ctx.fillStyle = '#FFFFFF'
+        ctx.font = 'bold 19px Georgia, serif'
+        ctx.fillText('A nombre de: ' + recipientName, 560, 475)
+        if (message) {
+          ctx.fillStyle = '#E8D5E8'
+          ctx.font = 'italic 15px Georgia, serif'
+          ctx.fillText('"' + message + '"', 560, 501)
+        }
+        if (senderName && message) {
+          ctx.fillStyle = '#D4A0D4'
+          ctx.font = 'italic 13px Georgia, serif'
+          ctx.fillText('Con cariño de: ' + senderName, 560, 522)
+        }
+        const hasBoth = !!(senderName && message)
+        const codigoY = hasBoth ? 547 : message ? 529 : senderName ? 505 : 480
+        ctx.fillStyle = '#D4AF37'
+        ctx.font = 'bold 16px Georgia, serif'
+        ctx.fillText('Código de tarjeta: ' + code, 560, codigoY)
+        ctx.fillStyle = '#E8D5E8'
+        ctx.font = '14px Georgia, serif'
+        ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 560, codigoY + 26)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      bg.onerror = () => resolve(canvas.toDataURL('image/png'))
+      bg.src = CARD_BASE64
+    } else {
+      // ── Generic branded: draw from scratch ────────────────────────────────
+      const tenantName = tenantConfig!.name
+
+      // Background gradient: bordeaux → deep purple → near-black
+      const grad = ctx.createLinearGradient(0, 0, 1050, 600)
+      grad.addColorStop(0,   '#3D0E1A')
+      grad.addColorStop(0.6, '#2a0d3d')
+      grad.addColorStop(1,   '#1a0820')
+      ctx.fillStyle = grad
+      ctx.fillRect(0, 0, 1050, 600)
+
+      // Outer gold border
+      ctx.strokeStyle = '#C9A227'
+      ctx.lineWidth = 4
+      ctx.strokeRect(18, 18, 1014, 564)
+
+      // Inner subtle border
+      ctx.strokeStyle = 'rgba(201, 162, 39, 0.35)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(28, 28, 994, 544)
 
       ctx.textAlign = 'center'
 
+      // Tenant name — truncate if wider than 900px
+      ctx.fillStyle = '#C9A227'
+      ctx.font = 'bold 52px Georgia, serif'
+      let displayName = tenantName
+      while (ctx.measureText(displayName).width > 900 && displayName.length > 4) {
+        displayName = displayName.slice(0, -1)
+      }
+      if (displayName !== tenantName) displayName += '…'
+      ctx.fillText(displayName, 525, 120)
+
+      // Subtitle
+      ctx.fillStyle = 'rgba(232, 213, 232, 0.85)'
+      ctx.font = '20px Georgia, serif'
+      ctx.fillText('TARJETA  DE  REGALO', 525, 163)
+
+      // Gold divider with small diamond accents
+      ctx.strokeStyle = '#C9A227'
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(160, 186); ctx.lineTo(890, 186); ctx.stroke()
+      ctx.fillStyle = '#C9A227'
+      for (const x of [160, 525, 890]) {
+        ctx.beginPath()
+        ctx.moveTo(x, 181); ctx.lineTo(x + 5, 186)
+        ctx.lineTo(x, 191); ctx.lineTo(x - 5, 186)
+        ctx.closePath(); ctx.fill()
+      }
+
+      // Service + duration
       ctx.fillStyle = '#E8D5E8'
-      ctx.font = 'italic 20px Georgia, serif'
-      ctx.fillText('Vale por: ' + serviceName + ' · ' + durationMinutes + ' minutos', 560, 445)
+      ctx.font = 'italic 22px Georgia, serif'
+      ctx.fillText('Vale por: ' + serviceName + ' · ' + durationMinutes + ' minutos', 525, 248)
 
+      // Recipient
       ctx.fillStyle = '#FFFFFF'
-      ctx.font = 'bold 19px Georgia, serif'
-      ctx.fillText('A nombre de: ' + recipientName, 560, 475)
+      ctx.font = 'bold 20px Georgia, serif'
+      ctx.fillText('A nombre de: ' + recipientName, 525, 295)
 
+      let nextY = 338
       if (message) {
         ctx.fillStyle = '#E8D5E8'
-        ctx.font = 'italic 15px Georgia, serif'
-        ctx.fillText('"' + message + '"', 560, 501)
+        ctx.font = 'italic 16px Georgia, serif'
+        ctx.fillText('"' + message + '"', 525, nextY)
+        nextY += 34
       }
-
       if (senderName && message) {
         ctx.fillStyle = '#D4A0D4'
-        ctx.font = 'italic 13px Georgia, serif'
-        ctx.fillText('Con cariño de: ' + senderName, 560, 522)
+        ctx.font = 'italic 14px Georgia, serif'
+        ctx.fillText('Con cariño de: ' + senderName, 525, nextY)
+        nextY += 30
       }
 
-      const hasBoth = !!(senderName && message)
-      const codigoY = hasBoth ? 547 : message ? 529 : senderName ? 505 : 480
-      ctx.fillStyle = '#D4AF37'
-      ctx.font = 'bold 16px Georgia, serif'
-      ctx.fillText('Código de tarjeta: ' + code, 560, codigoY)
+      // Second divider
+      const divY = Math.max(nextY + 18, 415)
+      ctx.strokeStyle = 'rgba(201, 162, 39, 0.5)'
+      ctx.lineWidth = 1
+      ctx.beginPath(); ctx.moveTo(160, divY); ctx.lineTo(890, divY); ctx.stroke()
 
-      ctx.fillStyle = '#E8D5E8'
-      ctx.font = '14px Georgia, serif'
-      ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 560, codigoY + 26)
+      // Code
+      ctx.fillStyle = '#C9A227'
+      ctx.font = 'bold 20px Georgia, serif'
+      ctx.fillText('Código: ' + code, 525, divY + 52)
+
+      // WhatsApp
+      if (whatsapp) {
+        ctx.fillStyle = '#E8D5E8'
+        ctx.font = '15px Georgia, serif'
+        ctx.fillText('Reservar por WhatsApp al ' + whatsapp, 525, divY + 88)
+      }
 
       resolve(canvas.toDataURL('image/png'))
     }
-    bg.onerror = () => resolve(canvas.toDataURL('image/png'))
-    bg.src = CARD_BASE64
   })
 }
 // ── Gift card image modal ──────────────────────────────────────────────────────
@@ -93,7 +190,7 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
   function handleDownload() {
     const a = document.createElement('a')
     a.href = gc.imageDataUrl
-    a.download = `GiftCard-Luvira-${gc.code}.png`
+    a.download = `GiftCard-${gc.tenantName.replace(/\s+/g, '-')}-${gc.code}.png`
     document.body.appendChild(a)
     a.click()
     document.body.removeChild(a)
@@ -113,7 +210,7 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
         </DialogHeader>
 
         <div className="mt-2 rounded-lg overflow-hidden border">
-          <img src={gc.imageDataUrl} alt="Gift Card Luvira" style={{ width: '100%', borderRadius: '8px' }} />
+          <img src={gc.imageDataUrl} alt={`Gift Card ${gc.tenantName}`} style={{ width: '100%', borderRadius: '8px' }} />
         </div>
 
         <div className="flex gap-2 mt-2">
@@ -188,18 +285,24 @@ function GiftCardForm() {
 
       const { data: tenantData } = await supabase
         .from('tenants')
-        .select('whatsapp_number')
+        .select('whatsapp_number, name, slug')
         .eq('id', tenantId)
         .single()
+
+      const td = tenantData as { whatsapp_number?: string | null; name?: string | null; slug?: string | null } | null
+      const tenantConfig = td?.name && td?.slug
+        ? { name: td.name, slug: td.slug }
+        : undefined
 
       const imageDataUrl = await generateGiftCardImage(
         selectedService?.name ?? 'Servicio',
         duration,
         recipientName.trim(),
         result.code,
-        (tenantData as { whatsapp_number?: string | null } | null)?.whatsapp_number ?? '',
+        td?.whatsapp_number ?? '',
         senderName.trim() || undefined,
         message.trim() || undefined,
+        tenantConfig,
       )
 
       setGeneratedGC({
@@ -210,6 +313,7 @@ function GiftCardForm() {
         senderName: senderName.trim(),
         message: message.trim(),
         imageDataUrl,
+        tenantName: td?.name ?? 'GiftCard',
       })
       setServiceId(''); setAmount(''); setPaymentMethod('cash'); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())

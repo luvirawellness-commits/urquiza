@@ -18,6 +18,7 @@ import Membresias from '@/pages/Membresias'
 import Auditoria from '@/pages/Auditoria'
 import ClienteDetalle from '@/pages/ClienteDetalle'
 import SuperAdmin from '@/pages/SuperAdmin'
+import Registro from '@/pages/Registro'
 
 function ProtectedLayout() {
   return (
@@ -34,6 +35,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/auth" element={<Auth />} />
+            <Route path="/registro" element={<Registro />} />
             <Route element={<ProtectedLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/clientes" element={<Clientes />} />

@@ -1,5 +1,5 @@
 import { useState, useEffect, ElementType } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -11,8 +11,13 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 import type { Tenant, UserProfile } from '@/types'
+import {
+  useAdminServices, useCreateService, useUpdateService, useDeleteService,
+  serviceRowToForm, EMPTY_SERVICE_FORM,
+  type ServiceRow, type ServiceForm,
+} from '@/hooks/useServices'
 
-type AdminTab = 'locales' | 'usuarios' | 'roles'
+type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -254,13 +259,19 @@ function LocalModal({ open, onClose, tenant, allTenants }: {
 }
 
 function TabLocales() {
+  const tenantId = useTenantId()
   const { data: tenants = [], isLoading } = useQuery({
-    queryKey: ['tenants'],
+    queryKey: ['tenants', tenantId],
     queryFn: async () => {
-      const { data, error } = await supabase.from('tenants').select('*').order('name')
+      const { data, error } = await supabase
+        .from('tenants')
+        .select('*')
+        .eq('id', tenantId)
+        .order('name')
       if (error) throw error
       return data as Tenant[]
     },
+    enabled: !!tenantId,
   })
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Tenant | undefined>()
@@ -693,17 +704,24 @@ function TabUsuarios() {
   const myTenantIds = myTenants.map((t) => t.id)
 
   const { data: users = [], isLoading } = useQuery({
-    queryKey: ['admin-users', tenantId, isOwner ? 'all' : myTenantIds.join(',')],
+    queryKey: ['admin-users', tenantId, isOwner ? 'owner' : myTenantIds.join(',')],
     queryFn: async () => {
-      let query = supabase
+      // Always scope to the active tenant via user_tenants to avoid leaking cross-tenant
+      // data when super_admin impersonates a local (service-role bypasses RLS).
+      const { data: utRows, error: utError } = await supabase
+        .from('user_tenants')
+        .select('user_id')
+        .eq('tenant_id', tenantId)
+      if (utError) throw utError
+
+      const userIds = (utRows ?? []).map((r: { user_id: string }) => r.user_id)
+      if (userIds.length === 0) return [] as UserWithTenants[]
+
+      const { data, error } = await supabase
         .from('users')
         .select(`*, user_tenants(tenant_id, role, tenant:tenants(name))`)
+        .in('id', userIds)
         .order('full_name')
-      // partner_admin sees only users whose primary tenant they manage
-      if (!isOwner && myTenantIds.length > 0) {
-        query = query.in('tenant_id', myTenantIds)
-      }
-      const { data, error } = await query
       if (error) throw error
       return data as UserWithTenants[]
     },
@@ -711,12 +729,17 @@ function TabUsuarios() {
   })
 
   const { data: tenants = [] } = useQuery({
-    queryKey: ['tenants'],
+    queryKey: ['tenants', tenantId],
     queryFn: async () => {
-      const { data, error } = await supabase.from('tenants').select('*').order('name')
+      const { data, error } = await supabase
+        .from('tenants')
+        .select('*')
+        .eq('id', tenantId)
+        .order('name')
       if (error) throw error
       return data as Tenant[]
     },
+    enabled: !!tenantId,
   })
 
   // FIX 1: use shared useRoles hook (avoids query key collision with TabRoles)
@@ -1174,6 +1197,291 @@ function TabRoles({ canEdit }: { canEdit: boolean }) {
   )
 }
 
+// ── Services Tab ─────────────────────────────────────────────────────────────
+
+const CATEGORIES = [
+  { value: 'standard', label: 'Estándar' },
+  { value: 'premium',  label: 'Premium' },
+  { value: 'express',  label: 'Express' },
+]
+
+function ServiceModal({ open, onClose, service }: {
+  open: boolean; onClose: () => void; service?: ServiceRow
+}) {
+  const createSvc = useCreateService()
+  const updateSvc = useUpdateService()
+  const [form, setForm] = useState<ServiceForm>(service ? serviceRowToForm(service) : EMPTY_SERVICE_FORM)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (open) {
+      setForm(service ? serviceRowToForm(service) : EMPTY_SERVICE_FORM)
+      setError('')
+    }
+  }, [open, service])
+
+  function set<K extends keyof ServiceForm>(k: K, v: ServiceForm[K]) {
+    setForm((f) => ({ ...f, [k]: v }))
+  }
+
+  async function handleSave() {
+    if (!form.name.trim()) { setError('El nombre es obligatorio.'); return }
+    if (form.price_60 !== '' && isNaN(parseFloat(form.price_60))) { setError('Precio 60min inválido.'); return }
+    if (form.price_90 !== '' && isNaN(parseFloat(form.price_90))) { setError('Precio 90min inválido.'); return }
+    setError('')
+    try {
+      if (service) {
+        await updateSvc.mutateAsync({ id: service.id, form })
+      } else {
+        await createSvc.mutateAsync(form)
+      }
+      onClose()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al guardar')
+    }
+  }
+
+  const saving = createSvc.isPending || updateSvc.isPending
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{service ? 'Editar servicio' : 'Nuevo servicio'}</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-4 mt-2">
+
+          <div className="grid grid-cols-[72px_1fr] gap-3">
+            <div className="space-y-1">
+              <Label>Emoji</Label>
+              <Input value={form.emoji} onChange={(e) => set('emoji', e.target.value)} placeholder="💆" className="text-center text-lg" maxLength={4} />
+            </div>
+            <div className="space-y-1">
+              <Label>Nombre *</Label>
+              <Input value={form.name} onChange={(e) => set('name', e.target.value)} placeholder="Masaje Relajante" />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Descripción</Label>
+            <Input value={form.description} onChange={(e) => set('description', e.target.value)} placeholder="Descripción opcional del servicio" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Precio 60min *</Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                <Input type="number" min="0" step="0.01" value={form.price_60} onChange={(e) => set('price_60', e.target.value)} className="pl-7" placeholder="0" />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label>Precio 90min <span className="text-muted-foreground font-normal">(opcional)</span></Label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+                <Input type="number" min="0" step="0.01" value={form.price_90} onChange={(e) => set('price_90', e.target.value)} className="pl-7" placeholder="0" />
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Categoría</Label>
+            <select
+              value={form.category}
+              onChange={(e) => set('category', e.target.value)}
+              className="w-full h-10 rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+            >
+              {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </select>
+          </div>
+
+          <div className="space-y-3 pt-1">
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm">¿Requiere dos terapeutas?</span>
+              <input type="checkbox" checked={form.requires_two_therapists} onChange={(e) => set('requires_two_therapists', e.target.checked)} className="w-4 h-4 accent-plum-700" />
+            </label>
+            <label className="flex items-center justify-between cursor-pointer">
+              <span className="text-sm">¿Disponible en membresías?</span>
+              <input type="checkbox" checked={form.available_in_memberships} onChange={(e) => set('available_in_memberships', e.target.checked)} className="w-4 h-4 accent-plum-700" />
+            </label>
+            <div className="flex items-center justify-between">
+              <span className="text-sm">Activo</span>
+              <button
+                type="button"
+                onClick={() => set('active', !form.active)}
+                className={cn('relative inline-flex h-5 w-9 items-center rounded-full transition-colors', form.active ? 'bg-plum-700' : 'bg-gray-300')}
+              >
+                <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', form.active ? 'translate-x-5' : 'translate-x-0.5')} />
+              </button>
+            </div>
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          <div className="flex justify-end gap-2 pt-2">
+            <Button variant="outline" onClick={onClose}>Cancelar</Button>
+            <Button onClick={handleSave} disabled={saving}>
+              {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+              {service ? 'Guardar cambios' : 'Crear servicio'}
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function TabServicios() {
+  const { data: services = [], isLoading } = useAdminServices()
+  const deleteSvc = useDeleteService()
+  const updateSvc = useUpdateService()
+
+  const [modalOpen, setModalOpen] = useState(false)
+  const [editing, setEditing]     = useState<ServiceRow | undefined>()
+  const [deleteTarget, setDeleteTarget] = useState<ServiceRow | undefined>()
+  const [deleteMsg, setDeleteMsg]       = useState('')
+  const [toast, setToast]               = useState('')
+
+  function showToast(msg: string) { setToast(msg); setTimeout(() => setToast(''), 3000) }
+
+  function openCreate() { setEditing(undefined); setModalOpen(true) }
+  function openEdit(s: ServiceRow) { setEditing(s); setModalOpen(true) }
+  function closeModal() { setModalOpen(false); setEditing(undefined) }
+
+  async function handleToggleActive(s: ServiceRow) {
+    await updateSvc.mutateAsync({ id: s.id, form: { ...serviceRowToForm(s), active: !s.active } })
+    showToast(`"${s.name}" ${!s.active ? 'activado' : 'desactivado'}`)
+  }
+
+  async function handleDelete() {
+    if (!deleteTarget) return
+    setDeleteMsg('')
+    try {
+      const result = await deleteSvc.mutateAsync(deleteTarget.id)
+      const name = deleteTarget.name
+      setDeleteTarget(undefined)
+      showToast(result === 'deleted' ? `"${name}" eliminado` : `"${name}" desactivado (tiene turnos asociados)`)
+    } catch (e) {
+      setDeleteMsg(e instanceof Error ? e.message : 'Error al eliminar')
+    }
+  }
+
+  const categoryLabel = (v: string | null) => CATEGORIES.find((c) => c.value === v)?.label ?? v ?? '—'
+
+  if (isLoading) {
+    return <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
+  }
+
+  return (
+    <div className="space-y-4">
+      {toast && (
+        <div className="flex items-center gap-2 bg-plum-50 border border-plum-200 rounded-md px-3 py-2.5">
+          <Check className="w-4 h-4 text-plum-700 flex-shrink-0" />
+          <p className="text-sm text-plum-800">{toast}</p>
+        </div>
+      )}
+
+      <div className="flex justify-between items-center">
+        <p className="text-sm text-muted-foreground">{services.length} servicio{services.length !== 1 ? 's' : ''} configurado{services.length !== 1 ? 's' : ''}</p>
+        <Button size="sm" onClick={openCreate}>
+          <Plus className="w-4 h-4 mr-1" />Nuevo servicio
+        </Button>
+      </div>
+
+      <Card>
+        <CardContent className="p-0 overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b bg-gray-50">
+                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5 w-10"></th>
+                <th className="text-left text-xs text-muted-foreground font-medium px-4 py-2.5">Nombre</th>
+                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">60min</th>
+                <th className="text-right text-xs text-muted-foreground font-medium px-4 py-2.5">90min</th>
+                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Categoría</th>
+                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Membresías</th>
+                <th className="text-center text-xs text-muted-foreground font-medium px-4 py-2.5">Estado</th>
+                <th className="px-4 py-2.5 w-20"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {services.map((s) => (
+                <tr key={s.id} className={cn('border-b last:border-0 hover:bg-gray-50/50', !s.active && 'opacity-50')}>
+                  <td className="px-4 py-3 text-xl text-center">{s.emoji ?? ''}</td>
+                  <td className="px-4 py-3">
+                    <p className="text-sm font-medium text-plum-800">{s.name}</p>
+                    {s.description && <p className="text-xs text-muted-foreground truncate max-w-xs">{s.description}</p>}
+                  </td>
+                  <td className="px-4 py-3 text-right text-sm">{s.price_60 != null ? `$${s.price_60.toLocaleString('es-AR')}` : '—'}</td>
+                  <td className="px-4 py-3 text-right text-sm text-muted-foreground">{s.price_90 != null ? `$${s.price_90.toLocaleString('es-AR')}` : '—'}</td>
+                  <td className="px-4 py-3 text-center">
+                    <Badge variant="secondary" className="text-xs">{categoryLabel(s.category)}</Badge>
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    {s.available_in_memberships
+                      ? <Check className="w-4 h-4 text-green-600 mx-auto" />
+                      : <span className="text-muted-foreground text-xs">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-center">
+                    <button
+                      type="button"
+                      onClick={() => handleToggleActive(s)}
+                      disabled={updateSvc.isPending}
+                      className={cn('relative inline-flex h-5 w-9 items-center rounded-full transition-colors', s.active ? 'bg-plum-700' : 'bg-gray-300', updateSvc.isPending && 'opacity-50 cursor-not-allowed')}
+                    >
+                      <span className={cn('inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform', s.active ? 'translate-x-5' : 'translate-x-0.5')} />
+                    </button>
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center gap-1">
+                      <Button variant="ghost" size="icon" className="w-7 h-7 text-muted-foreground hover:text-plum-800" onClick={() => openEdit(s)}>
+                        <Pencil className="w-3.5 h-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="w-7 h-7 text-muted-foreground hover:text-red-600" onClick={() => { setDeleteTarget(s); setDeleteMsg('') }}>
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {services.length === 0 && (
+            <div className="text-center py-12 text-muted-foreground">
+              <Layers className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">Sin servicios configurados</p>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <ServiceModal open={modalOpen} onClose={closeModal} service={editing} />
+
+      <Dialog open={!!deleteTarget} onOpenChange={(v) => !v && setDeleteTarget(undefined)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Eliminar servicio</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            {deleteMsg
+              ? <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2.5">{deleteMsg}</p>
+              : <p className="text-sm text-gray-700">¿Eliminar <strong>{deleteTarget?.name}</strong>? Si tiene turnos asociados, será desactivado en lugar de eliminado.</p>
+            }
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setDeleteTarget(undefined)}>{deleteMsg ? 'Cerrar' : 'Cancelar'}</Button>
+              {!deleteMsg && (
+                <Button variant="destructive" onClick={handleDelete} disabled={deleteSvc.isPending}>
+                  {deleteSvc.isPending && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  Eliminar
+                </Button>
+              )}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ConfiguracionAdmin({
@@ -1213,6 +1521,7 @@ export default function ConfiguracionAdmin({
   const allTabs: { key: AdminTab; label: string; icon: ElementType; show: boolean }[] = [
     { key: 'locales',   label: 'Locales',          icon: Building2, show: isOwner },
     { key: 'usuarios',  label: 'Usuarios',          icon: Users,     show: true },
+    { key: 'servicios', label: 'Servicios',         icon: Layers,    show: true },
     { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,    show: canSeeRoles },
   ]
 
@@ -1248,9 +1557,10 @@ export default function ConfiguracionAdmin({
         </nav>
       </div>
 
-      {activeTab === 'locales' && <TabLocales />}
-      {activeTab === 'usuarios' && <TabUsuarios />}
-      {activeTab === 'roles' && <TabRoles canEdit={isOwner} />}
+      {activeTab === 'locales'   && <TabLocales />}
+      {activeTab === 'usuarios'  && <TabUsuarios />}
+      {activeTab === 'servicios' && <TabServicios />}
+      {activeTab === 'roles'     && <TabRoles canEdit={isOwner} />}
     </div>
   )
 }
