@@ -689,7 +689,7 @@ function UserModal({ open, onClose, onSuccess, user, allTenants, availableRoles 
 function TabUsuarios() {
   const tenantId = useTenantId()
   const { profile, availableTenants: myTenants } = useAuth()
-  const isOwner = profile?.role === 'owner'
+  const isOwner = profile?.role === 'owner' || profile?.role === 'super_admin'
   const myTenantIds = myTenants.map((t) => t.id)
 
   const { data: users = [], isLoading } = useQuery({
@@ -723,8 +723,10 @@ function TabUsuarios() {
   const { data: roleRows = [] } = useRoles()
   const roleLabel = (roleName: string) => roleRows.find((r) => r.name === roleName)?.name ?? roleName
 
-  // partner_admin cannot assign owner role or tenants outside their scope
-  const assignableRoles = isOwner ? roleRows : roleRows.filter((r) => r.name !== 'owner')
+  // super_admin is never an assignable role; owner is only assignable by owner/super_admin
+  const assignableRoles = isOwner
+    ? roleRows.filter((r) => r.name !== 'super_admin')
+    : roleRows.filter((r) => r.name !== 'owner' && r.name !== 'super_admin')
   const assignableTenants = isOwner ? tenants : tenants.filter((t) => myTenantIds.includes(t.id))
 
   // partner_admin cannot edit/delete owner accounts or users outside their tenants
@@ -1180,7 +1182,7 @@ export default function ConfiguracionAdmin({
   const { profile } = useAuth()
   const [tab, setTab] = useState<AdminTab>(defaultTab ?? 'locales')
 
-  if (profile?.role !== 'owner' && profile?.role !== 'partner_admin') {
+  if (profile?.role !== 'owner' && profile?.role !== 'partner_admin' && profile?.role !== 'super_admin') {
     return (
       <div className="flex items-center justify-center h-64 text-muted-foreground">
         <p className="text-sm">No tenés permiso para acceder a esta sección.</p>

@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useState, Fragment } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Loader2, Building2, LogIn } from 'lucide-react'
+import { Loader2, Building2, LogIn, ChevronDown, ChevronUp, Users } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { Tenant } from '@/types'
@@ -50,6 +50,130 @@ const STATUS_LABEL: Record<TenantStatus, string> = {
   inactive:      'Inactivo',
 }
 
+// ── Gestionar usuarios ────────────────────────────────────────────────────────
+
+type TenantUser = {
+  id: string
+  full_name: string
+  email: string
+  role: string
+}
+
+const ASSIGNABLE_ROLES: { value: string; label: string }[] = [
+  { value: 'owner',         label: 'Propietario' },
+  { value: 'partner_admin', label: 'Admin socio' },
+  { value: 'therapist',     label: 'Terapeuta' },
+  { value: 'receptionist',  label: 'Recepcionista' },
+]
+
+function TenantUsersPanel({ tenantId }: { tenantId: string }) {
+  const qc = useQueryClient()
+  const [savingId, setSavingId] = useState<string | null>(null)
+  const [savedId, setSavedId] = useState<string | null>(null)
+  const [errors, setErrors] = useState<Record<string, string>>({})
+
+  const { data: users = [], isLoading } = useQuery({
+    queryKey: ['sa-tenant-users', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('user_tenants')
+        .select('user_id, role, user:users!user_tenants_user_id_fkey(id, full_name, email, role)')
+        .eq('tenant_id', tenantId)
+        .eq('active', true)
+      if (error) throw error
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (data ?? []).map((row: any) => ({
+        id: row.user?.id ?? '',
+        full_name: row.user?.full_name ?? '',
+        email: row.user?.email ?? '',
+        role: row.user?.role ?? row.role,
+      })).filter((u: TenantUser) => u.id).sort((a: TenantUser, b: TenantUser) => a.full_name.localeCompare(b.full_name)) as TenantUser[]
+    },
+  })
+
+  async function handleRoleChange(userId: string, newRole: string) {
+    setSavingId(userId)
+    setSavedId(null)
+    setErrors((prev) => { const next = { ...prev }; delete next[userId]; return next })
+    try {
+      const [usersRes, utRes] = await Promise.all([
+        supabase.from('users').update({ role: newRole }).eq('id', userId),
+        supabase.from('user_tenants').update({ role: newRole }).eq('user_id', userId).eq('tenant_id', tenantId),
+      ])
+      if (usersRes.error) throw usersRes.error
+      if (utRes.error) throw utRes.error
+      await qc.invalidateQueries({ queryKey: ['sa-tenant-users', tenantId] })
+      await qc.invalidateQueries({ queryKey: ['sa-owners'] })
+      setSavedId(userId)
+      setTimeout(() => setSavedId((prev) => prev === userId ? null : prev), 2000)
+    } catch (e) {
+      setErrors((prev) => ({ ...prev, [userId]: e instanceof Error ? e.message : 'Error al guardar' }))
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  if (isLoading) {
+    return (
+      <div className="flex justify-center py-4">
+        <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+      </div>
+    )
+  }
+
+  if (users.length === 0) {
+    return <p className="text-sm text-muted-foreground py-3 text-center italic">Sin usuarios registrados para este local.</p>
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-muted-foreground border-b border-amber-200">
+            <th className="text-left pb-2 pr-6 font-medium">Nombre</th>
+            <th className="text-left pb-2 pr-6 font-medium">Email</th>
+            <th className="text-left pb-2 pr-6 font-medium">Rol actual</th>
+            <th className="text-left pb-2 font-medium">Cambiar rol</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-amber-100">
+          {users.map((u) => (
+            <tr key={u.id}>
+              <td className="py-2.5 pr-6 font-medium text-gray-900 whitespace-nowrap">{u.full_name}</td>
+              <td className="py-2.5 pr-6 text-gray-500 text-xs font-mono whitespace-nowrap">{u.email}</td>
+              <td className="py-2.5 pr-6">
+                <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-gray-100 text-gray-700">
+                  {ASSIGNABLE_ROLES.find((r) => r.value === u.role)?.label ?? u.role}
+                </span>
+              </td>
+              <td className="py-2.5">
+                <div className="flex items-center gap-2">
+                  <select
+                    value={u.role}
+                    onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                    disabled={savingId === u.id}
+                    className="text-xs border border-gray-200 rounded px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-plum-500 disabled:opacity-50 cursor-pointer"
+                  >
+                    {ASSIGNABLE_ROLES.map((r) => (
+                      <option key={r.value} value={r.value}>{r.label}</option>
+                    ))}
+                  </select>
+                  {savingId === u.id && <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground flex-shrink-0" />}
+                  {savedId === u.id && <span className="text-xs text-green-600 flex-shrink-0">✓ Guardado</span>}
+                  {errors[u.id] && <span className="text-xs text-red-600 flex-shrink-0">{errors[u.id]}</span>}
+                </div>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-[11px] text-muted-foreground mt-3 italic">
+        * Los cambios de rol toman efecto la próxima vez que el usuario inicie sesión.
+      </p>
+    </div>
+  )
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function SuperAdmin() {
@@ -67,6 +191,9 @@ export default function SuperAdmin() {
 
   // Inline "Desactivar" confirmation state
   const [confirmId, setConfirmId] = useState<string | null>(null)
+
+  // Expanded users panel per tenant
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   // ── Queries ────────────────────────────────────────────────────────────────
 
@@ -247,7 +374,8 @@ export default function SuperAdmin() {
                   const isConfirmOpen = confirmId === t.id
 
                   return (
-                    <tr key={t.id} className={cn('hover:bg-gray-50 transition-colors', isViewing && 'bg-amber-50')}>
+                    <Fragment key={t.id}>
+                    <tr className={cn('hover:bg-gray-50 transition-colors', isViewing && 'bg-amber-50')}>
                       {/* Local */}
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-2">
@@ -395,24 +523,53 @@ export default function SuperAdmin() {
                         </div>
                       </td>
 
-                      {/* Ingresar / Salir */}
+                      {/* Ingresar / Salir + Gestionar usuarios */}
                       <td className="px-4 py-3 text-right">
-                        {isViewing ? (
+                        <div className="flex flex-col items-end gap-1.5">
+                          {isViewing ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={exitSuperAdminView}
+                              className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                            >
+                              Salir
+                            </Button>
+                          ) : (
+                            <Button size="sm" onClick={() => handleEnter(t)}>
+                              Ingresar
+                            </Button>
+                          )}
                           <Button
                             size="sm"
-                            variant="outline"
-                            onClick={exitSuperAdminView}
-                            className="text-amber-700 border-amber-300 hover:bg-amber-50"
+                            variant="ghost"
+                            onClick={() => setExpandedId((prev) => prev === t.id ? null : t.id)}
+                            className={cn(
+                              'h-7 text-xs gap-1 px-2',
+                              expandedId === t.id ? 'text-plum-700 bg-plum-50' : 'text-muted-foreground hover:text-gray-700',
+                            )}
                           >
-                            Salir
+                            <Users className="w-3 h-3" />
+                            Usuarios
+                            {expandedId === t.id
+                              ? <ChevronUp className="w-3 h-3" />
+                              : <ChevronDown className="w-3 h-3" />}
                           </Button>
-                        ) : (
-                          <Button size="sm" onClick={() => handleEnter(t)}>
-                            Ingresar
-                          </Button>
-                        )}
+                        </div>
                       </td>
                     </tr>
+                    {expandedId === t.id && (
+                      <tr>
+                        <td colSpan={9} className="px-6 py-4 bg-amber-50/40 border-b">
+                          <p className="text-xs font-semibold text-amber-800 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                            <Users className="w-3.5 h-3.5" />
+                            Gestionar usuarios — {t.name}
+                          </p>
+                          <TenantUsersPanel tenantId={t.id} />
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   )
                 })}
               </tbody>

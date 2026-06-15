@@ -98,18 +98,26 @@ export function Sidebar() {
     ? profile.full_name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()
     : '?'
 
+  console.log('[DEBUG Sidebar] role:', profile?.role, '| permissions:', permissions)
+
   // Use permissions from roles table; fall back to role[] while still loading (null)
   const filteredNav = navItems.filter((item) => {
     if (!item.permKeys) return true // Dashboard, Clientes, Agenda — always visible
+    if (profile?.role === 'super_admin') return true // super_admin sees all modules
     if (permissions !== null) return item.permKeys.some((k) => permissions[k] === true)
     // Fallback while permissions are loading
     return !item.roles || item.roles.includes(profile?.role ?? '')
   })
 
-  // Configuración admin: visible if role is owner OR permissions.configuracion is set
+  console.log('[DEBUG Sidebar] filteredNav labels:', filteredNav.map((i) => i.label))
+
+  // Configuración admin: visible if role is owner, super_admin, or permissions.configuracion is set
   const showAdminLink =
     profile?.role === 'owner' ||
+    profile?.role === 'super_admin' ||
     (permissions !== null && permissions['configuracion'] === true)
+
+  console.log('[DEBUG Sidebar] showAdminLink:', showAdminLink)
 
   const sidebarContent = (
     <div className="flex flex-col h-full">

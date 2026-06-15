@@ -274,11 +274,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   async function enterTenantAsAdmin(tenant: Tenant) {
+    const allPerms = Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true]))
+    console.log('[DEBUG enterTenantAsAdmin] tenant:', tenant.id, tenant.name)
+    console.log('[DEBUG enterTenantAsAdmin] profile.role at call time:', profile?.role)
+    console.log('[DEBUG enterTenantAsAdmin] setting permissions:', allPerms)
     setSuperAdminViewingTenant(tenant)
     setCurrentTenantId(tenant.id)
     localStorage.setItem(TENANT_KEY, tenant.id)
     queryClient.invalidateQueries()
-    setPermissions(Object.fromEntries(ALL_PERM_KEYS.map((k) => [k, true])))
+    setPermissions(allPerms)
   }
 
   function exitSuperAdminView() {
