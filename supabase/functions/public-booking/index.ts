@@ -267,7 +267,7 @@ serve(async (req: Request) => {
             email:       email ? String(email).trim() : null,
             notes:       notes ? String(notes).trim() : null,
             status:      'active',
-            source:      'online',
+            source:      'web',
             wa_opt_in:   true,
           })
           .select('id, first_name, last_name, phone, email')
@@ -392,7 +392,7 @@ serve(async (req: Request) => {
             duration_minutes: durMin,
             status:           'confirmed',
             source:           'web',
-            box_number:       1,
+            box_number:       0,
             price_charged:    priceCharged,
             notes:            notes ? String(notes).trim() : null,
           })

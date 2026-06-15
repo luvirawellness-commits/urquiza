@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import {
   Users,
   CalendarCheck,
@@ -7,6 +8,10 @@ import {
   AlertTriangle,
   Clock,
   Zap,
+  Link2,
+  ExternalLink,
+  Copy,
+  Check,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
@@ -83,10 +88,23 @@ function MetricCard({ title, value, icon: Icon, description, color, isLoading }:
 }
 
 export default function Dashboard() {
-  const { profile } = useAuth()
+  const { profile, currentTenant } = useAuth()
   const { data: metrics, isLoading: metricsLoading } = useDashboardMetrics()
   const { data: agenda, isLoading: agendaLoading } = useTodayAgenda()
   const { data: alerts, isLoading: alertsLoading } = useDashboardAlerts()
+  const [copied, setCopied] = useState(false)
+
+  const bookingUrl = currentTenant?.slug
+    ? `https://luviraos.com/reservar/${currentTenant.slug}`
+    : null
+
+  function copyBookingLink() {
+    if (!bookingUrl) return
+    navigator.clipboard.writeText(bookingUrl).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
 
   const greeting = () => {
     const h = parseInt(
@@ -157,6 +175,54 @@ export default function Dashboard() {
           <MetricCard key={card.title} {...card} isLoading={metricsLoading} />
         ))}
       </div>
+
+      {/* Booking link widget */}
+      {bookingUrl && (
+        <Card className="border-plum-200 bg-gradient-to-r from-plum-50 to-white">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold text-plum-800">
+              <Link2 className="w-4 h-4" />
+              Tu link de reservas online
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <p className="text-sm text-muted-foreground">
+              Compartí este link con tus clientes para que reserven su turno directamente.
+            </p>
+            <div className="flex items-center gap-2 rounded-md border bg-white px-3 py-2">
+              <span className="flex-1 truncate font-mono text-sm text-plum-700">
+                {bookingUrl}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="default"
+                size="sm"
+                className="bg-plum-700 hover:bg-plum-800 text-white"
+                onClick={copyBookingLink}
+              >
+                {copied ? (
+                  <>
+                    <Check className="w-4 h-4 mr-1.5" />
+                    ¡Copiado!
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-4 h-4 mr-1.5" />
+                    Copiar link
+                  </>
+                )}
+              </Button>
+              <Button variant="outline" size="sm" asChild>
+                <a href={bookingUrl} target="_blank" rel="noopener noreferrer">
+                  <ExternalLink className="w-4 h-4 mr-1.5" />
+                  Ver página
+                </a>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Agenda de hoy */}
       <section>
