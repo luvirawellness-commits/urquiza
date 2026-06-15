@@ -264,6 +264,116 @@ export function useAddBeneficiary() {
   })
 }
 
+// ── Tenant-wide membership views ─────────────────────────────────────────────
+
+export type MembershipSession = {
+  id: string
+  scheduled_at: string
+  client: { id: string; first_name: string; last_name?: string | null } | null
+  service: { id: string; name: string; emoji?: string | null } | null
+  therapist: { id: string; full_name: string } | null
+}
+
+export type TenantMembershipRow = {
+  id: string
+  tenant_id: string
+  client_id: string
+  membership_id: string | null
+  sessions_used: number
+  status: 'active' | 'expired' | 'cancelled'
+  expires_at: string | null
+  purchased_at: string | null
+  amount_paid: number | null
+  payment_method: string | null
+  client: { id: string; first_name: string; last_name?: string | null } | null
+  plan: {
+    id: string
+    name: string
+    sessions_qty: number | null
+    price: number | null
+    highlight_badge?: string | null
+  } | null
+  beneficiaries: {
+    id: string
+    client_id: string
+    client: { id: string; first_name: string; last_name?: string | null } | null
+  }[]
+}
+
+const TENANT_MEMBERSHIP_SELECT = `
+  id, tenant_id, client_id, membership_id, sessions_used,
+  status, expires_at, purchased_at, amount_paid, payment_method,
+  client:clients(id, first_name, last_name),
+  plan:memberships!fk_cm_membership_id(id, name, sessions_qty, price, highlight_badge),
+  beneficiaries:membership_beneficiaries(
+    id, client_id,
+    client:clients(id, first_name, last_name)
+  )
+`
+
+export function useTenantActiveMemberships() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['tenant-active-memberships', tenantId],
+    queryFn: async () => {
+      const today = new Date().toLocaleDateString('sv-SE', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+      })
+      const { data, error } = await supabase
+        .from('client_memberships')
+        .select(TENANT_MEMBERSHIP_SELECT)
+        .eq('tenant_id', tenantId)
+        .eq('status', 'active')
+        .or(`expires_at.is.null,expires_at.gte.${today}`)
+        .order('expires_at', { ascending: true, nullsFirst: false })
+      if (error) throw error
+      return (data ?? []) as unknown as TenantMembershipRow[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+export function useTenantExpiredMemberships() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['tenant-expired-memberships', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('client_memberships')
+        .select(TENANT_MEMBERSHIP_SELECT)
+        .eq('tenant_id', tenantId)
+        .in('status', ['expired', 'cancelled'])
+        .order('expires_at', { ascending: false, nullsFirst: true })
+      if (error) throw error
+      return (data ?? []) as unknown as TenantMembershipRow[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+export function useMembershipSessions(membershipId: string | null) {
+  return useQuery({
+    queryKey: ['membership-sessions', membershipId],
+    queryFn: async () => {
+      if (!membershipId) return [] as MembershipSession[]
+      const { data, error } = await supabase
+        .from('appointments')
+        .select(`
+          id, scheduled_at,
+          client:clients!fk_apt_client(id, first_name, last_name),
+          service:services!fk_apt_service(id, name, emoji),
+          therapist:users!fk_apt_therapist(id, full_name)
+        `)
+        .eq('client_membership_id', membershipId)
+        .eq('status', 'completed')
+        .order('scheduled_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as unknown as MembershipSession[]
+    },
+    enabled: !!membershipId,
+  })
+}
+
 export function useRemoveBeneficiary() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
