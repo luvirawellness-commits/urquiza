@@ -1065,10 +1065,11 @@ function RoleModal({ open, onClose, role, tenantId }: {
   )
 }
 
-function TabRoles() {
+function TabRoles({ canEdit }: { canEdit: boolean }) {
   const tenantId = useTenantId()
   const qc = useQueryClient()
-  const { data: roles = [], isLoading } = useRoles()
+  const { data: rolesRaw = [], isLoading } = useRoles()
+  const roles = rolesRaw.filter((r) => r.name !== 'super_admin')
 
   const deleteMutation = useMutation({
     mutationFn: async (id: string) => {
@@ -1095,9 +1096,11 @@ function TabRoles() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{roles.length} roles configurados</p>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="w-4 h-4 mr-1" />Nuevo rol
-        </Button>
+        {canEdit && (
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="w-4 h-4 mr-1" />Nuevo rol
+          </Button>
+        )}
       </div>
       <Card>
         <CardContent className="p-0 overflow-x-auto">
@@ -1131,27 +1134,28 @@ function TabRoles() {
                     </p>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex items-center gap-1">
-                      {/* FIX 2: only owner is non-editable */}
-                      <Button
-                        variant="ghost" size="icon"
-                        className="w-7 h-7 text-muted-foreground hover:text-plum-800"
-                        onClick={() => openEdit(r)}
-                        disabled={r.name === 'owner'}
-                        title={r.name === 'owner' ? 'El rol de dueño siempre tiene acceso total' : undefined}
-                      >
-                        <Pencil className="w-3.5 h-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost" size="icon"
-                        className="w-7 h-7 text-muted-foreground hover:text-red-600"
-                        onClick={() => deleteMutation.mutate(r.id)}
-                        disabled={r.is_system || deleteMutation.isPending}
-                        title={r.is_system ? 'Los roles del sistema no se pueden eliminar' : undefined}
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </Button>
-                    </div>
+                    {canEdit && (
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost" size="icon"
+                          className="w-7 h-7 text-muted-foreground hover:text-plum-800"
+                          onClick={() => openEdit(r)}
+                          disabled={r.name === 'owner'}
+                          title={r.name === 'owner' ? 'El rol de dueño siempre tiene acceso total' : undefined}
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost" size="icon"
+                          className="w-7 h-7 text-muted-foreground hover:text-red-600"
+                          onClick={() => deleteMutation.mutate(r.id)}
+                          disabled={r.is_system || deleteMutation.isPending}
+                          title={r.is_system ? 'Los roles del sistema no se pueden eliminar' : undefined}
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </Button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -1203,15 +1207,16 @@ export default function ConfiguracionAdmin({
     )
   }
 
-  const isOwner = profile?.role === 'owner'
+  const isOwner = profile?.role === 'owner' || profile?.role === 'super_admin'
+  const canSeeRoles = isOwner || profile?.role === 'partner_admin'
 
-  const allTabs: { key: AdminTab; label: string; icon: ElementType; ownerOnly: boolean }[] = [
-    { key: 'locales',   label: 'Locales',          icon: Building2, ownerOnly: true },
-    { key: 'usuarios',  label: 'Usuarios',          icon: Users,     ownerOnly: false },
-    { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,    ownerOnly: true },
+  const allTabs: { key: AdminTab; label: string; icon: ElementType; show: boolean }[] = [
+    { key: 'locales',   label: 'Locales',          icon: Building2, show: isOwner },
+    { key: 'usuarios',  label: 'Usuarios',          icon: Users,     show: true },
+    { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,    show: canSeeRoles },
   ]
 
-  const tabs = allTabs.filter((t) => !t.ownerOnly || isOwner)
+  const tabs = allTabs.filter((t) => t.show)
 
   // If the active tab is not available for this role, reset to usuarios
   const activeTab = tabs.find((t) => t.key === tab) ? tab : 'usuarios'
@@ -1245,7 +1250,7 @@ export default function ConfiguracionAdmin({
 
       {activeTab === 'locales' && <TabLocales />}
       {activeTab === 'usuarios' && <TabUsuarios />}
-      {activeTab === 'roles' && <TabRoles />}
+      {activeTab === 'roles' && <TabRoles canEdit={isOwner} />}
     </div>
   )
 }
