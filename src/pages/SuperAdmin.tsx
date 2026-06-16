@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type TenantRow = Tenant & { trial_ends_at?: string | null }
+type TenantRow = Tenant & { trial_ends_at?: string | null; listed_in_directory?: boolean | null }
 type TenantStatus = 'active' | 'trial_active' | 'trial_expired' | 'inactive'
 type BusyAction = 'activar' | 'extender' | 'desactivar'
 
@@ -367,6 +367,9 @@ export default function SuperAdmin() {
   // Expanded users panel per tenant
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
+  // Directory toggle
+  const [directoryBusyId, setDirectoryBusyId] = useState<string | null>(null)
+
   // Soporte modal
   const [soporteTenant, setSoporteTenant] = useState<TenantRow | null>(null)
   const [cleanupReminder, setCleanupReminder] = useState<string | null>(null)
@@ -448,6 +451,13 @@ export default function SuperAdmin() {
     setExtendOpen(null)
     setExtendDays('7')
     setBusyId(null); setBusyAction(null)
+  }
+
+  async function handleToggleDirectory(id: string, current: boolean) {
+    setDirectoryBusyId(id)
+    await supabase.from('tenants').update({ listed_in_directory: !current }).eq('id', id)
+    await qc.invalidateQueries({ queryKey: ['sa-tenants'] })
+    setDirectoryBusyId(null)
   }
 
   async function handleDesactivar(id: string) {
@@ -537,6 +547,7 @@ export default function SuperAdmin() {
                   <th className="text-left px-4 py-3 font-medium">Trial</th>
                   <th className="text-right px-4 py-3 font-medium">Usuarios</th>
                   <th className="text-right px-4 py-3 font-medium">Clientes</th>
+                  <th className="text-center px-4 py-3 font-medium">Directorio</th>
                   <th className="text-right px-4 py-3 font-medium">Acciones</th>
                   <th className="px-4 py-3 font-medium">Gestionar</th>
                 </tr>
@@ -596,6 +607,29 @@ export default function SuperAdmin() {
 
                       {/* Clientes */}
                       <td className="px-4 py-3 text-right font-medium text-gray-700">{clientCounts[t.id] ?? 0}</td>
+
+                      {/* Directorio toggle */}
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          title="Aparece en el buscador público de luviraos.com"
+                          disabled={directoryBusyId === t.id}
+                          onClick={() => handleToggleDirectory(t.id, !!t.listed_in_directory)}
+                          className={cn(
+                            'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed',
+                            t.listed_in_directory ? 'bg-green-500' : 'bg-gray-200',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                              t.listed_in_directory ? 'translate-x-4' : 'translate-x-0',
+                            )}
+                          />
+                        </button>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {t.listed_in_directory ? 'Visible' : 'Oculto'}
+                        </p>
+                      </td>
 
                       {/* Acciones */}
                       <td className="px-4 py-3">
@@ -733,7 +767,7 @@ export default function SuperAdmin() {
                     </tr>
                     {expandedId === t.id && (
                       <tr>
-                        <td colSpan={9} className="px-6 py-4 bg-amber-50/40 border-b">
+                        <td colSpan={10} className="px-6 py-4 bg-amber-50/40 border-b">
                           <p className="text-xs font-semibold text-amber-800 uppercase tracking-wide mb-3 flex items-center gap-1.5">
                             <Users className="w-3.5 h-3.5" />
                             Gestionar usuarios — {t.name}
