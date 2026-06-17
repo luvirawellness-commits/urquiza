@@ -1,4 +1,4 @@
-import { Outlet } from 'react-router-dom'
+import { Outlet, Link } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { useAuth } from '@/contexts/AuthContext'
 import { MessageCircle } from 'lucide-react'
@@ -12,18 +12,26 @@ function TrialExpiredScreen() {
         </div>
         <h1 className="text-white text-2xl font-bold mb-3">Período de prueba vencido</h1>
         <p className="text-plum-300 text-sm mb-8">
-          Tu período de prueba ha vencido. Contactanos para continuar usando Luvira OS.
+          Tu período de prueba ha vencido. Contratá un plan para continuar usando Luvira OS.
         </p>
-        <a
-          href="https://wa.me/5491133230906"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
-          style={{ backgroundColor: '#25D366' }}
-        >
-          <MessageCircle className="w-4 h-4" />
-          Contactar por WhatsApp
-        </a>
+        <div className="flex flex-col gap-3 items-center">
+          <Link
+            to="/pago"
+            className="inline-flex items-center px-6 py-3 rounded-lg text-sm font-semibold text-white bg-plum-500 hover:bg-plum-400 transition-colors"
+          >
+            Contratar plan
+          </Link>
+          <a
+            href="https://wa.me/5491133230906"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold text-white transition-opacity hover:opacity-90"
+            style={{ backgroundColor: '#25D366' }}
+          >
+            <MessageCircle className="w-4 h-4" />
+            Contactar por WhatsApp
+          </a>
+        </div>
       </div>
     </div>
   )
@@ -56,14 +64,12 @@ export function AppLayout() {
               <span>
                 Tu período de prueba vence en <strong>{trialDaysLeft} {trialDaysLeft === 1 ? 'día' : 'días'}</strong>.
               </span>
-              <a
-                href="https://wa.me/5491133230906"
-                target="_blank"
-                rel="noopener noreferrer"
+              <Link
+                to="/pago"
                 className="text-xs font-semibold underline hover:no-underline"
               >
                 Contratar plan
-              </a>
+              </Link>
             </div>
           )}
 

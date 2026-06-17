@@ -19,6 +19,9 @@ import Auditoria from '@/pages/Auditoria'
 import ClienteDetalle from '@/pages/ClienteDetalle'
 import SuperAdmin from '@/pages/SuperAdmin'
 import Registro from '@/pages/Registro'
+import Pago from '@/pages/Pago'
+import PagoExitoso from '@/pages/PagoExitoso'
+import PagoFallido from '@/pages/PagoFallido'
 
 function ProtectedLayout() {
   return (
@@ -36,6 +39,9 @@ export default function App() {
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route path="/registro" element={<Registro />} />
+            <Route path="/pago" element={<Pago />} />
+            <Route path="/pago-exitoso" element={<PagoExitoso />} />
+            <Route path="/pago-fallido" element={<PagoFallido />} />
             <Route element={<ProtectedLayout />}>
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/clientes" element={<Clientes />} />
