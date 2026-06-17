@@ -56,6 +56,187 @@ function useRoles() {
   })
 }
 
+// ── Add Branch Modal ──────────────────────────────────────────────────────────
+
+type BranchForm = { name: string; slug: string; address: string; phone: string; whatsapp: string }
+const EMPTY_BRANCH: BranchForm = { name: '', slug: '', address: '', phone: '', whatsapp: '' }
+
+type BranchResult = { tenant_id: string; tenant_name: string; trial_ends_at: string }
+
+function BranchModal({
+  open,
+  onClose,
+  onSwitch,
+}: {
+  open: boolean
+  onClose: () => void
+  onSwitch: (tenantId: string) => Promise<void>
+}) {
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  const [form, setForm] = useState<BranchForm>(EMPTY_BRANCH)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<BranchResult | null>(null)
+  const [switching, setSwitching] = useState(false)
+
+  useEffect(() => {
+    if (open) { setForm(EMPTY_BRANCH); setError(''); setResult(null) }
+  }, [open])
+
+  function setField<K extends keyof BranchForm>(k: K, v: string) {
+    setForm((f) => {
+      const next = { ...f, [k]: v }
+      if (k === 'name') next.slug = slugify(v)
+      return next
+    })
+  }
+
+  async function handleSubmit() {
+    if (!form.name.trim()) { setError('El nombre es obligatorio.'); return }
+    if (!form.slug.trim()) { setError('El slug es obligatorio.'); return }
+    if (!form.address.trim()) { setError('La dirección es obligatoria.'); return }
+    if (!form.phone.trim()) { setError('El teléfono es obligatorio.'); return }
+    setError('')
+    setSaving(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Sin sesión activa')
+
+      const { data, error: fnErr } = await supabase.functions.invoke('add-branch', {
+        body: {
+          user_id:        user?.id,
+          access_token:   session.access_token,
+          tenant_name:    form.name.trim(),
+          slug:           form.slug.trim(),
+          address:        form.address.trim(),
+          phone:          form.phone.trim(),
+          whatsapp_number: form.whatsapp.trim() || null,
+        },
+      })
+
+      if (fnErr) throw new Error(fnErr.message ?? 'Error al crear la sucursal')
+      if (data?.error) throw new Error(data.error)
+
+      await qc.invalidateQueries({ queryKey: ['tenants'] })
+      setResult({ tenant_id: data.tenant_id, tenant_name: form.name.trim(), trial_ends_at: data.trial_ends_at })
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al crear la sucursal')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function handleSwitch() {
+    if (!result) return
+    setSwitching(true)
+    await onSwitch(result.tenant_id)
+    setSwitching(false)
+    onClose()
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Agregar nueva sucursal</DialogTitle>
+        </DialogHeader>
+
+        {result ? (
+          <div className="space-y-4 mt-2">
+            <div className="rounded-lg bg-green-50 border border-green-200 p-4 space-y-2">
+              <p className="text-sm font-semibold text-green-800">¡Nueva sucursal creada!</p>
+              <p className="text-sm text-green-700">
+                Tenés 7 días de prueba gratuita. Podés empezar a configurarla ahora.
+              </p>
+            </div>
+            <div className="rounded-lg border border-plum-200 bg-plum-50/40 p-4 space-y-3">
+              <p className="text-sm text-plum-800">
+                ¿Querés ir a configurar <strong>{result.tenant_name}</strong>?
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  size="sm"
+                  className="bg-plum-700 hover:bg-plum-800 text-white"
+                  onClick={handleSwitch}
+                  disabled={switching}
+                >
+                  {switching && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}
+                  Ir ahora →
+                </Button>
+                <Button variant="outline" size="sm" onClick={onClose}>
+                  Quedarme aquí
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4 mt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Nombre del local *</Label>
+                <Input
+                  value={form.name}
+                  onChange={(e) => setField('name', e.target.value)}
+                  placeholder="Palermo"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>Slug * <span className="text-xs text-muted-foreground">(URL única)</span></Label>
+                <Input
+                  value={form.slug}
+                  onChange={(e) => setField('slug', slugify(e.target.value))}
+                  placeholder="palermo"
+                  className="font-mono text-sm"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <Label>Dirección *</Label>
+              <Input
+                value={form.address}
+                onChange={(e) => setField('address', e.target.value)}
+                placeholder="Av. Santa Fe 1234, CABA"
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>Teléfono *</Label>
+                <Input
+                  value={form.phone}
+                  onChange={(e) => setField('phone', e.target.value)}
+                  placeholder="+54 11 ..."
+                />
+              </div>
+              <div className="space-y-1">
+                <Label>WhatsApp</Label>
+                <Input
+                  value={form.whatsapp}
+                  onChange={(e) => setField('whatsapp', e.target.value)}
+                  placeholder="+54 9 11 ..."
+                />
+              </div>
+            </div>
+            {form.slug && (
+              <p className="text-xs text-muted-foreground">
+                Link de reservas: <span className="font-mono">luviraos.com/reservar/{form.slug}</span>
+              </p>
+            )}
+            {error && <p className="text-sm text-red-600">{error}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={onClose}>Cancelar</Button>
+              <Button onClick={handleSubmit} disabled={saving}>
+                {saving && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                Crear sucursal
+              </Button>
+            </div>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── Locales Tab ───────────────────────────────────────────────────────────────
 
 type TenantForm = {
@@ -260,6 +441,9 @@ function LocalModal({ open, onClose, tenant, allTenants }: {
 
 function TabLocales() {
   const tenantId = useTenantId()
+  const { profile, switchTenant } = useAuth()
+  const isOwner = profile?.role === 'owner' || profile?.role === 'super_admin'
+
   const { data: tenants = [], isLoading } = useQuery({
     queryKey: ['tenants', tenantId],
     queryFn: async () => {
@@ -275,6 +459,7 @@ function TabLocales() {
   })
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Tenant | undefined>()
+  const [branchOpen, setBranchOpen] = useState(false)
 
   function openCreate() { setEditing(undefined); setModalOpen(true) }
   function openEdit(t: Tenant) { setEditing(t); setModalOpen(true) }
@@ -288,9 +473,16 @@ function TabLocales() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{tenants.length} locales registrados</p>
-        <Button size="sm" onClick={openCreate}>
-          <Plus className="w-4 h-4 mr-1" />Nuevo local
-        </Button>
+        <div className="flex gap-2">
+          {isOwner && (
+            <Button size="sm" variant="outline" onClick={() => setBranchOpen(true)}>
+              <Plus className="w-4 h-4 mr-1" />Agregar sucursal
+            </Button>
+          )}
+          <Button size="sm" onClick={openCreate}>
+            <Plus className="w-4 h-4 mr-1" />Nuevo local
+          </Button>
+        </div>
       </div>
       <Card>
         <CardContent className="p-0 overflow-x-auto">
@@ -334,6 +526,7 @@ function TabLocales() {
         </CardContent>
       </Card>
       <LocalModal open={modalOpen} onClose={closeModal} tenant={editing} allTenants={tenants} />
+      <BranchModal open={branchOpen} onClose={() => setBranchOpen(false)} onSwitch={switchTenant} />
     </div>
   )
 }
