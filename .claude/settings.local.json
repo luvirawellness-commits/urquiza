@@ -5,7 +5,9 @@
       "Bash(npm install *)",
       "Bash(npx tsc *)",
       "Bash(npx vite *)",
-      "Bash(dir /s /b src)"
+      "Bash(dir /s /b src)",
+      "Bash(git -C \"C:\\\\Users\\\\Cristian Bustos\\\\Desktop\\\\luvira-os\" diff HEAD -- src/pages/ConfiguracionAdmin.tsx)",
+      "Bash(git *)"
     ]
   }
 }

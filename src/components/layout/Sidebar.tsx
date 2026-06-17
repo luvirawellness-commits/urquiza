@@ -28,10 +28,13 @@ const navItems = [
 ]
 
 function TenantSwitcher() {
-  const { currentTenant, availableTenants, switchTenant } = useAuth()
+  const { currentTenant, availableTenants, switchTenant, currentTenantId } = useAuth()
   const [open, setOpen] = useState(false)
   const [switching, setSwitching] = useState(false)
   const multi = availableTenants.length > 1
+
+  console.log('[DEBUG] availableTenants:', availableTenants)
+  console.log('[DEBUG] currentTenantId:', currentTenantId)
 
   async function handleSwitch(tenantId: string) {
     if (tenantId === currentTenant?.id) { setOpen(false); return }

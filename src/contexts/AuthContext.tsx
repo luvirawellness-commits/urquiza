@@ -23,6 +23,7 @@ interface AuthContextValue {
   availableTenants: Tenant[]
   permissions: Record<string, boolean> | null
   switchTenant: (tenantId: string) => Promise<void>
+  refreshTenants: () => Promise<void>
   signIn: (email: string, password: string) => Promise<{ error: Error | null }>
   signOut: () => Promise<void>
 }
@@ -142,6 +143,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const fallback = (profileWithTenant as any)?.tenant
       if (fallback) tenants = [fallback as Tenant]
     }
+
+    console.log('[DEBUG] user_tenants raw data:', JSON.stringify(userTenants))
+    console.log('[DEBUG] availableTenants after mapping:', tenants.map((t) => ({ id: t.id, name: t.name })))
 
     setAvailableTenants(tenants)
 
@@ -269,6 +273,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function refreshTenants() {
+    if (!user) return
+    const { data: userTenants } = await supabase
+      .from('user_tenants')
+      .select(`
+        tenant_id,
+        role,
+        active,
+        tenant:tenants (
+          id, name, slug, address, phone, active, trial_ends_at
+        )
+      `)
+      .eq('user_id', user.id)
+      .eq('active', true)
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fresh: Tenant[] = ((userTenants ?? []) as any[])
+      .map((ut) => ut.tenant)
+      .filter(Boolean) as Tenant[]
+
+    if (fresh.length > 0) setAvailableTenants(fresh)
+  }
+
   async function signIn(email: string, password: string) {
     const { data: authData, error } = await supabase.auth.signInWithPassword({ email, password })
     if (!error && authData.user) {
@@ -312,7 +339,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user, session, profile, loading,
       currentTenantId, currentTenant, availableTenants,
       permissions,
-      switchTenant,
+      switchTenant, refreshTenants,
       signIn, signOut,
     }}>
       {children}

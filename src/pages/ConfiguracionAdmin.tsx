@@ -72,7 +72,7 @@ function BranchModal({
   onClose: () => void
   onSwitch: (tenantId: string) => Promise<void>
 }) {
-  const { user } = useAuth()
+  const { user, refreshTenants } = useAuth()
   const qc = useQueryClient()
   const [form, setForm] = useState<BranchForm>(EMPTY_BRANCH)
   const [saving, setSaving] = useState(false)
@@ -118,7 +118,10 @@ function BranchModal({
       if (fnErr) throw new Error(fnErr.message ?? 'Error al crear la sucursal')
       if (data?.error) throw new Error(data.error)
 
-      await qc.invalidateQueries({ queryKey: ['tenants'] })
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['user-tenants'] }),
+        refreshTenants(),
+      ])
       setResult({ tenant_id: data.tenant_id, tenant_name: form.name.trim(), trial_ends_at: data.trial_ends_at })
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al crear la sucursal')
@@ -440,28 +443,30 @@ function LocalModal({ open, onClose, tenant, allTenants }: {
 }
 
 function TabLocales() {
-  const tenantId = useTenantId()
-  const { profile, switchTenant } = useAuth()
+  const { profile, switchTenant, user } = useAuth()
   const isOwner = profile?.role === 'owner' || profile?.role === 'super_admin'
 
   const { data: tenants = [], isLoading } = useQuery({
-    queryKey: ['tenants', tenantId],
+    queryKey: ['user-tenants', user?.id],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('tenants')
-        .select('*')
-        .eq('id', tenantId)
-        .order('name')
+        .from('user_tenants')
+        .select('tenant:tenants(*)')
+        .eq('user_id', user!.id)
+        .eq('active', true)
       if (error) throw error
-      return data as Tenant[]
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return ((data ?? []) as any[])
+        .map((ut) => ut.tenant)
+        .filter(Boolean)
+        .sort((a: Tenant, b: Tenant) => a.name.localeCompare(b.name)) as Tenant[]
     },
-    enabled: !!tenantId,
+    enabled: !!user?.id,
   })
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<Tenant | undefined>()
   const [branchOpen, setBranchOpen] = useState(false)
 
-  function openCreate() { setEditing(undefined); setModalOpen(true) }
   function openEdit(t: Tenant) { setEditing(t); setModalOpen(true) }
   function closeModal() { setModalOpen(false); setEditing(undefined) }
 
@@ -473,16 +478,11 @@ function TabLocales() {
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <p className="text-sm text-muted-foreground">{tenants.length} locales registrados</p>
-        <div className="flex gap-2">
-          {isOwner && (
-            <Button size="sm" variant="outline" onClick={() => setBranchOpen(true)}>
-              <Plus className="w-4 h-4 mr-1" />Agregar sucursal
-            </Button>
-          )}
-          <Button size="sm" onClick={openCreate}>
-            <Plus className="w-4 h-4 mr-1" />Nuevo local
+        {isOwner && (
+          <Button size="sm" onClick={() => setBranchOpen(true)}>
+            <Plus className="w-4 h-4 mr-1" />Agregar sucursal
           </Button>
-        </div>
+        )}
       </div>
       <Card>
         <CardContent className="p-0 overflow-x-auto">
