@@ -58,10 +58,13 @@ const PLANS: {
 ]
 
 export default function Pago() {
-  const { session, currentTenantId, loading } = useAuth()
+  const { session, currentTenantId, loading, profile } = useAuth()
   const navigate = useNavigate()
   const [busy, setBusy] = useState<Plan | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [testMode, setTestMode] = useState(false)
+
+  const isSuperAdmin = profile?.role === 'super_admin'
 
   async function handleContratar(plan: Plan) {
     if (!session?.access_token || !currentTenantId) {
@@ -72,7 +75,12 @@ export default function Pago() {
     setError(null)
     try {
       const { data, error: fnErr } = await supabase.functions.invoke('create-payment', {
-        body: { tenant_id: currentTenantId, plan, access_token: session.access_token },
+        body: {
+          tenant_id: currentTenantId,
+          plan,
+          access_token: session.access_token,
+          ...(testMode && { test: true }),
+        },
       })
       if (fnErr) throw new Error(fnErr.message ?? 'Error al iniciar el pago')
       if (data?.error) throw new Error(data.error)
@@ -151,7 +159,19 @@ export default function Pago() {
           ))}
         </div>
 
-        <p className="text-center text-xs text-gray-400 mt-10">
+        {isSuperAdmin && (
+          <label className="flex items-center justify-center gap-2 mt-8 cursor-pointer select-none w-fit mx-auto">
+            <input
+              type="checkbox"
+              checked={testMode}
+              onChange={(e) => setTestMode(e.target.checked)}
+              className="w-3.5 h-3.5 accent-amber-500"
+            />
+            <span className="text-xs text-gray-400">Modo prueba (no se cobra dinero real)</span>
+          </label>
+        )}
+
+        <p className="text-center text-xs text-gray-400 mt-4">
           {session ? (
             <Link to="/dashboard" className="underline hover:no-underline">← Volver al dashboard</Link>
           ) : (

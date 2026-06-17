@@ -22,9 +22,6 @@ serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return err('Método no permitido', 405)
 
-  const MP_ACCESS_TOKEN = Deno.env.get('MP_ACCESS_TOKEN')
-  if (!MP_ACCESS_TOKEN) return err('Configuración de pago incompleta', 500)
-
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL') ?? '',
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
@@ -34,7 +31,12 @@ serve(async (req: Request) => {
   try {
     // deno-lint-ignore no-explicit-any
     const body = await req.json() as Record<string, any>
-    const { tenant_id, plan, access_token } = body
+    const { tenant_id, plan, access_token, test: isTest } = body
+
+    const MP_ACCESS_TOKEN = isTest === true
+      ? Deno.env.get('MP_ACCESS_TOKEN_TEST')
+      : Deno.env.get('MP_ACCESS_TOKEN')
+    if (!MP_ACCESS_TOKEN) return err('Configuración de pago incompleta', 500)
 
     if (!tenant_id || !plan || !access_token) {
       return err('tenant_id, plan y access_token son requeridos')
@@ -82,7 +84,7 @@ serve(async (req: Request) => {
       },
       auto_return: 'approved',
       notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook`,
-      metadata: { tenant_id, plan },
+      metadata: { tenant_id, plan, test: isTest ?? false },
       statement_descriptor: 'LUVIRA OS',
     }
 

@@ -7,7 +7,8 @@
       "Bash(npx vite *)",
       "Bash(dir /s /b src)",
       "Bash(git -C \"C:\\\\Users\\\\Cristian Bustos\\\\Desktop\\\\luvira-os\" diff HEAD -- src/pages/ConfiguracionAdmin.tsx)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(npx supabase *)"
     ]
   }
 }
