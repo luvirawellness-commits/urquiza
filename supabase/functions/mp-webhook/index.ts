@@ -61,7 +61,13 @@ serve(async (req: Request) => {
       return json({ error: 'Missing tenant_id or plan in metadata' }, 400)
     }
 
-    const days = plan === 'annual' ? 365 : 30
+    const DAYS: Record<string, number> = {
+      monthly:    30,
+      quarterly:  90,
+      semiannual: 180,
+      annual:     365,
+    }
+    const days = DAYS[plan] ?? 30
     const trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60_000).toISOString()
 
     const { error: updateErr } = await supabase

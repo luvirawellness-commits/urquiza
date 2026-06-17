@@ -39,8 +39,9 @@ serve(async (req: Request) => {
     if (!tenant_id || !plan || !access_token) {
       return err('tenant_id, plan y access_token son requeridos')
     }
-    if (!['monthly', 'annual'].includes(plan)) {
-      return err('plan debe ser "monthly" o "annual"')
+    const VALID_PLANS = ['monthly', 'quarterly', 'semiannual', 'annual']
+    if (!VALID_PLANS.includes(plan)) {
+      return err('plan debe ser "monthly", "quarterly", "semiannual" o "annual"')
     }
 
     // 1. Verify access_token
@@ -57,8 +58,20 @@ serve(async (req: Request) => {
     if (tenantErr || !tenant) return err('Tenant no encontrado', 404)
 
     // 3. Create MercadoPago preference
-    const unitPrice = plan === 'monthly' ? 80 : 600
-    const title = plan === 'monthly' ? 'Luvira OS — Plan Mensual' : 'Luvira OS — Plan Anual'
+    const PRICES: Record<string, number> = {
+      monthly:    80,
+      quarterly:  195,
+      semiannual: 330,
+      annual:     480,
+    }
+    const TITLES: Record<string, string> = {
+      monthly:    'Luvira OS — Plan Mensual',
+      quarterly:  'Luvira OS — Plan Trimestral (3 meses)',
+      semiannual: 'Luvira OS — Plan Semestral (6 meses)',
+      annual:     'Luvira OS — Plan Anual (12 meses)',
+    }
+    const unitPrice = PRICES[plan]
+    const title = TITLES[plan]
 
     const preference = {
       items: [{ title, quantity: 1, unit_price: unitPrice, currency_id: 'USD' }],
