@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -42,9 +42,10 @@ export default function InvoiceModal({
   isOpen, onClose, tenantId, clientName, clientId,
   amount, concept, appointmentId, transactionId,
 }: Props) {
-  const [invoiceType, setInvoiceType] = useState<'B' | 'A'>('B')
+  const [invoiceType, setInvoiceType] = useState<'C' | 'B' | 'A'>('B')
   const [clientNameEdit, setClientNameEdit] = useState(clientName)
   const [clientCuit, setClientCuit] = useState('')
+  const [clientIvaCondition, setClientIvaCondition] = useState('consumidor_final')
   const [conceptEdit, setConceptEdit] = useState(concept)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<InvoiceResult | null>(null)
@@ -55,7 +56,7 @@ export default function InvoiceModal({
     queryFn: async () => {
       const { data } = await supabase
         .from('tenant_arca_config')
-        .select('id, cuit, is_test_mode')
+        .select('id, cuit, is_test_mode, iva_condition')
         .eq('tenant_id', tenantId)
         .maybeSingle()
       return data
@@ -64,8 +65,17 @@ export default function InvoiceModal({
     staleTime: 60_000,
   })
 
-  const ivaPreview  = invoiceType === 'A' ? amount * 0.21 : 0
-  const totalPreview = amount + ivaPreview
+  const isMonotributo = arcaConfig?.iva_condition === 'monotributo'
+
+  // Default to Factura C for monotributo issuers once config loads
+  useEffect(() => {
+    if (arcaConfig) setInvoiceType(isMonotributo ? 'C' : 'B')
+  }, [arcaConfig?.iva_condition])
+
+  // Amount breakdown: for C no IVA; for A/B gross includes IVA
+  const ivaPreview   = (invoiceType === 'A' || invoiceType === 'B') ? Math.round((amount - amount / 1.21) * 100) / 100 : 0
+  const netoPreview  = (invoiceType === 'A' || invoiceType === 'B') ? Math.round((amount / 1.21) * 100) / 100 : 0
+  const totalPreview = amount
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -82,7 +92,7 @@ export default function InvoiceModal({
           invoice_type:         invoiceType,
           client_name:          clientNameEdit.trim() || clientName,
           client_cuit:          clientCuit.trim() || undefined,
-          client_iva_condition: invoiceType === 'A' ? 'responsable_inscripto' : 'consumidor_final',
+          client_iva_condition: clientIvaCondition,
           subtotal:             amount,
           concept:              conceptEdit.trim() || concept,
           appointment_id:       appointmentId,
@@ -104,7 +114,8 @@ export default function InvoiceModal({
     setResult(null)
     setError('')
     setClientCuit('')
-    setInvoiceType('B')
+    setInvoiceType(isMonotributo ? 'C' : 'B')
+    setClientIvaCondition('consumidor_final')
     setClientNameEdit(clientName)
     setConceptEdit(concept)
     onClose()
@@ -187,7 +198,7 @@ export default function InvoiceModal({
             <div>
               <Label className="text-sm">Tipo de comprobante</Label>
               <div className="flex gap-2 mt-1.5">
-                {(['B', 'A'] as const).map((t) => (
+                {(['C', 'B', 'A'] as const).map((t) => (
                   <button
                     key={t}
                     type="button"
@@ -204,9 +215,11 @@ export default function InvoiceModal({
                 ))}
               </div>
               <p className="text-xs text-gray-400 mt-1">
-                {invoiceType === 'B'
-                  ? 'Consumidor Final'
-                  : 'Responsable Inscripto — requiere CUIT, aplica IVA 21%'}
+                {invoiceType === 'C'
+                  ? 'Sin IVA — régimen monotributo'
+                  : invoiceType === 'A'
+                    ? 'IVA incluido — requiere CUIT del receptor'
+                    : 'IVA incluido — consumidor final'}
               </p>
             </div>
 
@@ -236,6 +249,21 @@ export default function InvoiceModal({
             )}
 
             <div>
+              <Label htmlFor="inv-iva-cond" className="text-sm">Condición IVA del receptor</Label>
+              <select
+                id="inv-iva-cond"
+                value={clientIvaCondition}
+                onChange={(e) => setClientIvaCondition(e.target.value)}
+                className="mt-1.5 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm focus:outline-none focus:ring-1 focus:ring-ring"
+              >
+                <option value="consumidor_final">Consumidor Final</option>
+                <option value="responsable_inscripto">Responsable Inscripto</option>
+                <option value="monotributo">Monotributista</option>
+                <option value="exento">Exento</option>
+              </select>
+            </div>
+
+            <div>
               <Label htmlFor="inv-concept" className="text-sm">Concepto</Label>
               <Input
                 id="inv-concept"
@@ -246,20 +274,27 @@ export default function InvoiceModal({
             </div>
 
             <div className="p-3 bg-gray-50 rounded-lg text-sm space-y-1">
-              <div className="flex justify-between">
-                <span className="text-gray-500">Subtotal</span>
-                <span>${amount.toFixed(2)}</span>
-              </div>
-              {ivaPreview > 0 && (
-                <div className="flex justify-between">
-                  <span className="text-gray-500">IVA 21%</span>
-                  <span>${ivaPreview.toFixed(2)}</span>
+              {invoiceType === 'C' ? (
+                <div className="flex justify-between font-semibold">
+                  <span>Total (sin IVA)</span>
+                  <span>${totalPreview.toFixed(2)}</span>
                 </div>
+              ) : (
+                <>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">Neto gravado</span>
+                    <span>${netoPreview.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-500">IVA 21%</span>
+                    <span>${ivaPreview.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between font-semibold border-t border-gray-200 pt-1">
+                    <span>Total</span>
+                    <span>${totalPreview.toFixed(2)}</span>
+                  </div>
+                </>
               )}
-              <div className="flex justify-between font-semibold border-t border-gray-200 pt-1">
-                <span>Total</span>
-                <span>${totalPreview.toFixed(2)}</span>
-              </div>
             </div>
 
             <div className="flex gap-2 pt-1">
