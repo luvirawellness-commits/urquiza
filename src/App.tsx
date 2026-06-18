@@ -22,6 +22,7 @@ import Registro from '@/pages/Registro'
 import Pago from '@/pages/Pago'
 import PagoExitoso from '@/pages/PagoExitoso'
 import PagoFallido from '@/pages/PagoFallido'
+import Facturacion from '@/pages/Facturacion'
 
 function ProtectedLayout() {
   return (
@@ -116,6 +117,14 @@ export default function App() {
                 element={
                   <ProtectedRoute roles={['owner']}>
                     <ConfiguracionAdmin />
+                  </ProtectedRoute>
+                }
+              />
+              <Route
+                path="/facturacion"
+                element={
+                  <ProtectedRoute roles={['owner', 'partner_admin', 'super_admin']}>
+                    <Facturacion />
                   </ProtectedRoute>
                 }
               />

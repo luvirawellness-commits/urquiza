@@ -2,7 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CalendarDays, TrendingUp, Gift,
   ShoppingBag, ShoppingCart, Settings, LogOut, Menu, X, Users2, Building2,
-  ChevronDown, Loader2, Check, CreditCard, ScrollText, ShieldAlert,
+  ChevronDown, Loader2, Check, CreditCard, ScrollText, ShieldAlert, Receipt,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -25,6 +25,7 @@ const navItems = [
   { to: '/productos',   label: 'Productos',   icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
   { to: '/gift-cards',  label: 'Gift Cards',  icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
   { to: '/compras',     label: 'Compras',     icon: ShoppingCart,                                  roles: ['owner', 'partner_admin'] },
+  { to: '/facturacion', label: 'Facturación', icon: Receipt,      permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
 ]
 
 function TenantSwitcher() {
