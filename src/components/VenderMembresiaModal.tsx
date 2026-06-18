@@ -12,7 +12,8 @@ import { Badge } from '@/components/ui/badge'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import { useClients, useClient } from '@/hooks/useClients'
 import { useMembershipPlans, useSellMembership } from '@/hooks/useClientMemberships'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth, useTenantId } from '@/contexts/AuthContext'
+import InvoiceModal from '@/components/InvoiceModal'
 import type { MembershipPlan } from '@/types'
 
 type Props = {
@@ -42,9 +43,12 @@ export default function VenderMembresiaModal({
   restrictToServiceId, restrictToServiceName,
 }: Props) {
   const { user, profile } = useAuth()
+  const tenantId = useTenantId()
   const today = new Date().toISOString().split('T')[0]
+  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
 
   const [phase, setPhase] = useState<'form' | 'confirm' | 'done'>('form')
+  const [showInvoice, setShowInvoice] = useState(false)
 
   const [titularId, setTitularId] = useState(preSelectedClientId ?? '')
   const [titularSearch, setTitularSearch] = useState('')
@@ -142,6 +146,7 @@ export default function VenderMembresiaModal({
   }
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose() }}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
@@ -175,7 +180,19 @@ export default function VenderMembresiaModal({
                 </p>
               )}
             </div>
-            <Button onClick={handleClose} className="mx-auto block px-8">Cerrar</Button>
+            {isOwnerOrAdmin ? (
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+                <div className="flex gap-2 justify-center">
+                  <Button onClick={() => setShowInvoice(true)} className="bg-plum-700 hover:bg-plum-800 text-white gap-1.5">
+                    Sí, emitir factura
+                  </Button>
+                  <Button onClick={handleClose} variant="outline">No, gracias</Button>
+                </div>
+              </div>
+            ) : (
+              <Button onClick={handleClose} className="mx-auto block px-8">Cerrar</Button>
+            )}
           </div>
         )}
 
@@ -490,5 +507,16 @@ export default function VenderMembresiaModal({
         )}
       </DialogContent>
     </Dialog>
+
+    <InvoiceModal
+      isOpen={showInvoice}
+      onClose={() => { setShowInvoice(false); handleClose() }}
+      tenantId={tenantId}
+      clientName={titularName || 'Consumidor Final'}
+      clientId={titularId || undefined}
+      amount={Number(amount)}
+      concept={`Membresía ${selectedPlan?.name ?? ''}`}
+    />
+    </>
   )
 }

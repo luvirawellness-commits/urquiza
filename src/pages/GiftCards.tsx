@@ -1,6 +1,7 @@
 ﻿import { useState } from 'react'
-import { Gift, Loader2, Download } from 'lucide-react'
+import { Gift, Loader2, Download, FileText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import InvoiceModal from '@/components/InvoiceModal'
 import { useServices, useTherapists } from '@/hooks/useAppointments'
 import { useGiftCards, useCreateGiftCard, GiftCard } from '@/hooks/useGiftCards'
 import { supabase } from '@/lib/supabase'
@@ -186,7 +187,13 @@ async function generateGiftCardImage(
   })
 }
 // ── Gift card image modal ──────────────────────────────────────────────────────
-function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: () => void }) {
+function GiftCardImageModal({
+  gc, onClose, onInvoice,
+}: {
+  gc: GeneratedGiftCard
+  onClose: () => void
+  onInvoice?: () => void
+}) {
   function handleDownload() {
     const a = document.createElement('a')
     a.href = gc.imageDataUrl
@@ -217,6 +224,11 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
           <Button onClick={handleDownload} className="flex-1 gap-2">
             <Download className="w-4 h-4" /> Descargar Gift Card
           </Button>
+          {onInvoice && (
+            <Button onClick={onInvoice} variant="outline" className="flex-1 gap-2">
+              <FileText className="w-4 h-4" /> Emitir factura
+            </Button>
+          )}
           <Button onClick={onClose} variant="outline" className="flex-1">
             Cerrar
           </Button>
@@ -228,11 +240,12 @@ function GiftCardImageModal({ gc, onClose }: { gc: GeneratedGiftCard; onClose: (
 
 // ── Sale form ──────────────────────────────────────────────────────────────────
 function GiftCardForm() {
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
   const tenantId = useTenantId()
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
   const createGC = useCreateGiftCard()
+  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
 
   const [serviceId, setServiceId] = useState('')
   const [duration, setDuration] = useState<60 | 90>(60)
@@ -245,6 +258,8 @@ function GiftCardForm() {
   const [senderName, setSenderName] = useState('')
   const [message, setMessage] = useState('')
   const [generatedGC, setGeneratedGC] = useState<GeneratedGiftCard | null>(null)
+  const [pendingInvoice, setPendingInvoice] = useState<{ amount: number; concept: string; clientName: string } | null>(null)
+  const [showInvoice, setShowInvoice] = useState(false)
 
   const selectedService = services?.find((s) => s.id === serviceId)
 
@@ -315,6 +330,13 @@ function GiftCardForm() {
         imageDataUrl,
         tenantName: td?.name ?? 'GiftCard',
       })
+      if (isOwnerOrAdmin) {
+        setPendingInvoice({
+          amount: Number(amount),
+          concept: `Gift Card ${selectedService?.name ?? 'Servicio'} ${duration}min`,
+          clientName: recipientName.trim() || 'Consumidor Final',
+        })
+      }
       setServiceId(''); setAmount(''); setPaymentMethod('cash'); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
       setRecipientName(''); setSenderName(''); setMessage('')
@@ -441,7 +463,22 @@ function GiftCardForm() {
       </Card>
 
       {generatedGC && (
-        <GiftCardImageModal gc={generatedGC} onClose={() => setGeneratedGC(null)} />
+        <GiftCardImageModal
+          gc={generatedGC}
+          onClose={() => setGeneratedGC(null)}
+          onInvoice={pendingInvoice ? () => { setGeneratedGC(null); setShowInvoice(true) } : undefined}
+        />
+      )}
+
+      {pendingInvoice && (
+        <InvoiceModal
+          isOpen={showInvoice}
+          onClose={() => { setShowInvoice(false); setPendingInvoice(null) }}
+          tenantId={tenantId}
+          clientName={pendingInvoice.clientName}
+          amount={pendingInvoice.amount}
+          concept={pendingInvoice.concept}
+        />
       )}
     </>
   )

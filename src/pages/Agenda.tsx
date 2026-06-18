@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText } from 'lucide-react'
+import InvoiceModal from '@/components/InvoiceModal'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useUpdateAppointment, useServices, useTherapists, type Therapist,
@@ -262,10 +263,13 @@ function DayApptBlock({
 // ── CerrarSesionStep ──────────────────────────────────────────────────────────
 
 function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () => void }) {
-  const { user } = useAuth()
+  const { user, profile, currentTenantId } = useAuth()
   const [paymentType, setPaymentType] = useState<PaymentType>('efectivo_digital')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [step, setStep] = useState<'form' | 'prompt' | 'invoice'>('form')
+  const [paidAmount, setPaidAmount] = useState(0)
+  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
 
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
@@ -372,7 +376,12 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
           ? selectedMembershipId
           : undefined
       await updateStatus.mutateAsync({ id: appt.id, status: 'completed', client_membership_id: membershipId })
-      onClose()
+      if (isOwnerOrAdmin && currentTenantId) {
+        setPaidAmount(paymentType === 'efectivo_digital' ? montoFinal : 0)
+        setStep('prompt')
+      } else {
+        onClose()
+      }
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la sesión')
     } finally { setBusy(false) }
@@ -383,6 +392,40 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
     (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
+
+  if (step === 'prompt' || step === 'invoice') {
+    return (
+      <div className="space-y-5 py-2">
+        <div className="flex items-center gap-2 text-green-700">
+          <CheckCircle className="w-5 h-5" />
+          <span className="font-semibold">Sesión cerrada exitosamente</span>
+        </div>
+        <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+        <div className="flex gap-2">
+          <Button
+            onClick={() => setStep('invoice')}
+            className="flex-1 bg-plum-700 hover:bg-plum-800 text-white gap-1.5"
+          >
+            <FileText className="w-3.5 h-3.5" />
+            Sí, emitir factura
+          </Button>
+          <Button onClick={onClose} variant="outline" className="flex-1">
+            No, gracias
+          </Button>
+        </div>
+        <InvoiceModal
+          isOpen={step === 'invoice'}
+          onClose={onClose}
+          tenantId={currentTenantId!}
+          clientName={clientName(appt)}
+          clientId={appt.client_id ?? undefined}
+          amount={paidAmount}
+          concept={`${appt.service?.name ?? 'Servicio'} ${appt.duration_minutes}min`}
+          appointmentId={appt.id}
+        />
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-5">

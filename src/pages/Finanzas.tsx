@@ -1,10 +1,11 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
-  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown,
+  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown, FileText,
 } from 'lucide-react'
+import InvoiceModal from '@/components/InvoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import { useClients } from '@/hooks/useClients'
 import { useServices } from '@/hooks/useAppointments'
 import {
@@ -359,6 +360,10 @@ function SectionGastosDelDia() {
 // ── Section D ──────────────────────────────────────────────────────────────────
 function SectionMovimientosHoy() {
   const { data: txs, isLoading } = useTodayTransactions()
+  const { profile } = useAuth()
+  const tenantId = useTenantId()
+  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
+  const [invoiceTx, setInvoiceTx] = useState<{ id: string; amount: number; description: string } | null>(null)
 
   return (
     <div>
@@ -406,16 +411,39 @@ function SectionMovimientosHoy() {
                     </div>
                   </div>
                 </div>
-                <span className={cn(
-                  'font-semibold text-sm tabular-nums',
-                  tx.type === 'income' ? 'text-green-600' : 'text-red-600',
-                )}>
-                  {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
-                </span>
+                <div className="flex items-center gap-2">
+                  <span className={cn(
+                    'font-semibold text-sm tabular-nums',
+                    tx.type === 'income' ? 'text-green-600' : 'text-red-600',
+                  )}>
+                    {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
+                  </span>
+                  {isOwnerOrAdmin && tx.type === 'income' && (
+                    <button
+                      title="Emitir factura"
+                      onClick={() => setInvoiceTx({ id: tx.id, amount: tx.amount, description: tx.description })}
+                      className="ml-1 p-1 rounded hover:bg-plum-50 text-plum-400 hover:text-plum-700 transition-colors"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))}
         </div>
+      )}
+
+      {invoiceTx && (
+        <InvoiceModal
+          isOpen={!!invoiceTx}
+          onClose={() => setInvoiceTx(null)}
+          tenantId={tenantId}
+          clientName="Consumidor Final"
+          amount={invoiceTx.amount}
+          concept={invoiceTx.description}
+          transactionId={invoiceTx.id}
+        />
       )}
     </div>
   )
