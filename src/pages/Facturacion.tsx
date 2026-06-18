@@ -1,9 +1,10 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { FileText, Loader2, CheckCircle, AlertCircle, Download, RefreshCw } from 'lucide-react'
+import { FileText, Loader2, CheckCircle, AlertCircle, Download, RefreshCw, Mail } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 import { useTenantId } from '@/contexts/AuthContext'
+import { generateInvoicePDF } from '@/utils/generateInvoicePDF'
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -60,8 +61,11 @@ type InvoiceRow = {
   total: number
   client_name: string
   client_cuit: string | null
+  client_iva_condition: string | null
+  concept: string | null
   status: string
   created_at: string
+  clients: { email: string | null } | null
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -121,7 +125,7 @@ function useInvoices(tenantId: string) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('invoices')
-        .select('*')
+        .select('*, clients(email)')
         .eq('tenant_id', tenantId)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -131,40 +135,6 @@ function useInvoices(tenantId: string) {
   })
 }
 
-// ── Invoice print helper ───────────────────────────────────────────────────────
-
-function printInvoice(inv: InvoiceRow, razonSocial?: string) {
-  const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
-<title>Factura ${inv.invoice_type} N° ${inv.invoice_number}</title>
-<style>
-  body { font-family: Arial, sans-serif; font-size: 13px; padding: 32px; }
-  h1 { font-size: 18px; } h2 { font-size: 15px; }
-  table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-  th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
-  th { background: #f5f5f5; }
-  .total { font-size: 16px; font-weight: bold; text-align: right; margin-top: 16px; }
-</style></head><body>
-<h1>Factura ${inv.invoice_type} — Punto de Venta ${inv.punto_venta ?? ''}</h1>
-${razonSocial ? `<p><strong>Emisor:</strong> ${razonSocial}</p>` : ''}
-<p><strong>Número:</strong> ${inv.invoice_number ?? ''}</p>
-<p><strong>Fecha:</strong> ${formatDate(inv.created_at)}</p>
-<h2>Cliente</h2>
-<p>${inv.client_name}${inv.client_cuit ? ` — CUIT: ${inv.client_cuit}` : ''}</p>
-<table>
-  <thead><tr><th>Concepto</th><th>Subtotal</th>${inv.iva_amount > 0 ? '<th>IVA 21%</th>' : ''}<th>Total</th></tr></thead>
-  <tbody><tr>
-    <td>Servicios prestados</td>
-    <td>$${inv.subtotal.toFixed(2)}</td>
-    ${inv.iva_amount > 0 ? `<td>$${inv.iva_amount.toFixed(2)}</td>` : ''}
-    <td>$${inv.total.toFixed(2)}</td>
-  </tr></tbody>
-</table>
-<p class="total">Total: $${inv.total.toFixed(2)}</p>
-${inv.cae ? `<p style="margin-top:24px; font-size:11px; color:#555">CAE: ${inv.cae} — Vence: ${inv.cae_expires_at ?? ''}</p>` : ''}
-</body></html>`
-  const w = window.open('', '_blank')
-  if (w) { w.document.write(html); w.document.close(); w.print() }
-}
 
 // ── Tab: Emitir ───────────────────────────────────────────────────────────────
 
@@ -322,6 +292,48 @@ function TabEmitir({ tenantId, session }: { tenantId: string; session: { access_
 
 function TabHistorial({ tenantId }: { tenantId: string }) {
   const { data: invoices = [], isLoading } = useInvoices(tenantId)
+  const { data: arcaConfig } = useArcaConfig(tenantId)
+  const [emailBusy, setEmailBusy] = useState<string | null>(null)
+  const [emailMsgs, setEmailMsgs] = useState<Record<string, string>>({})
+
+  function handlePDF(inv: InvoiceRow) {
+    if (inv.invoice_number == null) return
+    generateInvoicePDF({
+      invoice_type:         inv.invoice_type,
+      invoice_number:       inv.invoice_number,
+      punto_venta:          inv.punto_venta ?? 1,
+      razon_social:         arcaConfig?.razon_social ?? '',
+      cuit_emisor:          arcaConfig?.cuit ?? '',
+      iva_condition_emisor: arcaConfig?.iva_condition ?? 'monotributo',
+      client_name:          inv.client_name,
+      client_cuit:          inv.client_cuit,
+      client_iva_condition: inv.client_iva_condition ?? 'consumidor_final',
+      concept:              inv.concept ?? 'Servicios prestados',
+      subtotal:             inv.subtotal,
+      iva_amount:           inv.iva_amount,
+      total:                inv.total,
+      cae:                  inv.cae ?? '',
+      cae_expires_at:       inv.cae_expires_at ?? '',
+      date:                 inv.created_at,
+    })
+  }
+
+  async function handleEmail(inv: InvoiceRow) {
+    const email = inv.clients?.email
+    if (!email || !inv.id) return
+    setEmailBusy(inv.id)
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('send-invoice-email', {
+        body: { invoice_id: inv.id, tenant_id: tenantId, client_email: email },
+      })
+      if (fnErr) throw new Error(fnErr.message)
+      setEmailMsgs((m) => ({ ...m, [inv.id]: data?.message ?? 'Email enviado' }))
+    } catch (e) {
+      setEmailMsgs((m) => ({ ...m, [inv.id]: 'Error al enviar' }))
+    } finally {
+      setEmailBusy(null)
+    }
+  }
 
   function handleExport() {
     exportToExcel(
@@ -391,13 +403,31 @@ function TabHistorial({ tenantId }: { tenantId: string }) {
                       <td className="px-4 py-3"><Badge variant={st.variant}>{st.label}</Badge></td>
                       <td className="px-4 py-3 text-gray-500">{formatDate(inv.created_at)}</td>
                       <td className="px-4 py-3">
-                        <button
-                          onClick={() => printInvoice(inv)}
-                          className="text-xs text-plum-600 hover:text-plum-800 font-medium"
-                          title="Descargar PDF"
-                        >
-                          <Download className="w-3.5 h-3.5" />
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handlePDF(inv)}
+                            disabled={inv.invoice_number == null}
+                            className="text-plum-600 hover:text-plum-800 disabled:opacity-30"
+                            title="Descargar PDF"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                          </button>
+                          {inv.clients?.email && (
+                            <button
+                              onClick={() => handleEmail(inv)}
+                              disabled={emailBusy === inv.id}
+                              className="text-plum-600 hover:text-plum-800 disabled:opacity-30"
+                              title={`Enviar a ${inv.clients.email}`}
+                            >
+                              {emailBusy === inv.id
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Mail className="w-3.5 h-3.5" />}
+                            </button>
+                          )}
+                          {emailMsgs[inv.id] && (
+                            <span className="text-xs text-green-600">{emailMsgs[inv.id]}</span>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   )

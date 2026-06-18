@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileText, CheckCircle, AlertCircle, Loader2 } from 'lucide-react'
+import { FileText, CheckCircle, AlertCircle, Loader2, Download, Mail } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import {
@@ -10,16 +10,22 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { cn } from '@/lib/utils'
+import { generateInvoicePDF } from '@/utils/generateInvoicePDF'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 type InvoiceResult = {
+  invoice_id: string
   invoice_number: number
   invoice_type: string
   cae: string
   cae_expires_at: string
+  subtotal: number
+  iva_amount: number
   total: number
   punto_venta: number
+  razon_social: string
+  cuit_emisor: string
 }
 
 // ── Props ─────────────────────────────────────────────────────────────────────
@@ -50,13 +56,15 @@ export default function InvoiceModal({
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<InvoiceResult | null>(null)
   const [error, setError] = useState('')
+  const [emailBusy, setEmailBusy] = useState(false)
+  const [emailMsg, setEmailMsg] = useState('')
 
   const { data: arcaConfig, isLoading: arcaLoading } = useQuery({
     queryKey: ['arca-config', tenantId],
     queryFn: async () => {
       const { data } = await supabase
         .from('tenant_arca_config')
-        .select('id, cuit, is_test_mode, iva_condition')
+        .select('id, cuit, razon_social, is_test_mode, iva_condition')
         .eq('tenant_id', tenantId)
         .maybeSingle()
       return data
@@ -64,6 +72,21 @@ export default function InvoiceModal({
     enabled: isOpen && !!tenantId,
     staleTime: 60_000,
   })
+
+  const { data: clientData } = useQuery({
+    queryKey: ['client-email', clientId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('clients')
+        .select('email')
+        .eq('id', clientId!)
+        .maybeSingle()
+      return data
+    },
+    enabled: isOpen && !!clientId,
+    staleTime: 300_000,
+  })
+  const clientEmail = clientData?.email ?? null
 
   const isMonotributo = arcaConfig?.iva_condition === 'monotributo'
 
@@ -110,9 +133,48 @@ export default function InvoiceModal({
     }
   }
 
+  function handleDownloadPDF() {
+    if (!result) return
+    generateInvoicePDF({
+      invoice_type:         result.invoice_type,
+      invoice_number:       result.invoice_number,
+      punto_venta:          result.punto_venta,
+      razon_social:         result.razon_social ?? arcaConfig?.razon_social ?? '',
+      cuit_emisor:          result.cuit_emisor ?? arcaConfig?.cuit ?? '',
+      iva_condition_emisor: arcaConfig?.iva_condition ?? 'monotributo',
+      client_name:          clientNameEdit || clientName,
+      client_cuit:          clientCuit || null,
+      client_iva_condition: clientIvaCondition,
+      concept:              conceptEdit || concept,
+      subtotal:             result.subtotal,
+      iva_amount:           result.iva_amount,
+      total:                result.total,
+      cae:                  result.cae,
+      cae_expires_at:       result.cae_expires_at,
+    })
+  }
+
+  async function handleSendEmail() {
+    if (!result || !clientEmail) return
+    setEmailBusy(true)
+    setEmailMsg('')
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('send-invoice-email', {
+        body: { invoice_id: result.invoice_id, tenant_id: tenantId, client_email: clientEmail },
+      })
+      if (fnErr) throw new Error(fnErr.message)
+      setEmailMsg(data?.message ?? `Email enviado a ${clientEmail}`)
+    } catch (e) {
+      setEmailMsg(e instanceof Error ? e.message : 'Error al enviar el email')
+    } finally {
+      setEmailBusy(false)
+    }
+  }
+
   function handleClose() {
     setResult(null)
     setError('')
+    setEmailMsg('')
     setClientCuit('')
     setInvoiceType(isMonotributo ? 'C' : 'B')
     setClientIvaCondition('consumidor_final')
@@ -183,7 +245,43 @@ export default function InvoiceModal({
                 <p className="font-mono text-xs break-all text-gray-700">{result.cae}</p>
               </div>
             </div>
-            <Button onClick={handleClose} className="w-full">Cerrar</Button>
+
+            <div className="flex gap-2">
+              <Button
+                onClick={handleDownloadPDF}
+                variant="outline"
+                className="flex-1 gap-1.5"
+              >
+                <Download className="w-3.5 h-3.5" />
+                Descargar PDF
+              </Button>
+              {clientEmail && (
+                <Button
+                  onClick={handleSendEmail}
+                  variant="outline"
+                  disabled={emailBusy}
+                  className="flex-1 gap-1.5"
+                >
+                  {emailBusy
+                    ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    : <Mail className="w-3.5 h-3.5" />}
+                  Enviar email
+                </Button>
+              )}
+            </div>
+
+            {emailMsg && (
+              <p className={cn(
+                'text-xs text-center',
+                emailMsg.includes('Error') ? 'text-red-600' : 'text-green-600'
+              )}>
+                {emailMsg}
+              </p>
+            )}
+
+            <Button onClick={handleClose} className="w-full bg-plum-700 hover:bg-plum-800 text-white">
+              Cerrar
+            </Button>
           </div>
 
         ) : (
