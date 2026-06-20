@@ -120,7 +120,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           address,
           phone,
           active,
-          trial_ends_at
+          trial_ends_at,
+          caja_fondo_fijo
         )
       `)
       .eq('user_id', userId)
@@ -282,7 +283,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role,
         active,
         tenant:tenants (
-          id, name, slug, address, phone, active, trial_ends_at
+          id, name, slug, address, phone, active, trial_ends_at, caja_fondo_fijo
         )
       `)
       .eq('user_id', user.id)

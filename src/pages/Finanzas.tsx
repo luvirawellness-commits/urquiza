@@ -514,7 +514,7 @@ function SectionMovimientosHoy() {
 
 // ── Cierre de Caja modal ───────────────────────────────────────────────────────
 function ModalCierreCaja({ onClose }: { onClose: () => void }) {
-  const { user, currentTenant } = useAuth()
+  const { user, currentTenant, currentTenantId, refreshTenants } = useAuth()
   const { data: txs, isLoading } = useTodayTransactions()
   const insertTx = useInsertTransaction()
   const qc = useQueryClient()
@@ -588,6 +588,13 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
       console.log('[CierreCaja] INSERT - Depósito a caja mayor:', depositPayload)
       await insertTx.mutateAsync(depositPayload)
       qc.invalidateQueries({ queryKey: ['last-caja-close'] })
+
+      // Auto-adjust fondo when there was a discrepancy
+      if (diferencia !== null && diferencia !== 0 && currentTenantId) {
+        const nuevoFondo = Math.max(0, fondoFijo + diferencia)
+        await supabase.from('tenants').update({ caja_fondo_fijo: nuevoFondo }).eq('id', currentTenantId)
+        await refreshTenants()
+      }
 
       setSuccess(
         `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`,
@@ -984,44 +991,17 @@ function TabMovimientos() {
 function TabCaja() {
   const [showCierre, setShowCierre] = useState(false)
   const [showVenderMembresia, setShowVenderMembresia] = useState(false)
-  const [showFondo, setShowFondo] = useState(false)
-  const [fondoInput, setFondoInput] = useState('')
-  const [fondoBusy, setFondoBusy] = useState(false)
-  const [fondoSaved, setFondoSaved] = useState<number | null>(null)
-  const { profile, currentTenant, currentTenantId } = useAuth()
+  const { currentTenant } = useAuth()
 
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
-  const fondoActual = fondoSaved ?? (currentTenant?.caja_fondo_fijo ?? 0)
-
-  async function handleSaveFondo() {
-    const nuevoMonto = Number(fondoInput)
-    if (isNaN(nuevoMonto) || nuevoMonto < 0 || !currentTenantId) return
-    setFondoBusy(true)
-    const { error } = await supabase.from('tenants').update({ caja_fondo_fijo: nuevoMonto }).eq('id', currentTenantId)
-    setFondoBusy(false)
-    if (!error) {
-      setFondoSaved(nuevoMonto)
-      setShowFondo(false)
-    }
-  }
+  const fondoActual = currentTenant?.caja_fondo_fijo ?? 0
 
   return (
     <div className="space-y-6">
-      {/* Fondo de Caja */}
-      <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4 flex items-center justify-between gap-4">
-        <div>
-          <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide mb-0.5">Fondo de Caja</p>
-          <p className="text-2xl font-bold text-amber-800">{formatCurrency(fondoActual)}</p>
-          <p className="text-xs text-amber-600 mt-0.5">Para cambio y vueltos · no afecta totales</p>
-        </div>
-        {isOwnerOrAdmin && (
-          <button
-            onClick={() => { setFondoInput(String(fondoActual)); setShowFondo(true) }}
-            className="shrink-0 text-xs font-semibold text-amber-700 border border-amber-300 rounded-lg px-3 py-1.5 hover:bg-amber-100 transition-colors"
-          >
-            Ajustar fondo
-          </button>
-        )}
+      {/* Fondo de Caja — informational only, auto-adjusted on cierre */}
+      <div className="bg-amber-50 border border-amber-200 rounded-xl px-5 py-4">
+        <p className="text-[11px] font-semibold text-amber-700 uppercase tracking-wide mb-0.5">Fondo de Caja</p>
+        <p className="text-2xl font-bold text-amber-800">{formatCurrency(fondoActual)}</p>
+        <p className="text-xs text-amber-600 mt-0.5">Para cambio y vueltos · se ajusta automáticamente al cerrar caja</p>
       </div>
 
       <div className="flex items-start justify-between gap-4">
@@ -1052,42 +1032,6 @@ function TabCaja() {
           open={showVenderMembresia}
           onClose={() => setShowVenderMembresia(false)}
         />
-      )}
-
-      {/* Ajustar Fondo de Caja modal */}
-      {showFondo && (
-        <Dialog open onOpenChange={(v) => { if (!v && !fondoBusy) setShowFondo(false) }}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Ajustar Fondo de Caja</DialogTitle>
-              <DialogDescription>
-                Ingresá el nuevo monto total del fondo. No se registra como ingreso ni afecta el cierre de caja.
-              </DialogDescription>
-            </DialogHeader>
-            <div className="space-y-4 pt-1">
-              <div className="space-y-1.5">
-                <Label className="text-xs">Nuevo monto del fondo</Label>
-                <Input
-                  type="number"
-                  min="0"
-                  step="1"
-                  placeholder="0"
-                  value={fondoInput}
-                  onChange={(e) => setFondoInput(e.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" className="flex-1" disabled={fondoBusy} onClick={() => setShowFondo(false)}>
-                  Cancelar
-                </Button>
-                <Button className="flex-1" disabled={fondoBusy} onClick={handleSaveFondo}>
-                  {fondoBusy ? 'Guardando...' : 'Guardar'}
-                </Button>
-              </div>
-            </div>
-          </DialogContent>
-        </Dialog>
       )}
     </div>
   )
