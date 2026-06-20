@@ -253,6 +253,48 @@ export function useDashboardMetrics() {
   })
 }
 
+export function useMovimientosCaja(dateFrom: string, dateTo: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['transactions', 'movimientos', tenantId, dateFrom, dateTo],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .gte('date', dateFrom)
+        .lte('date', dateTo)
+        .order('date', { ascending: false })
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return data as Transaction[]
+    },
+    enabled: !!tenantId && !!dateFrom && !!dateTo && dateFrom <= dateTo,
+  })
+}
+
+export function useLastCajaClose() {
+  const tenantId = useTenantId()
+  const today = new Date().toISOString().split('T')[0]
+  return useQuery({
+    queryKey: ['last-caja-close', tenantId, today],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('transactions')
+        .select('created_at')
+        .eq('tenant_id', tenantId)
+        .eq('date', today)
+        .eq('type', 'expense')
+        .eq('category', 'cash_transfer')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle()
+      return data?.created_at ?? null
+    },
+    enabled: !!tenantId,
+  })
+}
+
 export function useTodayAgenda() {
   const tenantId = useTenantId()
   return useQuery({

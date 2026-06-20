@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown, FileText,
@@ -15,6 +16,8 @@ import {
   useTodayMetrics,
   useInsertTransaction,
   useClientMembership,
+  useMovimientosCaja,
+  useLastCajaClose,
 } from '@/hooks/useFinanzas'
 import { useAllServiceCostItems } from '@/hooks/useSupplies'
 import {
@@ -35,7 +38,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
 import type { Transaction, ServiceCostItem } from '@/types'
 
-type Tab = 'caja' | 'pl'
+type Tab = 'caja' | 'movimientos' | 'pl'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -66,6 +69,43 @@ const PM_LABELS: Record<string, string> = {
   cash: 'Efectivo', transfer: 'Transferencia', qr: 'QR',
   mp: 'Mercado Pago', debit: 'Débito', credit: 'Crédito',
 }
+
+const CAT_LABELS: Record<string, string> = {
+  session: 'Sesión', membership: 'Membresía', gift_card: 'Gift Card', product: 'Producto',
+  supplies: 'Insumos', rent: 'Alquiler', utilities: 'Servicios',
+  salary_operativo: 'Sueldos Op.', salary_admin: 'Sueldos Admin.', salary: 'Sueldos',
+  social_charges: 'Cargas Sociales', marketing: 'Marketing', management: 'Gestión',
+  bank_fees: 'Gastos Bancarios', maintenance: 'Mantenimiento', depreciation: 'Depreciación',
+  withdrawal: 'Retiro Socios', cash_transfer: 'Depósito Caja', other: 'Otros',
+}
+
+const MOV_TIPO_OPTS = [
+  { value: 'all',     label: 'Todos' },
+  { value: 'income',  label: 'Ingreso' },
+  { value: 'expense', label: 'Egreso' },
+]
+
+const MOV_MEDIO_OPTS = [
+  { value: 'all',      label: 'Todos' },
+  { value: 'cash',     label: 'Efectivo' },
+  { value: 'transfer', label: 'Transferencia' },
+  { value: 'card',     label: 'Tarjeta' },
+  { value: 'qr',       label: 'QR' },
+]
+
+const MOV_CAT_OPTS = [
+  { value: 'all',       label: 'Todas' },
+  { value: 'session',   label: 'Sesión' },
+  { value: 'membership',label: 'Membresía' },
+  { value: 'gift_card', label: 'Gift Card' },
+  { value: 'supplies',  label: 'Insumos' },
+  { value: 'sueldos',   label: 'Sueldos' },
+  { value: 'marketing', label: 'Marketing' },
+  { value: 'other',     label: 'Otros' },
+]
+
+const SUELDOS_CATS = ['salary_operativo', 'salary_admin', 'salary', 'social_charges']
+const CARD_MEDIOS  = ['credit', 'debit']
 
 const selectCls = 'w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-plum-800 focus:ring-offset-0'
 
@@ -359,7 +399,16 @@ function SectionGastosDelDia() {
 
 // ── Section D ──────────────────────────────────────────────────────────────────
 function SectionMovimientosHoy() {
-  const { data: txs, isLoading } = useTodayTransactions()
+  const { data: allTxs, isLoading: txLoading } = useTodayTransactions()
+  const { data: lastCloseAt, isLoading: closeLoading } = useLastCajaClose()
+  const isLoading = txLoading || closeLoading
+
+  const txs = useMemo(() => {
+    if (!allTxs) return allTxs
+    if (!lastCloseAt) return allTxs
+    return allTxs.filter((tx) => !tx.created_at || tx.created_at > lastCloseAt)
+  }, [allTxs, lastCloseAt])
+
   const { profile } = useAuth()
   const tenantId = useTenantId()
   const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
@@ -378,7 +427,19 @@ function SectionMovimientosHoy() {
       ) : !txs || txs.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-xl">
           <DollarSign className="w-10 h-10 mx-auto mb-2 opacity-30" />
-          <p className="text-sm">Sin movimientos hoy</p>
+          {lastCloseAt ? (
+            <>
+              <p className="text-sm font-medium text-plum-800">No hay movimientos en la caja actual.</p>
+              <p className="text-xs mt-1">
+                La caja fue cerrada el{' '}
+                {new Date(lastCloseAt).toLocaleString('es-AR', {
+                  day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
+                })}
+              </p>
+            </>
+          ) : (
+            <p className="text-sm">Sin movimientos hoy</p>
+          )}
         </div>
       ) : (
         <div className="space-y-2">
@@ -454,6 +515,7 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const { user } = useAuth()
   const { data: txs, isLoading } = useTodayTransactions()
   const insertTx = useInsertTransaction()
+  const qc = useQueryClient()
 
   const [depositar, setDepositar] = useState('')
   const [ajusteAmt, setAjusteAmt] = useState('0')
@@ -510,6 +572,7 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
       }
       console.log('[CierreCaja] INSERT - Depósito a caja mayor:', depositPayload)
       await insertTx.mutateAsync(depositPayload)
+      qc.invalidateQueries({ queryKey: ['last-caja-close'] })
 
       setSuccess(
         `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`,
@@ -640,6 +703,211 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+// ── Tab Movimientos de Caja ───────────────────────────────────────────────────
+function TabMovimientos() {
+  const now = new Date()
+  const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+  const today = now.toISOString().split('T')[0]
+
+  const [dateFrom, setDateFrom]   = useState(currentMonthStart)
+  const [dateTo,   setDateTo]     = useState(today)
+  const [tipoFilter, setTipoFilter] = useState('all')
+  const [medioFilter, setMedioFilter] = useState('all')
+  const [catFilter,  setCatFilter]  = useState('all')
+
+  const { data: rawTxs, isLoading } = useMovimientosCaja(dateFrom, dateTo)
+
+  const txs = useMemo(() => {
+    if (!rawTxs) return []
+    return rawTxs.filter((tx) => {
+      if (tipoFilter !== 'all' && tx.type !== tipoFilter) return false
+      if (medioFilter !== 'all') {
+        if (medioFilter === 'card') {
+          if (!CARD_MEDIOS.includes(tx.payment_method ?? '')) return false
+        } else if (tx.payment_method !== medioFilter) return false
+      }
+      if (catFilter !== 'all') {
+        if (catFilter === 'sueldos') {
+          if (!SUELDOS_CATS.includes(tx.category ?? '')) return false
+        } else if (tx.category !== catFilter) return false
+      }
+      return true
+    })
+  }, [rawTxs, tipoFilter, medioFilter, catFilter])
+
+  const totals = useMemo(() => {
+    const ingresos = txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)
+    const egresos  = txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+    return { ingresos, egresos, saldo: ingresos - egresos }
+  }, [txs])
+
+  function handleExport() {
+    const rows = txs.map((tx) => ({
+      'Fecha':        tx.date,
+      'Tipo':         tx.type === 'income' ? 'Ingreso' : 'Egreso',
+      'Categoría':    CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '',
+      'Descripción':  tx.description ?? '',
+      'Medio de pago': PM_LABELS[tx.payment_method ?? ''] ?? tx.payment_method ?? '',
+      'Monto':        tx.type === 'income' ? tx.amount : -tx.amount,
+    }))
+    exportToExcel(rows, `movimientos-${dateFrom}-al-${dateTo}.xlsx`, 'Movimientos')
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Filtros */}
+      <Card>
+        <CardContent className="pt-4 pb-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Desde</label>
+              <input
+                type="date"
+                value={dateFrom}
+                max={dateTo}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className={selectCls}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Hasta</label>
+              <input
+                type="date"
+                value={dateTo}
+                min={dateFrom}
+                max={today}
+                onChange={(e) => setDateTo(e.target.value)}
+                className={selectCls}
+              />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Tipo</label>
+              <select className={selectCls} value={tipoFilter} onChange={(e) => setTipoFilter(e.target.value)}>
+                {MOV_TIPO_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Medio de pago</label>
+              <select className={selectCls} value={medioFilter} onChange={(e) => setMedioFilter(e.target.value)}>
+                {MOV_MEDIO_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Categoría</label>
+              <select className={selectCls} value={catFilter} onChange={(e) => setCatFilter(e.target.value)}>
+                {MOV_CAT_OPTS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Totales */}
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-green-50 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground mb-0.5">Total ingresos</p>
+          <p className="text-sm font-bold text-green-700 tabular-nums">{formatCurrency(totals.ingresos)}</p>
+        </div>
+        <div className="bg-red-50 rounded-lg p-3 text-center">
+          <p className="text-xs text-muted-foreground mb-0.5">Total egresos</p>
+          <p className="text-sm font-bold text-red-700 tabular-nums">{formatCurrency(totals.egresos)}</p>
+        </div>
+        <div className={cn(
+          'rounded-lg p-3 text-center',
+          totals.saldo >= 0 ? 'bg-plum-50' : 'bg-red-50',
+        )}>
+          <p className="text-xs text-muted-foreground mb-0.5">Saldo neto</p>
+          <p className={cn(
+            'text-sm font-bold tabular-nums',
+            totals.saldo >= 0 ? 'text-plum-800' : 'text-red-700',
+          )}>
+            {formatCurrency(totals.saldo)}
+          </p>
+        </div>
+      </div>
+
+      {/* Tabla */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-plum-800">
+              Movimientos ({isLoading ? '…' : txs.length})
+            </CardTitle>
+            <Button variant="outline" size="sm" onClick={handleExport} disabled={txs.length === 0}>
+              <FileDown className="w-4 h-4 mr-1.5" /> Exportar Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 pb-4 overflow-x-auto">
+          {isLoading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-plum-800" />
+            </div>
+          ) : txs.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-b-xl">
+              <DollarSign className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">Sin movimientos para el período seleccionado</p>
+            </div>
+          ) : (
+            <>
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b bg-gray-50">
+                    <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Fecha</th>
+                    <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Tipo</th>
+                    <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Categoría</th>
+                    <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Descripción</th>
+                    <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Medio</th>
+                    <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Monto</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {txs.map((tx) => (
+                    <tr key={tx.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(tx.date + 'T12:00:00').toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className={cn(
+                          'inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-medium',
+                          tx.type === 'income'
+                            ? 'bg-green-50 text-green-700'
+                            : 'bg-red-50 text-red-700',
+                        )}>
+                          {tx.type === 'income'
+                            ? <TrendingUp className="w-3 h-3" />
+                            : <TrendingDown className="w-3 h-3" />}
+                          {tx.type === 'income' ? 'Ingreso' : 'Egreso'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                        {CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-sm text-plum-800 max-w-[220px] truncate">
+                        {tx.description ?? '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                        {PM_LABELS[tx.payment_method ?? ''] ?? tx.payment_method ?? '—'}
+                      </td>
+                      <td className={cn(
+                        'px-4 py-2.5 text-right font-semibold tabular-nums whitespace-nowrap',
+                        tx.type === 'income' ? 'text-green-600' : 'text-red-600',
+                      )}>
+                        {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
   )
 }
 
@@ -2095,8 +2363,9 @@ export default function Finanzas() {
   }, [permissions]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const visibleTabs = [
-    { key: 'caja' as Tab, label: 'Caja',          show: showCaja },
-    { key: 'pl'   as Tab, label: 'P&L y Reportes', show: showPL  },
+    { key: 'caja'        as Tab, label: 'Caja',                show: showCaja },
+    { key: 'movimientos' as Tab, label: 'Movimientos de Caja', show: showCaja },
+    { key: 'pl'          as Tab, label: 'P&L y Reportes',      show: showPL  },
   ].filter((t) => t.show)
 
   return (
@@ -2124,8 +2393,9 @@ export default function Finanzas() {
         ))}
       </div>
 
-      {activeTab === 'caja' && showCaja && <TabCaja />}
-      {activeTab === 'pl'   && showPL   && <TabPL />}
+      {activeTab === 'caja'        && showCaja && <TabCaja />}
+      {activeTab === 'movimientos' && showCaja && <TabMovimientos />}
+      {activeTab === 'pl'          && showPL   && <TabPL />}
     </div>
   )
 }
