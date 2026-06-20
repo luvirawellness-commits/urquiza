@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '@/lib/supabase'
 import { useAuth } from '@/contexts/AuthContext'
 
-type Plan = 'monthly' | 'quarterly' | 'semiannual' | 'annual' | 'test_1usd'
+type Plan = 'monthly' | 'quarterly' | 'semiannual' | 'annual'
 
 const PLANS: {
   id: Plan
@@ -157,16 +157,6 @@ export default function Pago() {
               </button>
             </div>
           ))}
-        </div>
-
-        <div className="flex justify-center mt-8">
-          <button
-            onClick={() => handleContratar('test_1usd')}
-            disabled={busy !== null}
-            className="border border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 text-xs px-4 py-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-          >
-            {busy === 'test_1usd' ? 'Redirigiendo...' : '🧪 Prueba 1 semana ($1 USD)'}
-          </button>
         </div>
 
         {isSuperAdmin && (

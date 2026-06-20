@@ -24,8 +24,8 @@ async function verifyMpSignature(
   const v1 = parts['v1']
   if (!ts || !v1) return false
 
-  // Build manifest per MercadoPago spec
-  const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`
+  // Build manifest per MercadoPago spec (data.id lowercased per official docs)
+  const manifest = `id:${dataId.toLowerCase()};request-id:${xRequestId};ts:${ts};`
 
   // HMAC-SHA256 using Deno built-in crypto.subtle (no external lib)
   const encoder = new TextEncoder()
@@ -86,6 +86,12 @@ serve(async (req: Request) => {
       ?? url.searchParams.get('id')
       ?? String(body?.data?.id ?? '')
 
+    console.log('Raw body:', rawBody)
+    console.log('URL search params:', Object.fromEntries(url.searchParams.entries()))
+    console.log('Computed dataId:', dataId)
+    console.log('x-signature header:', xSignature)
+    console.log('x-request-id header:', xRequestId)
+
     // Verify HMAC-SHA256 signature — reject anything that doesn't match
     const valid = await verifyMpSignature(xSignature, xRequestId, dataId, webhookSecret)
     if (!valid) {
@@ -131,14 +137,13 @@ serve(async (req: Request) => {
       quarterly:  90,
       semiannual: 180,
       annual:     365,
-      test_1usd:  7,
     }
     const days = DAYS[plan] ?? 30
     const trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60_000).toISOString()
 
     const { error: updateErr } = await supabase
       .from('tenants')
-      .update({ trial_ends_at: trialEndsAt })
+      .update({ trial_ends_at: trialEndsAt, last_plan: plan })
       .eq('id', tenant_id)
 
     if (updateErr) {

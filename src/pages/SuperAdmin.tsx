@@ -23,13 +23,6 @@ function getTenantStatus(t: TenantRow): TenantStatus {
   return 'active'
 }
 
-function trialDaysLeft(t: TenantRow): number | null {
-  if (!t.trial_ends_at) return null
-  const diff = new Date(t.trial_ends_at).getTime() - Date.now()
-  if (diff <= 0) return null
-  return Math.ceil(diff / (1000 * 60 * 60 * 24))
-}
-
 function fmtDate(iso: string) {
   return new Date(iso).toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
@@ -37,6 +30,21 @@ function fmtDate(iso: string) {
 function generatePassword(): string {
   const chars = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#'
   return Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
+}
+
+const PLAN_LABELS: Record<string, string> = {
+  monthly:    'Mensual',
+  quarterly:  'Trimestral',
+  semiannual: 'Semestral',
+  annual:     'Anual',
+}
+
+function subscriptionBadge(trialEndsAt: string | null | undefined) {
+  if (!trialEndsAt) return null
+  const daysLeft = Math.ceil((new Date(trialEndsAt).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+  if (daysLeft <= 0) return <span className="text-xs font-semibold text-red-600">🔴 Vencido</span>
+  if (daysLeft <= 7) return <span className="text-xs font-semibold text-amber-600">⚠️ Vence en {daysLeft}d</span>
+  return <span className="text-xs font-semibold text-green-600">✅ Activo · {daysLeft}d</span>
 }
 
 const STATUS_CLS: Record<TenantStatus, string> = {
@@ -544,7 +552,7 @@ export default function SuperAdmin() {
                   <th className="text-left px-4 py-3 font-medium">Owner</th>
                   <th className="text-left px-4 py-3 font-medium">Registro</th>
                   <th className="text-left px-4 py-3 font-medium">Estado</th>
-                  <th className="text-left px-4 py-3 font-medium">Trial</th>
+                  <th className="text-left px-4 py-3 font-medium">Suscripción</th>
                   <th className="text-right px-4 py-3 font-medium">Usuarios</th>
                   <th className="text-right px-4 py-3 font-medium">Clientes</th>
                   <th className="text-center px-4 py-3 font-medium">Directorio</th>
@@ -555,7 +563,6 @@ export default function SuperAdmin() {
               <tbody className="divide-y">
                 {tenants.map((t) => {
                   const status = getTenantStatus(t)
-                  const days = trialDaysLeft(t)
                   const anyBusy = busyId === t.id
                   const showActivar = t.trial_ends_at != null
                   const showDesactivar = status === 'active' || status === 'trial_active'
@@ -593,10 +600,18 @@ export default function SuperAdmin() {
                         </span>
                       </td>
 
-                      {/* Días de trial */}
+                      {/* Suscripción */}
                       <td className="px-4 py-3">
-                        {days !== null ? (
-                          <span className="text-amber-700 font-medium text-xs">{days}d</span>
+                        {t.trial_ends_at ? (
+                          <div className="flex flex-col gap-0.5">
+                            {t.last_plan && (
+                              <span className="text-[10px] text-muted-foreground uppercase tracking-wide font-medium">
+                                {PLAN_LABELS[t.last_plan] ?? t.last_plan}
+                              </span>
+                            )}
+                            <span className="text-xs text-gray-500">{fmtDate(t.trial_ends_at)}</span>
+                            {subscriptionBadge(t.trial_ends_at)}
+                          </div>
                         ) : (
                           <span className="text-muted-foreground text-xs">—</span>
                         )}

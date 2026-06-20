@@ -12,6 +12,7 @@ export interface Tenant {
   active: boolean
   created_at: string
   trial_ends_at?: string | null
+  last_plan?: string | null
 }
 
 export interface UserTenant {
