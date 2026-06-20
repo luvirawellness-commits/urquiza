@@ -110,9 +110,12 @@ export default function Auth() {
       <div className="w-full max-w-sm">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-16 h-16 rounded-full bg-gold-500 flex items-center justify-center mx-auto mb-4">
-            <span className="text-plum-800 font-bold text-2xl font-serif">L</span>
-          </div>
+          <img
+            src="/icons/icon-192.png"
+            alt="Luvira OS"
+            className="w-16 h-16 mx-auto mb-4"
+            style={{ borderRadius: '37%' }}
+          />
           <h1 className="text-white text-2xl font-semibold">Luvira OS</h1>
           <p className="text-plum-300 text-sm mt-1">Centro de Bienestar · Buenos Aires</p>
         </div>

@@ -195,9 +195,12 @@ export default function Registro() {
 
         {/* Brand */}
         <div className="text-center mb-6">
-          <div className="w-14 h-14 rounded-full bg-gold-500 flex items-center justify-center mx-auto mb-3">
-            <span className="text-plum-800 font-bold text-xl font-serif">L</span>
-          </div>
+          <img
+            src="/icons/icon-192.png"
+            alt="Luvira OS"
+            className="w-14 h-14 mx-auto mb-3"
+            style={{ borderRadius: '37%' }}
+          />
           <h1 className="text-white text-xl font-semibold">Luvira OS</h1>
           <p className="text-plum-300 text-sm mt-0.5">Registrá tu centro de bienestar</p>
         </div>

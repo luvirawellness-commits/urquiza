@@ -16,9 +16,12 @@ export function ProtectedRoute({ children, roles, permission, anyPermission }: P
     return (
       <div className="min-h-screen flex items-center justify-center bg-plum-800">
         <div className="text-center">
-          <div className="w-12 h-12 rounded-full bg-gold-500 flex items-center justify-center mx-auto mb-4 animate-pulse">
-            <span className="text-plum-800 font-bold text-lg">L</span>
-          </div>
+          <img
+            src="/icons/icon-192.png"
+            alt="Luvira OS"
+            className="w-12 h-12 mx-auto mb-4 animate-pulse"
+            style={{ borderRadius: '37%' }}
+          />
           <p className="text-white text-sm">Cargando...</p>
         </div>
       </div>

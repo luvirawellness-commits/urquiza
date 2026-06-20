@@ -127,9 +127,12 @@ export function Sidebar() {
     <div className="flex flex-col h-full">
       {/* Logo */}
       <div className="flex items-center gap-3 px-6 py-5 border-b border-plum-700">
-        <div className="w-8 h-8 rounded-full bg-gold-500 flex items-center justify-center flex-shrink-0">
-          <span className="text-plum-800 font-bold text-sm">L</span>
-        </div>
+        <img
+          src="/icons/icon-192.png"
+          alt="Luvira OS"
+          className="w-8 h-8 flex-shrink-0"
+          style={{ borderRadius: '37%' }}
+        />
         <div>
           <p className="text-white font-semibold text-sm leading-tight">Luvira OS</p>
           <p className="text-plum-300 text-xs">Wellness Center</p>
@@ -235,9 +238,12 @@ export function Sidebar() {
       {/* Mobile header */}
       <div className="lg:hidden fixed top-0 left-0 right-0 z-30 bg-plum-800 flex items-center justify-between px-4 py-3 border-b border-plum-700">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-gold-500 flex items-center justify-center">
-            <span className="text-plum-800 font-bold text-xs">L</span>
-          </div>
+          <img
+            src="/icons/icon-192.png"
+            alt="Luvira OS"
+            className="w-7 h-7"
+            style={{ borderRadius: '37%' }}
+          />
           <span className="text-white font-semibold text-sm">Luvira OS</span>
         </div>
         <button onClick={() => setMobileOpen(!mobileOpen)} className="text-white p-1">
