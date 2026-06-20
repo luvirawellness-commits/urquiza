@@ -159,17 +159,15 @@ export default function Pago() {
           ))}
         </div>
 
-        {isSuperAdmin && (
-          <div className="flex justify-center mt-8">
-            <button
-              onClick={() => handleContratar('test_1usd')}
-              disabled={busy !== null}
-              className="border border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 text-xs px-4 py-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
-            >
-              {busy === 'test_1usd' ? 'Redirigiendo...' : '🧪 Plan de Prueba ($1 USD)'}
-            </button>
-          </div>
-        )}
+        <div className="flex justify-center mt-8">
+          <button
+            onClick={() => handleContratar('test_1usd')}
+            disabled={busy !== null}
+            className="border border-dashed border-gray-300 text-gray-400 hover:text-gray-600 hover:border-gray-400 text-xs px-4 py-2 rounded-lg transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {busy === 'test_1usd' ? 'Redirigiendo...' : '🧪 Prueba 1 semana ($1 USD)'}
+          </button>
+        </div>
 
         {isSuperAdmin && (
           <label className="flex items-center justify-center gap-2 mt-3 cursor-pointer select-none w-fit mx-auto">

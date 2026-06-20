@@ -131,7 +131,7 @@ serve(async (req: Request) => {
       quarterly:  90,
       semiannual: 180,
       annual:     365,
-      test_1usd:  1,
+      test_1usd:  7,
     }
     const days = DAYS[plan] ?? 30
     const trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60_000).toISOString()
