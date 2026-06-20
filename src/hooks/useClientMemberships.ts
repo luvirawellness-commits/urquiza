@@ -147,76 +147,22 @@ export function useSellMembership() {
       const d = new Date(input.startDate + 'T00:00:00')
       d.setDate(d.getDate() + input.validityDays)
       const expiresAt = getArgentinaDateString(d)
-      const { data: cm, error: cmErr } = await supabase
-        .from('client_memberships')
-        .insert({
-          tenant_id: tenantId,
-          client_id: input.clientId,
-          membership_id: input.planId,
-          sessions_used: 0,
-          status: 'active',
-          purchased_at: new Date().toISOString(),
-          expires_at: expiresAt,
-          payment_method: input.paymentMethod,
-          amount_paid: input.amount,
-          sold_by: input.soldBy,
-        })
-        .select()
-        .single()
-      if (cmErr) { console.log('[useSellMembership] insert error:', cmErr); throw cmErr }
-
-      const membershipId: string = cm.id
-
-      const { error: titularErr } = await supabase
-        .from('membership_beneficiaries')
-        .insert({
-          tenant_id: tenantId,
-          client_membership_id: membershipId,
-          client_id: input.clientId,
-          added_by: input.soldBy,
-        })
-      if (titularErr) { console.log('[useSellMembership] titular beneficiary insert error:', titularErr); throw titularErr }
-
       const extraBenIds = (input.beneficiaryIds ?? []).filter((id) => id !== input.clientId)
-      if (extraBenIds.length > 0) {
-        const { error: benErr } = await supabase
-          .from('membership_beneficiaries')
-          .insert(
-            extraBenIds.map((cid) => ({
-              tenant_id: tenantId,
-              client_membership_id: membershipId,
-              client_id: cid,
-              added_by: input.soldBy,
-            })),
-          )
-        if (benErr) { console.log('[useSellMembership] extra beneficiaries insert error:', benErr); throw benErr }
-      }
-
-      const { error: txErr } = await supabase
-        .from('transactions')
-        .insert({
-          tenant_id: tenantId,
-          type: 'income',
-          category: 'membership',
-          amount: input.amount,
-          payment_method: input.paymentMethod,
-          description: `Membresía ${input.planName}`,
-          date: input.startDate,
-          user_id: input.soldBy,
-          status: 'paid',
-          is_recurring: false,
-        })
-      if (txErr) throw txErr
-
-      if (input.preSelectedAppointmentId) {
-        const { error: apptErr } = await supabase
-          .from('appointments')
-          .update({ client_membership_id: membershipId })
-          .eq('id', input.preSelectedAppointmentId)
-        if (apptErr) throw apptErr
-      }
-
-      return membershipId
+      const { data, error } = await supabase.rpc('sell_membership', {
+        p_tenant_id:       tenantId,
+        p_client_id:       input.clientId,
+        p_membership_id:   input.planId,
+        p_plan_name:       input.planName,
+        p_amount_paid:     input.amount,
+        p_payment_method:  input.paymentMethod,
+        p_sold_by:         input.soldBy,
+        p_date:            input.startDate,
+        p_expires_at:      expiresAt,
+        p_beneficiary_ids: [input.clientId, ...extraBenIds],
+        p_appointment_id:  input.preSelectedAppointmentId ?? null,
+      })
+      if (error) throw error
+      return (data as { id: string }).id
     },
     onSuccess: (membershipId, variables) => {
       qc.invalidateQueries({ queryKey: ['client-memberships', variables.clientId] })

@@ -26,12 +26,6 @@ export interface GiftCard {
   used_by?: { id: string; first_name: string; last_name?: string } | null
 }
 
-function generateCode(): string {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
-  const part = (n: number) =>
-    Array.from({ length: n }, () => chars[Math.floor(Math.random() * chars.length)]).join('')
-  return `LUV-${part(4)}-${part(4)}`
-}
 
 export function useGiftCards() {
   const tenantId = useTenantId()
@@ -74,53 +68,23 @@ export function useCreateGiftCard() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: CreateGiftCardInput) => {
-      let code = ''
-      for (let i = 0; i < 5; i++) {
-        const attempt = generateCode()
-        const { data } = await supabase
-          .from('gift_cards')
-          .select('id')
-          .eq('code', attempt)
-          .maybeSingle()
-        if (!data) { code = attempt; break }
-      }
-      if (!code) throw new Error('No se pudo generar un código único. Intentá de nuevo.')
-
-      const { data: gc, error: gcError } = await supabase
-        .from('gift_cards')
-        .insert({
-          tenant_id: tenantId,
-          code,
-          service_id: input.service_id,
-          duration_minutes: input.duration_minutes,
-          amount: input.amount,
-          sold_by: input.sold_by || null,
-          expires_at: input.expires_at || null,
-          notes: input.notes || null,
-          recipient_name: input.recipient_name || null,
-          sender_name: input.sender_name || null,
-          message: input.message || null,
-        })
-        .select('id, code')
-        .single()
-      if (gcError) throw gcError
-
-      const today = getArgentinaDateString()
-      const { error: txError } = await supabase.from('transactions').insert({
-        tenant_id: tenantId,
-        type: 'income',
-        category: 'gift_card',
-        amount: input.amount,
-        payment_method: input.payment_method,
-        description: `Gift Card #${code}`,
-        date: today,
-        user_id: input.user_id,
-        status: 'paid',
-        is_recurring: false,
+      const { data, error } = await supabase.rpc('create_gift_card', {
+        p_tenant_id:        tenantId,
+        p_service_id:       input.service_id,
+        p_duration_minutes: input.duration_minutes,
+        p_amount:           input.amount,
+        p_payment_method:   input.payment_method,
+        p_sold_by:          input.sold_by || null,
+        p_user_id:          input.user_id,
+        p_date:             getArgentinaDateString(),
+        p_expires_at:       input.expires_at || null,
+        p_notes:            input.notes || null,
+        p_recipient_name:   input.recipient_name || null,
+        p_sender_name:      input.sender_name || null,
+        p_message:          input.message || null,
       })
-      if (txError) throw txError
-
-      return gc as { id: string; code: string }
+      if (error) throw error
+      return data as { id: string; code: string }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['gift_cards'] })
