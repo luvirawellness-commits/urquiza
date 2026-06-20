@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf'
+import QRCode from 'qrcode'
 
 export interface InvoicePDFData {
   invoice_type: string
@@ -33,6 +34,8 @@ const IVA_LABELS: Record<string, string> = {
   exento:                'Exento',
 }
 
+const CBTE_TIPO: Record<string, number> = { A: 1, B: 6, C: 11 }
+
 function fmtDate(s?: string): string {
   if (!s) return new Date().toLocaleDateString('es-AR')
   return new Date(s).toLocaleDateString('es-AR')
@@ -43,7 +46,34 @@ function fmtYYYYMMDD(s: string): string {
   return `${s.slice(6, 8)}/${s.slice(4, 6)}/${s.slice(0, 4)}`
 }
 
-export function generateInvoicePDF(data: InvoicePDFData): void {
+function buildQrUrl(data: InvoicePDFData): string {
+  const fecha = data.date
+    ? new Date(data.date).toISOString().slice(0, 10)
+    : new Date().toISOString().slice(0, 10)
+  const cuitStr = data.cuit_emisor.replace(/\D/g, '')
+  const tipoDocRec = data.client_cuit ? 80 : 99
+  const nroDocRec  = data.client_cuit ? parseInt(data.client_cuit.replace(/\D/g, ''), 10) : 0
+  const payload = {
+    ver:         1,
+    fecha,
+    cuit:        cuitStr,
+    ptoVta:      data.punto_venta,
+    tipoCmp:     CBTE_TIPO[data.invoice_type] ?? 11,
+    nroCmp:      data.invoice_number,
+    importe:     data.total,
+    moneda:      'PES',
+    ctz:         1,
+    tipoDocRec,
+    nroDocRec,
+    tipoCodAut:  'E',
+    codAut:      parseInt(data.cae, 10),
+  }
+  return `https://www.afip.gob.ar/fe/qr/?p=${btoa(JSON.stringify(payload))}`
+}
+
+export async function generateInvoicePDF(data: InvoicePDFData): Promise<void> {
+  const qrDataUrl = await QRCode.toDataURL(buildQrUrl(data), { width: 120, margin: 1 })
+
   const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
   const W = 210
   const mL = 15, mR = 15
@@ -142,20 +172,31 @@ export function generateInvoicePDF(data: InvoicePDFData): void {
   doc.text(`$${data.total.toFixed(2)}`, W - mR - 4, y + 8.5, { align: 'right' })
   y += 20
 
-  // ── CAE ───────────────────────────────────────────────────────────────────────
+  // ── CAE + QR (RG 4291) ────────────────────────────────────────────────────────
+  const qrSize  = 30   // 3cm × 3cm
+  const boxH    = qrSize + 8
+  const textX   = mL + qrSize + 6
+
   doc.setDrawColor(200, 200, 200)
   doc.setLineWidth(0.3)
-  doc.rect(mL, y, cW, 26)
+  doc.rect(mL, y, cW, boxH)
+
+  // QR image — bottom-left of the box
+  doc.addImage(qrDataUrl, 'PNG', mL + 2, y + 4, qrSize, qrSize)
+
+  // CAE info — right of the QR
   doc.setTextColor(...BORDEAUX)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(8)
-  doc.text('CÓDIGO DE AUTORIZACIÓN ELECTRÓNICA (CAE)', mL + 3, y + 7)
+  doc.text('Comprobante Autorizado', textX, y + 10)
+
   doc.setTextColor(...DARK)
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(8.5)
-  doc.text(`CAE: ${data.cae}`, mL + 3, y + 14)
-  doc.text(`Vencimiento CAE: ${data.cae_expires_at}`, mL + 3, y + 21)
-  y += 34
+  doc.text(`CAE: ${data.cae}`, textX, y + 18)
+  doc.text(`Vencimiento CAE: ${data.cae_expires_at}`, textX, y + 26)
+
+  y += boxH + 6
 
   // ── Footer ────────────────────────────────────────────────────────────────────
   doc.setTextColor(180, 180, 180)

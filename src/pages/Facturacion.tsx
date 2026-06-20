@@ -296,9 +296,9 @@ function TabHistorial({ tenantId }: { tenantId: string }) {
   const [emailBusy, setEmailBusy] = useState<string | null>(null)
   const [emailMsgs, setEmailMsgs] = useState<Record<string, string>>({})
 
-  function handlePDF(inv: InvoiceRow) {
+  async function handlePDF(inv: InvoiceRow) {
     if (inv.invoice_number == null) return
-    generateInvoicePDF({
+    await generateInvoicePDF({
       invoice_type:         inv.invoice_type,
       invoice_number:       inv.invoice_number,
       punto_venta:          inv.punto_venta ?? 1,

@@ -101,18 +101,29 @@ async function getWSAAToken(
   // deno-lint-ignore no-explicit-any
   supabase: ReturnType<typeof createClient<any>>,
 ) {
+  const currentEnv = isTest ? 'TEST' : 'PROD'
+
   // 1. Check DB for a still-valid token (5-min safety margin)
   const { data: row } = await supabase
     .from('tenant_arca_config')
-    .select('wsaa_token, wsaa_sign, wsaa_expires_at')
+    .select('wsaa_token, wsaa_sign, wsaa_expires_at, wsaa_token_env')
     .eq('tenant_id', tenantId)
     .single()
 
   if (row?.wsaa_token && row?.wsaa_sign && row?.wsaa_expires_at) {
-    const expiresAt = new Date(row.wsaa_expires_at)
-    if (expiresAt > new Date(Date.now() + 5 * 60 * 1000)) {
-      console.log('WSAA: using DB-cached token, expires:', expiresAt.toISOString())
-      return { token: row.wsaa_token as string, sign: row.wsaa_sign as string }
+    // If the cached token was generated for a different environment, clear it
+    if (row.wsaa_token_env && row.wsaa_token_env !== currentEnv) {
+      console.log(`WSAA: cached token is for ${row.wsaa_token_env}, current env is ${currentEnv} — clearing stale token`)
+      await supabase
+        .from('tenant_arca_config')
+        .update({ wsaa_token: null, wsaa_sign: null, wsaa_expires_at: null, wsaa_token_env: null })
+        .eq('tenant_id', tenantId)
+    } else {
+      const expiresAt = new Date(row.wsaa_expires_at)
+      if (expiresAt > new Date(Date.now() + 5 * 60 * 1000)) {
+        console.log(`WSAA: using DB-cached token (${currentEnv}), expires:`, expiresAt.toISOString())
+        return { token: row.wsaa_token as string, sign: row.wsaa_sign as string }
+      }
     }
   }
 
@@ -179,13 +190,13 @@ async function getWSAAToken(
 
   if (!token || !sign) throw new Error('WSAA: no se recibió token/sign. Verificá el certificado y la clave privada.')
 
-  // 4. Persist the new token to DB (8-hour expiry)
+  // 4. Persist the new token to DB (8-hour expiry), recording which environment it's for
   const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString()
   await supabase
     .from('tenant_arca_config')
-    .update({ wsaa_token: token, wsaa_sign: sign, wsaa_expires_at: expiresAt })
+    .update({ wsaa_token: token, wsaa_sign: sign, wsaa_expires_at: expiresAt, wsaa_token_env: currentEnv })
     .eq('tenant_id', tenantId)
-  console.log('WSAA: new token saved to DB, expires:', expiresAt)
+  console.log(`WSAA: new token saved to DB (${currentEnv}), expires:`, expiresAt)
 
   return { token, sign }
 }
@@ -221,8 +232,8 @@ async function solicitarCAE(url: string, auth: string, p: {
   condicionIvaReceptorId: number
   fchServDesde: string; fchServHasta: string; fchVtoPago: string
 }) {
-  // IVA array only for Factura A (1) and B (6) — not for C (11, monotributo)
-  const ivaXml = (p.cbteTipo === 1 || p.cbteTipo === 6)
+  // IVA array only for Factura A (1) — B to consumidor final and C (monotributo) don't discriminate IVA
+  const ivaXml = p.cbteTipo === 1
     ? `<ar:Iva>
         <ar:AlicIva>
           <ar:Id>5</ar:Id>
@@ -327,6 +338,8 @@ serve(async (req: Request) => {
 
     const isTest    = config.is_test_mode === true
     const wsfev1Url = isTest ? WSFEV1_TEST : WSFEV1_PROD
+    console.log('Mode:', isTest ? 'HOMOLOGACION' : 'PRODUCCION')
+    console.log('WSAA URL:', isTest ? WSAA_TEST : WSAA_PROD)
     console.log('WSFEV1 URL:', wsfev1Url)
 
     // 2. Get WSAA token
@@ -360,16 +373,16 @@ serve(async (req: Request) => {
     const sub = parseFloat(subtotal)
     let impNeto: number, impOpEx: number, ivaAmount: number, total: number
 
-    if (invoice_type === 'C') {
-      // Monotributo: no IVA, entire amount is exempt
-      impNeto   = 0
-      impOpEx   = Math.round(sub * 100) / 100
-      ivaAmount = 0
-      total     = Math.round(sub * 100) / 100
-    } else {
-      // Factura A or B: gross amount includes IVA 21%, back-calculate net
+    if (invoice_type === 'A') {
+      // Responsable inscripto to responsable inscripto: back-calculate net + IVA 21%
       impNeto   = Math.round((sub / 1.21) * 100) / 100
       ivaAmount = Math.round((sub - impNeto) * 100) / 100
+      impOpEx   = 0
+      total     = Math.round(sub * 100) / 100
+    } else {
+      // Factura B (consumidor final) and C (monotributo): full amount in ImpNeto, no IVA
+      impNeto   = Math.round(sub * 100) / 100
+      ivaAmount = 0
       impOpEx   = 0
       total     = Math.round(sub * 100) / 100
     }

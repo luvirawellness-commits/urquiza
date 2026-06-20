@@ -133,9 +133,9 @@ export default function InvoiceModal({
     }
   }
 
-  function handleDownloadPDF() {
+  async function handleDownloadPDF() {
     if (!result) return
-    generateInvoicePDF({
+    await generateInvoicePDF({
       invoice_type:         result.invoice_type,
       invoice_number:       result.invoice_number,
       punto_venta:          result.punto_venta,
