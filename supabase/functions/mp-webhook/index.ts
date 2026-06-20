@@ -8,8 +8,54 @@ function json(data: unknown, status = 200): Response {
   })
 }
 
+async function verifyMpSignature(
+  xSignature: string,
+  xRequestId: string,
+  dataId: string,
+  secret: string,
+): Promise<boolean> {
+  // Parse "ts=TIMESTAMP,v1=SIGNATURE"
+  const parts: Record<string, string> = {}
+  for (const part of xSignature.split(',')) {
+    const [k, v] = part.split('=')
+    if (k && v) parts[k.trim()] = v.trim()
+  }
+  const ts = parts['ts']
+  const v1 = parts['v1']
+  if (!ts || !v1) return false
+
+  // Build manifest per MercadoPago spec
+  const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`
+
+  // HMAC-SHA256 using Deno built-in crypto.subtle (no external lib)
+  const encoder = new TextEncoder()
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  )
+  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(manifest))
+  const hex = Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('')
+
+  return hex === v1
+}
+
 serve(async (req: Request) => {
+  console.log('=== WEBHOOK HIT ===')
+  console.log('Method:', req.method)
+  console.log('Headers:', JSON.stringify(Object.fromEntries(req.headers.entries())))
+
   if (req.method === 'OPTIONS') return json({ ok: true })
+
+  const webhookSecret = Deno.env.get('MP_WEBHOOK_SECRET')
+  if (!webhookSecret) {
+    console.error('MP_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
+    return json({ error: 'Configuration error' }, 500)
+  }
 
   const MP_ACCESS_TOKEN = Deno.env.get('MP_ACCESS_TOKEN')
   if (!MP_ACCESS_TOKEN) {
@@ -25,8 +71,27 @@ serve(async (req: Request) => {
 
   try {
     const url = new URL(req.url)
+
+    // Read signature headers before consuming body
+    const xSignature = req.headers.get('x-signature') ?? ''
+    const xRequestId = req.headers.get('x-request-id') ?? ''
+
+    // Read raw body text first, then parse — preserves exact values before any transformation
+    const rawBody = await req.text()
     // deno-lint-ignore no-explicit-any
-    const body = await req.json().catch(() => ({})) as Record<string, any>
+    const body = (rawBody ? JSON.parse(rawBody) : {}) as Record<string, any>
+
+    // data.id: webhook format sends ?data.id=, IPN sends ?id=, body has data.id
+    const dataId = url.searchParams.get('data.id')
+      ?? url.searchParams.get('id')
+      ?? String(body?.data?.id ?? '')
+
+    // Verify HMAC-SHA256 signature — reject anything that doesn't match
+    const valid = await verifyMpSignature(xSignature, xRequestId, dataId, webhookSecret)
+    if (!valid) {
+      console.error('Webhook signature verification failed', { xSignature, xRequestId, dataId })
+      return json({ error: 'Unauthorized' }, 401)
+    }
 
     // Support both webhook format (body) and IPN format (query params)
     const topic = body?.type ?? url.searchParams.get('topic')
@@ -36,7 +101,7 @@ serve(async (req: Request) => {
       return json({ received: true })
     }
 
-    // 2. Fetch payment details from MercadoPago
+    // Fetch payment details from MercadoPago
     const mpRes = await fetch(`https://api.mercadopago.com/v1/payments/${paymentId}`, {
       headers: { 'Authorization': `Bearer ${MP_ACCESS_TOKEN}` },
     })
@@ -50,7 +115,7 @@ serve(async (req: Request) => {
     const payment = await mpRes.json() as Record<string, any>
     console.log('Payment received:', { id: payment.id, status: payment.status, metadata: payment.metadata })
 
-    // 3. Only process approved payments
+    // Only process approved payments
     if (payment.status !== 'approved') {
       return json({ received: true, status: payment.status })
     }
@@ -66,6 +131,7 @@ serve(async (req: Request) => {
       quarterly:  90,
       semiannual: 180,
       annual:     365,
+      test_1usd:  1,
     }
     const days = DAYS[plan] ?? 30
     const trialEndsAt = new Date(Date.now() + days * 24 * 60 * 60_000).toISOString()
