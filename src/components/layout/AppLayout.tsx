@@ -2,6 +2,7 @@ import { Outlet, Link } from 'react-router-dom'
 import { Sidebar } from './Sidebar'
 import { useAuth } from '@/contexts/AuthContext'
 import { MessageCircle } from 'lucide-react'
+import { InstallPWABanner } from '@/components/InstallPWABanner'
 
 function TrialExpiredScreen() {
   return (
@@ -76,6 +77,7 @@ export function AppLayout() {
           <Outlet />
         </div>
       </main>
+      <InstallPWABanner />
     </div>
   )
 }
