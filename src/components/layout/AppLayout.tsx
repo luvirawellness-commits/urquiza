@@ -60,7 +60,7 @@ export function AppLayout() {
       <main className="lg:ml-56 min-h-screen">
         <div className="pt-14 lg:pt-0">
           {/* Trial banner */}
-          {trialDaysLeft !== null && (
+          {trialDaysLeft !== null && currentTenant?.show_billing_banner !== false && (
             <div className="flex items-center justify-between px-4 py-2 bg-blue-600 text-white text-sm">
               <span>
                 Tu período de prueba vence en <strong>{trialDaysLeft} {trialDaysLeft === 1 ? 'día' : 'días'}</strong>.

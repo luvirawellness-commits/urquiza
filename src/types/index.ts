@@ -13,6 +13,7 @@ export interface Tenant {
   created_at: string
   trial_ends_at?: string | null
   last_plan?: string | null
+  show_billing_banner?: boolean | null
 }
 
 export interface UserTenant {

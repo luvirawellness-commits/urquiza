@@ -378,6 +378,9 @@ export default function SuperAdmin() {
   // Directory toggle
   const [directoryBusyId, setDirectoryBusyId] = useState<string | null>(null)
 
+  // Banner toggle
+  const [bannerBusyId, setBannerBusyId] = useState<string | null>(null)
+
   // Soporte modal
   const [soporteTenant, setSoporteTenant] = useState<TenantRow | null>(null)
   const [cleanupReminder, setCleanupReminder] = useState<string | null>(null)
@@ -468,6 +471,13 @@ export default function SuperAdmin() {
     setDirectoryBusyId(null)
   }
 
+  async function handleToggleBanner(id: string, current: boolean) {
+    setBannerBusyId(id)
+    await supabase.from('tenants').update({ show_billing_banner: !current }).eq('id', id)
+    await qc.invalidateQueries({ queryKey: ['sa-tenants'] })
+    setBannerBusyId(null)
+  }
+
   async function handleDesactivar(id: string) {
     setBusyId(id); setBusyAction('desactivar')
     const yesterday = new Date()
@@ -555,6 +565,7 @@ export default function SuperAdmin() {
                   <th className="text-left px-4 py-3 font-medium">Suscripción</th>
                   <th className="text-right px-4 py-3 font-medium">Usuarios</th>
                   <th className="text-right px-4 py-3 font-medium">Clientes</th>
+                  <th className="text-center px-4 py-3 font-medium">Banner</th>
                   <th className="text-center px-4 py-3 font-medium">Directorio</th>
                   <th className="text-right px-4 py-3 font-medium">Acciones</th>
                   <th className="px-4 py-3 font-medium">Gestionar</th>
@@ -622,6 +633,29 @@ export default function SuperAdmin() {
 
                       {/* Clientes */}
                       <td className="px-4 py-3 text-right font-medium text-gray-700">{clientCounts[t.id] ?? 0}</td>
+
+                      {/* Banner toggle */}
+                      <td className="px-4 py-3 text-center">
+                        <button
+                          title="Mostrar u ocultar el banner de suscripción en el panel del tenant"
+                          disabled={bannerBusyId === t.id}
+                          onClick={() => handleToggleBanner(t.id, t.show_billing_banner !== false)}
+                          className={cn(
+                            'relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none disabled:opacity-50 disabled:cursor-not-allowed',
+                            t.show_billing_banner !== false ? 'bg-blue-500' : 'bg-gray-200',
+                          )}
+                        >
+                          <span
+                            className={cn(
+                              'inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200',
+                              t.show_billing_banner !== false ? 'translate-x-4' : 'translate-x-0',
+                            )}
+                          />
+                        </button>
+                        <p className="text-[10px] text-muted-foreground mt-0.5">
+                          {t.show_billing_banner !== false ? 'Visible' : 'Oculto'}
+                        </p>
+                      </td>
 
                       {/* Directorio toggle */}
                       <td className="px-4 py-3 text-center">
