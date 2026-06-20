@@ -14,6 +14,7 @@ export interface Tenant {
   trial_ends_at?: string | null
   last_plan?: string | null
   show_billing_banner?: boolean | null
+  caja_fondo_fijo?: number | null
 }
 
 export interface UserTenant {

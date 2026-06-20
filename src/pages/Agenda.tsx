@@ -233,25 +233,25 @@ function DayApptBlock({
     >
       <div className="px-1.5 py-0.5 h-full overflow-hidden">
         {isBlock ? (
-          <p className="text-[11px] font-medium leading-tight mt-0.5" style={{ color: bloqueoStyle.text }}>
+          <p className="text-[13px] font-medium leading-tight mt-0.5" style={{ color: bloqueoStyle.text }}>
             {blockLabel}{blockMotivo ? ` · ${blockMotivo}` : ''}
           </p>
         ) : isCancelled ? (
           <>
-            <p className="text-[11px] font-medium text-gray-400 truncate leading-tight line-through">{clientName(appt)}</p>
-            <p className="text-[10px] text-gray-400 leading-tight">{appt.status === 'cancelled' ? 'Cancelado' : 'No se presentó'}</p>
+            <p className="text-[13px] font-medium text-gray-400 truncate leading-tight line-through">{clientName(appt)}</p>
+            <p className="text-[12px] text-gray-400 leading-tight">{appt.status === 'cancelled' ? 'Cancelado' : 'No se presentó'}</p>
           </>
         ) : (
           <>
             <div className="flex items-center gap-1">
               <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${STATUS_DOT[appt.status]}`} />
-              <p className="text-[11px] font-semibold text-gray-800 truncate leading-tight">{clientName(appt)}</p>
+              <p className="text-[13px] font-semibold text-gray-800 truncate leading-tight">{clientName(appt)}</p>
             </div>
             {height > 36 && (
-              <p className="text-[10px] text-gray-500 truncate leading-tight">{appt.service?.name}</p>
+              <p className="text-[12px] text-gray-500 truncate leading-tight">{appt.service?.name}</p>
             )}
             {height > 54 && (
-              <p className="text-[10px] text-gray-400 leading-tight">{appt.duration_minutes} min</p>
+              <p className="text-[12px] text-gray-400 leading-tight">{appt.duration_minutes} min</p>
             )}
           </>
         )}
