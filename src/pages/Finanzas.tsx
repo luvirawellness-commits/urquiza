@@ -514,7 +514,7 @@ function SectionMovimientosHoy() {
 
 // ── Cierre de Caja modal ───────────────────────────────────────────────────────
 function ModalCierreCaja({ onClose }: { onClose: () => void }) {
-  const { user } = useAuth()
+  const { user, currentTenant } = useAuth()
   const { data: txs, isLoading } = useTodayTransactions()
   const insertTx = useInsertTransaction()
   const qc = useQueryClient()
@@ -523,6 +523,8 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const [ajusteAmt, setAjusteAmt] = useState('0')
   const [ajustePct, setAjustePct] = useState('0')
   const [notas, setNotas] = useState('')
+  const [contado, setContado] = useState('')
+  const [confirmDiff, setConfirmDiff] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
@@ -548,6 +550,12 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
     return { ingresos, egresos, efectivo, pmBreakdown }
   }, [txs])
 
+  const fondoFijo = currentTenant?.caja_fondo_fijo ?? 0
+  const totalEsperado = fondoFijo + totals.efectivo
+  const contadoNum = contado !== '' ? Number(contado) : null
+  const diferencia = contadoNum !== null ? contadoNum - totalEsperado : null
+  const hayDiferencia = diferencia !== null && diferencia !== 0
+
   const depositarNum = Number(depositar) || 0
   const ajusteAmtNum = Number(ajusteAmt) || 0
   const ajustePctNum = Number(ajustePct) || 0
@@ -561,12 +569,17 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setError(null)
     try {
+      let description = `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`
+      if (contadoNum !== null) {
+        const difLabel = diferencia! > 0 ? 'sobrante' : 'faltante'
+        description += ` · Conteo físico: ${formatCurrency(contadoNum)}, Esperado: ${formatCurrency(totalEsperado)}, Diferencia: ${formatCurrency(Math.abs(diferencia!))} (${difLabel})`
+      }
       const depositPayload = {
         type: 'expense' as const,
         category: 'cash_transfer',
         amount: depositarNum,
         payment_method: 'cash',
-        description: `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`,
+        description,
         date: today,
         user_id: user!.id,
         status: 'paid',
@@ -654,11 +667,56 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
               )}
             </div>
 
+            {/* Verificación de efectivo en caja */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-semibold text-plum-800">Verificación de efectivo en caja</h3>
+              <div className="bg-gray-50 border rounded-lg px-3 py-2.5 space-y-1.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">Fondo de caja</span>
+                  <span className="tabular-nums font-medium text-gray-700">{formatCurrency(fondoFijo)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">+ Efectivo del día</span>
+                  <span className="tabular-nums font-medium text-gray-700">{formatCurrency(totals.efectivo)}</span>
+                </div>
+                <div className="flex items-center justify-between border-t pt-1.5">
+                  <span className="font-semibold text-plum-800">= Total esperado en caja</span>
+                  <span className="tabular-nums font-bold text-plum-800">{formatCurrency(totalEsperado)}</span>
+                </div>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Monto contado físicamente</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="1"
+                  placeholder={`${totalEsperado.toFixed(2)}`}
+                  value={contado}
+                  onChange={(e) => { setContado(e.target.value); setConfirmDiff(false) }}
+                />
+              </div>
+              {contado !== '' && diferencia !== null && (
+                diferencia === 0 ? (
+                  <div className="flex items-center gap-2 text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                    <span>✅</span>
+                    <span className="font-medium">Coincide con lo esperado</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                    <span>⚠️</span>
+                    <span className="font-medium">
+                      Diferencia: {formatCurrency(Math.abs(diferencia))} ({diferencia > 0 ? 'sobrante' : 'faltante'})
+                    </span>
+                  </div>
+                )
+              )}
+            </div>
+
             {/* Declaración de efectivo */}
             <div className="space-y-3">
               <h3 className="text-sm font-semibold text-plum-800">Declaración de efectivo</h3>
               <div className="flex items-center justify-between text-sm">
-                <span className="text-muted-foreground">Efectivo en caja</span>
+                <span className="text-muted-foreground">Efectivo del día</span>
                 <span className="font-semibold text-plum-800 tabular-nums">{formatCurrency(totals.efectivo)}</span>
               </div>
               <div className="grid grid-cols-1 gap-3">
@@ -694,12 +752,21 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
 
             <div className="flex gap-2 pt-1">
               <Button variant="outline" onClick={onClose} className="flex-1">Cancelar</Button>
-              <Button onClick={handleConfirm} className="flex-1"
-                disabled={busy || !depositar}>
-                {busy
-                  ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Cerrando...</>
-                  : 'Cerrar caja del día'}
-              </Button>
+              {hayDiferencia && !confirmDiff ? (
+                <Button
+                  className="flex-1 bg-amber-500 hover:bg-amber-600 text-white"
+                  disabled={busy || !depositar}
+                  onClick={() => setConfirmDiff(true)}
+                >
+                  Cerrar con diferencia ⚠️
+                </Button>
+              ) : (
+                <Button onClick={handleConfirm} className="flex-1" disabled={busy || !depositar}>
+                  {busy
+                    ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Cerrando...</>
+                    : hayDiferencia ? 'Confirmar igualmente' : 'Cerrar caja del día'}
+                </Button>
+              )}
             </div>
           </div>
         )}
