@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import { ShoppingCart, Loader2, Package, Search } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useSellableSupplies } from '@/hooks/useSupplies'
@@ -51,7 +52,7 @@ function VenderProductoModal({
         category: 'product',
         amount: unitPrice * q,
         payment_method: pm,
-        date: new Date().toISOString().split('T')[0],
+        date: getArgentinaDateString(),
         user_id: profile!.id,
         description: `Venta producto: ${product.name} x${q}`,
         status: 'paid',

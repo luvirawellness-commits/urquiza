@@ -1,4 +1,5 @@
 import { jsPDF } from 'jspdf'
+import { getArgentinaDateString } from './dateUtils'
 import QRCode from 'qrcode'
 
 export interface InvoicePDFData {
@@ -48,8 +49,8 @@ function fmtYYYYMMDD(s: string): string {
 
 function buildQrUrl(data: InvoicePDFData): string {
   const fecha = data.date
-    ? new Date(data.date).toISOString().slice(0, 10)
-    : new Date().toISOString().slice(0, 10)
+    ? getArgentinaDateString(new Date(data.date))
+    : getArgentinaDateString()
   const cuitStr = data.cuit_emisor.replace(/\D/g, '')
   const tipoDocRec = data.client_cuit ? 80 : 99
   const nroDocRec  = data.client_cuit ? parseInt(data.client_cuit.replace(/\D/g, ''), 10) : 0

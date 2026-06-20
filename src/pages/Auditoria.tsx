@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import { Loader2, ScrollText, FileDown } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
@@ -57,9 +58,9 @@ export default function Auditoria() {
   const [fromDate, setFromDate] = useState(() => {
     const d = new Date()
     d.setDate(d.getDate() - 7)
-    return d.toISOString().split('T')[0]
+    return getArgentinaDateString(d)
   })
-  const [toDate, setToDate] = useState(() => new Date().toISOString().split('T')[0])
+  const [toDate, setToDate] = useState(() => getArgentinaDateString())
   const [moduleFilter, setModuleFilter] = useState('')
   const [actionFilter, setActionFilter] = useState('')
   const [userFilter, setUserFilter] = useState('')

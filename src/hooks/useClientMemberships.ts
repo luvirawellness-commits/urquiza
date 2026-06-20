@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
 import type { ClientMembership, MembershipPlan } from '@/types'
+import { getArgentinaDateString } from '../utils/dateUtils'
 
 export function useUpdateMembershipPrice() {
   const tenantId = useTenantId()
@@ -68,7 +69,7 @@ export function useClientActiveMemberships(clientId: string | null) {
     queryKey: ['client-active-memberships', tenantId, clientId],
     queryFn: async () => {
       if (!clientId) return [] as ClientMembership[]
-      const today = new Date().toISOString().split('T')[0]
+      const today = getArgentinaDateString()
 
       const { data: direct, error: e1 } = await supabase
         .from('client_memberships')
@@ -145,7 +146,7 @@ export function useSellMembership() {
     mutationFn: async (input: SellMembershipInput) => {
       const d = new Date(input.startDate + 'T00:00:00')
       d.setDate(d.getDate() + input.validityDays)
-      const expiresAt = d.toISOString().split('T')[0]
+      const expiresAt = getArgentinaDateString(d)
       const { data: cm, error: cmErr } = await supabase
         .from('client_memberships')
         .insert({

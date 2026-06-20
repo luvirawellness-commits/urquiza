@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import {
   CreditCard, ChevronDown, ChevronUp, X, CheckCircle, Loader2, Users,
 } from 'lucide-react'
@@ -44,7 +45,7 @@ export default function VenderMembresiaModal({
 }: Props) {
   const { user, profile } = useAuth()
   const tenantId = useTenantId()
-  const today = new Date().toISOString().split('T')[0]
+  const today = getArgentinaDateString()
   const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
 
   const [phase, setPhase] = useState<'form' | 'confirm' | 'done'>('form')
@@ -83,7 +84,7 @@ export default function VenderMembresiaModal({
     if (!selectedPlan || !startDate) return ''
     const d = new Date(startDate + 'T00:00:00')
     d.setDate(d.getDate() + selectedPlan.validity_days)
-    return d.toISOString().split('T')[0]
+    return getArgentinaDateString(d)
   })()
 
   const sessionsAfterSale = selectedPlan

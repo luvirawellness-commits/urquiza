@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { getArgentinaMonthEnd } from '../utils/dateUtils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -204,7 +205,7 @@ export function useCCSSByMonth(yearMonth: string) {
 export function useCompletedApptsByTherapist(yearMonth: string) {
   const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
-  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  const endDate = getArgentinaMonthEnd(y, m)
   return useQuery({
     queryKey: ['completed-appts-therapist-month', tenantId, yearMonth],
     queryFn: async () => {
@@ -223,7 +224,7 @@ export function useCompletedApptsByTherapist(yearMonth: string) {
 export function useNonCancelledApptsByTherapist(yearMonth: string) {
   const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
-  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  const endDate = getArgentinaMonthEnd(y, m)
   return useQuery({
     queryKey: ['non-cancelled-appts-therapist-month', tenantId, yearMonth],
     queryFn: async () => {
@@ -243,7 +244,7 @@ export function useNonCancelledApptsByTherapist(yearMonth: string) {
 export function useAbsencesByMonth(yearMonth: string) {
   const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
-  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  const endDate = getArgentinaMonthEnd(y, m)
   return useQuery({
     queryKey: ['absences-month', tenantId, yearMonth],
     queryFn: async () => {
@@ -277,7 +278,7 @@ export function useHolidaysForYear(year: number) {
 export function useHolidaysForMonth(yearMonth: string) {
   const tenantId = useTenantId()
   const [y, m] = yearMonth.split('-').map(Number)
-  const endDate = new Date(y, m, 0).toISOString().split('T')[0]
+  const endDate = getArgentinaMonthEnd(y, m)
   return useQuery({
     queryKey: ['holidays-month', tenantId, yearMonth],
     queryFn: async () => {
@@ -357,7 +358,7 @@ export function useRRHHCostByMonths(
     for (const yearMonth of months) {
       const [y, m] = yearMonth.split('-').map(Number)
       const startD = `${yearMonth}-01`
-      const endD = new Date(y, m, 0).toISOString().split('T')[0]
+      const endD = getArgentinaMonthEnd(y, m)
       let sueldos = 0
       for (const emp of employees.filter(e => e.active)) {
         const schedHours = calcMonthScheduleHours(emp.user?.schedule, y, m) || emp.expected_monthly_hours

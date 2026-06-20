@@ -6,6 +6,7 @@ import {
   Plus, Pencil, Loader2, Download, Check, ChevronLeft, ChevronRight, UserCheck, Trash2,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import {
   useJobPositions, useEmployeeProfiles, useAllTenantUsers,
   useAbsences, useCCSSByMonth, useCompletedApptsByTherapist, useAbsencesByMonth, useNonCancelledApptsByTherapist,
@@ -293,7 +294,7 @@ function EmpleadoModal({
   const updateEmp = useUpdateEmployee()
 
   const [form, setForm] = useState<EmpleadoForm>({
-    user_id: '', job_position_id: '', start_date: new Date().toISOString().split('T')[0],
+    user_id: '', job_position_id: '', start_date: getArgentinaDateString(),
     expected_monthly_hours: '160',
     productivity_threshold_1: '', productivity_bonus_1: '',
     productivity_threshold_2: '', productivity_bonus_2: '',
@@ -318,7 +319,7 @@ function EmpleadoModal({
       })
     } else {
       setForm({
-        user_id: '', job_position_id: '', start_date: new Date().toISOString().split('T')[0],
+        user_id: '', job_position_id: '', start_date: getArgentinaDateString(),
         expected_monthly_hours: '160',
         productivity_threshold_1: '', productivity_bonus_1: '',
         productivity_threshold_2: '', productivity_bonus_2: '',
@@ -1037,7 +1038,7 @@ function AusenciaModal({ open, onClose }: { open: boolean; onClose: () => void }
 
   const [form, setForm] = useState({
     user_id: isTherapist && myProfile ? myProfile.user_id : '',
-    date: new Date().toISOString().split('T')[0],
+    date: getArgentinaDateString(),
     type: 'absence' as const,
     hours_absent: '8',
     reason: '',
@@ -1049,7 +1050,7 @@ function AusenciaModal({ open, onClose }: { open: boolean; onClose: () => void }
     if (open) {
       const autoUserId = isTherapist && myProfile ? myProfile.user_id : ''
       setForm({
-        user_id: autoUserId, date: new Date().toISOString().split('T')[0],
+        user_id: autoUserId, date: getArgentinaDateString(),
         type: 'absence', hours_absent: '8', reason: '', deduct_from_salary: true,
       })
       setError('')

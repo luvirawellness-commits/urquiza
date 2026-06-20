@@ -37,6 +37,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
 import type { Transaction, ServiceCostItem } from '@/types'
+import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
 type Tab = 'caja' | 'movimientos' | 'pl'
 
@@ -176,7 +177,7 @@ function SectionRegistrarCobro() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!clientId || !serviceId || !amount) return
-    const today = new Date().toISOString().split('T')[0]
+    const today = getArgentinaDateString()
     try {
       await insertTx.mutateAsync({
         type: 'income',
@@ -317,7 +318,7 @@ function SectionGastosDelDia() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!amount || !description) return
-    const today = new Date().toISOString().split('T')[0]
+    const today = getArgentinaDateString()
     try {
       await insertTx.mutateAsync({
         type: 'expense',
@@ -525,7 +526,7 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
 
-  const today = new Date().toISOString().split('T')[0]
+  const today = getArgentinaDateString()
 
   const totals = useMemo(() => {
     if (!txs) return { ingresos: 0, egresos: 0, efectivo: 0, pmBreakdown: {} as Record<string, number> }
@@ -710,7 +711,7 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
 function TabMovimientos() {
   const now = new Date()
   const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
-  const today = now.toISOString().split('T')[0]
+  const today = getArgentinaDateString(now)
 
   const [dateFrom, setDateFrom]   = useState(currentMonthStart)
   const [dateTo,   setDateTo]     = useState(today)
@@ -1684,7 +1685,7 @@ function TabPL() {
   const startDate = `${months[0]}-01`
   const endDate = useMemo(() => {
     const [y, m] = months[months.length - 1].split('-').map(Number)
-    return new Date(y, m, 0).toISOString().split('T')[0]
+    return getArgentinaMonthEnd(y, m)
   }, [months])
 
   const { data: txs, isLoading: txLoading } = useTransactionsRange(startDate, endDate, !allTenants)
@@ -2091,7 +2092,7 @@ function SectionProductividadOperativa({
     return months.map((yearMonth) => {
       const [y, m] = yearMonth.split('-').map(Number)
       const monthStart = `${yearMonth}-01`
-      const monthEnd = new Date(y, m, 0).toISOString().split('T')[0]
+      const monthEnd = getArgentinaMonthEnd(y, m)
       const monthAbsences = allAbsences.filter((a) => a.date >= monthStart && a.date <= monthEnd)
       const hourlyEmps = employees.filter((e) => e.active && e.position?.contract_type === 'hourly')
       const employeeDetails: EmpMonthDetail[] = hourlyEmps.map((emp) => {

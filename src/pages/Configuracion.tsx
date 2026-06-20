@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import { Plus, Trash2, Pencil, Loader2, Package, PackagePlus, ClipboardList, ChevronDown, ChevronUp, Check, TrendingUp, RotateCcw, FileDown } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
@@ -731,7 +732,7 @@ function IngresarStockModal({ open, onClose, supplies }: {
   useEffect(() => {
     if (open) {
       setSupplyId(''); setQty('1'); setUnitCost(''); setProveedor(''); setNotes(''); setError('')
-      setFecha(new Date().toISOString().split('T')[0])
+      setFecha(getArgentinaDateString())
     }
   }, [open])
 
@@ -743,7 +744,7 @@ function IngresarStockModal({ open, onClose, supplies }: {
     if (quantity <= 0) { setError('Cantidad inválida'); return }
     setError('')
     try {
-      const today = new Date().toISOString().split('T')[0]
+      const today = getArgentinaDateString()
       const noteParts = [
         proveedor ? `Proveedor: ${proveedor}` : null,
         fecha && fecha !== today ? `Fecha de ingreso: ${fecha}` : null,

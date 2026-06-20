@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dialog'
 import { cn, formatTime, formatDate, formatCurrency } from '@/lib/utils'
 import type { Appointment, AppointmentStatus, Client } from '@/types'
+import { getArgentinaDateString } from '../utils/dateUtils'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -67,7 +68,7 @@ type TurnoPrefill = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function dateKey(d: Date): string {
-  return d.toISOString().split('T')[0]
+  return getArgentinaDateString(d)
 }
 
 function timeToY(h: number, m: number): number {
@@ -356,7 +357,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
   async function handleConfirm() {
     setBusy(true); setError(null)
-    const today = new Date().toISOString().split('T')[0]
+    const today = getArgentinaDateString()
     try {
       if (paymentType === 'efectivo_digital') {
         const desc = buildDescription()
@@ -991,7 +992,7 @@ function NuevoTurnoModal({
     client_id: '', service_id: '',
     therapist_id: prefill?.therapistId ?? '',
     duration_minutes: 60, box_number: 1,
-    date: prefill?.date ?? new Date().toISOString().split('T')[0],
+    date: prefill?.date ?? getArgentinaDateString(),
     time: prefill?.time ?? '10:00',
     deposit_amount: '', deposit_paid: false, notes: '',
   })

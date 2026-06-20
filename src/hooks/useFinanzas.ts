@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
 import { Appointment, Transaction } from '@/types'
+import { getArgentinaDateString } from '../utils/dateUtils'
 
 export function useTransactions(month?: string) {
   const tenantId = useTenantId()
@@ -31,7 +32,7 @@ export function useTransactions(month?: string) {
 
 export function useTodayTransactions() {
   const tenantId = useTenantId()
-  const today = new Date().toISOString().split('T')[0]
+  const today = getArgentinaDateString()
   return useQuery({
     queryKey: ['transactions', tenantId, 'today', today],
     queryFn: async () => {
@@ -51,7 +52,7 @@ export function useTodayTransactions() {
 
 export function useTodayMetrics() {
   const tenantId = useTenantId()
-  const today = new Date().toISOString().split('T')[0]
+  const today = getArgentinaDateString()
   return useQuery({
     queryKey: ['today-metrics', tenantId, today],
     queryFn: async () => {
@@ -275,7 +276,7 @@ export function useMovimientosCaja(dateFrom: string, dateTo: string) {
 
 export function useLastCajaClose() {
   const tenantId = useTenantId()
-  const today = new Date().toISOString().split('T')[0]
+  const today = getArgentinaDateString()
   return useQuery({
     queryKey: ['last-caja-close', tenantId, today],
     queryFn: async () => {

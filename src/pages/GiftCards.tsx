@@ -1,4 +1,5 @@
 ﻿import { useState } from 'react'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import { Gift, Loader2, Download, FileText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import InvoiceModal from '@/components/InvoiceModal'
@@ -19,7 +20,7 @@ const selectCls =
 function defaultExpiry(): string {
   const d = new Date()
   d.setMonth(d.getMonth() + 6)
-  return d.toISOString().split('T')[0]
+  return getArgentinaDateString(d)
 }
 
 type GeneratedGiftCard = {
