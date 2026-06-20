@@ -1,0 +1,9 @@
+# Supabase project configuration
+# https://supabase.com/docs/reference/cli/config
+project_id = "qklmedcvjacblxngsikl"
+
+# mp-webhook receives unauthenticated POST requests from MercadoPago.
+# Signature authenticity is verified via HMAC-SHA256 (MP_WEBHOOK_SECRET)
+# inside the function itself — JWT verification is intentionally disabled.
+[functions.mp-webhook]
+verify_jwt = false
