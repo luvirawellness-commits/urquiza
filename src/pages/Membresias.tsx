@@ -155,7 +155,7 @@ function MembershipModal({ open, onClose, plan, tenantId, services }: {
         active: form.active,
       }
       if (plan) {
-        const { error } = await supabase.from('memberships').update(payload).eq('id', plan.id)
+        const { error } = await supabase.from('memberships').update(payload).eq('id', plan.id).eq('tenant_id', tenantId)
         if (error) throw error
       } else {
         const { error } = await supabase.from('memberships').insert(payload)
@@ -516,7 +516,7 @@ export default function Membresias() {
 
   const toggleMutation = useMutation({
     mutationFn: async ({ id, active }: { id: string; active: boolean }) => {
-      const { error } = await supabase.from('memberships').update({ active }).eq('id', id)
+      const { error } = await supabase.from('memberships').update({ active }).eq('id', id).eq('tenant_id', tenantId)
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-memberships'] }),
@@ -553,13 +553,14 @@ export default function Membresias() {
         .from('client_memberships')
         .select('*', { count: 'exact', head: true })
         .eq('membership_id', deleteTarget.id)
+        .eq('tenant_id', tenantId)
         .eq('status', 'active')
       if (error) throw error
       if ((count ?? 0) > 0) {
         setDeleteError(`No se puede eliminar este plan porque tiene ${count} membresía${count === 1 ? '' : 's'} activa${count === 1 ? '' : 's'}. Desactivalo en su lugar.`)
         return
       }
-      const { error: delErr } = await supabase.from('memberships').delete().eq('id', deleteTarget.id)
+      const { error: delErr } = await supabase.from('memberships').delete().eq('id', deleteTarget.id).eq('tenant_id', tenantId)
       if (delErr) throw delErr
       await qc.invalidateQueries({ queryKey: ['admin-memberships'] })
       await qc.invalidateQueries({ queryKey: ['membership-plans'] })

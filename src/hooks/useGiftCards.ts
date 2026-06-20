@@ -137,6 +137,7 @@ export interface ValidatedGiftCard {
 }
 
 export function useValidateGiftCard() {
+  const tenantId = useTenantId()
   return useMutation({
     mutationFn: async ({
       code, serviceId, durationMinutes,
@@ -145,6 +146,7 @@ export function useValidateGiftCard() {
         .from('gift_cards')
         .select('id, status, service_id, duration_minutes, amount, expires_at')
         .eq('code', code.toUpperCase().trim())
+        .eq('tenant_id', tenantId)
         .maybeSingle()
 
       if (error) throw new Error('Error al buscar el código')
@@ -171,17 +173,22 @@ export function useRedeemGiftCard() {
     mutationFn: async ({
       giftCardId, clientId, appointmentId,
     }: { giftCardId: string; clientId: string; appointmentId: string }) => {
-      const { error } = await supabase
+      const { error } = await supabase.rpc('redeem_gift_card', {
+        p_gift_card_id: giftCardId,
+        p_tenant_id: tenantId,
+      })
+      if (error) throw new Error('Esta gift card ya fue utilizada o no está activa')
+
+      // Status is now atomically 'used'; record client/appointment linkage
+      await supabase
         .from('gift_cards')
         .update({
-          status: 'used',
           used_at: new Date().toISOString(),
           used_by_client_id: clientId,
           used_in_appointment_id: appointmentId,
         })
         .eq('id', giftCardId)
         .eq('tenant_id', tenantId)
-      if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['gift_cards'] }),
   })

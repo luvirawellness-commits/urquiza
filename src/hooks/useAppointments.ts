@@ -257,39 +257,26 @@ export function useActiveClientMembership(clientId: string | null) {
 }
 
 export function useUseMembershipSession() {
+  const tenantId = useTenantId()
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async ({ membershipId, appointmentId }: { membershipId: string; appointmentId: string }) => {
-      const { data, error: fetchErr } = await supabase
-        .from('client_memberships')
-        .select('sessions_used, plan:memberships!fk_cm_membership_id(sessions_qty)')
-        .eq('id', membershipId)
-        .single()
-      if (fetchErr) throw fetchErr
-
-      const newSessionsUsed = (data.sessions_used ?? 0) + 1
-      const sessionsQty = (data.plan as unknown as { sessions_qty: number } | null)?.sessions_qty ?? 0
-
-      const updatePayload: Record<string, unknown> = { sessions_used: newSessionsUsed }
-      if (sessionsQty > 0 && newSessionsUsed >= sessionsQty) {
-        updatePayload.status = 'expired'
-      }
-
-      const { error: cmErr } = await supabase
-        .from('client_memberships')
-        .update(updatePayload)
-        .eq('id', membershipId)
-      if (cmErr) throw cmErr
+      const { error } = await supabase.rpc('increment_membership_session', {
+        p_membership_id: membershipId,
+        p_tenant_id: tenantId,
+      })
+      if (error) throw new Error('Esta membresía no tiene sesiones disponibles o está vencida')
 
       const { error: apptErr } = await supabase
         .from('appointments')
         .update({ client_membership_id: membershipId })
         .eq('id', appointmentId)
+        .eq('tenant_id', tenantId)
       if (apptErr) throw apptErr
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['active-membership'] })
-      qc.invalidateQueries({ queryKey: ['client-active-memberships'] })
+      qc.invalidateQueries({ queryKey: ['client_memberships'] })
+      qc.invalidateQueries({ queryKey: ['appointments'] })
     },
   })
 }
