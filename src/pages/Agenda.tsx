@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import {
@@ -8,8 +8,7 @@ import {
 } from '@/hooks/useAppointments'
 import { useClientActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
-import { useInsertTransaction } from '@/hooks/useFinanzas'
-import { useValidateGiftCard, useRedeemGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
+import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
 import { useClients, useCreateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
@@ -330,9 +329,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [gcValid, setGcValid] = useState<ValidatedGiftCard | null>(null)
   const [gcError, setGcError] = useState<string | null>(null)
   const validateGC = useValidateGiftCard()
-  const redeemGC = useRedeemGiftCard()
-
-  const insertTx = useInsertTransaction()
+  const qc = useQueryClient()
   const updateStatus = useUpdateAppointmentStatus()
 
   async function handleValidateGC() {
@@ -357,26 +354,42 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
   async function handleConfirm() {
     setBusy(true); setError(null)
-    const today = getArgentinaDateString()
     try {
+      const amounts: number[] = []
+      const methods: string[] = []
       if (paymentType === 'efectivo_digital') {
-        const desc = buildDescription()
         for (const row of splitRows) {
-          await insertTx.mutateAsync({
-            type: 'income', category: 'session', amount: Number(row.amount) || 0,
-            payment_method: row.method, description: desc,
-            date: today, user_id: user!.id, status: 'paid',
-            is_recurring: false, appointment_id: appt.id,
-          })
+          const amt = Number(row.amount) || 0
+          if (amt > 0) { amounts.push(amt); methods.push(row.method) }
         }
-      } else if (paymentType === 'gift_card' && gcValid) {
-        await redeemGC.mutateAsync({ giftCardId: gcValid.id, clientId: appt.client_id ?? '', appointmentId: appt.id })
       }
+
       const membershipId =
         paymentType === 'membresia' && membershipSubOpt === 'use_existing' && selectedMembershipId
           ? selectedMembershipId
-          : undefined
-      await updateStatus.mutateAsync({ id: appt.id, status: 'completed', client_membership_id: membershipId })
+          : null
+
+      const giftCardId = paymentType === 'gift_card' && gcValid ? gcValid.id : null
+
+      const { error } = await supabase.rpc('close_appointment_with_payment', {
+        p_appointment_id:       appt.id,
+        p_tenant_id:            currentTenantId!,
+        p_date:                 getArgentinaDateString(),
+        p_description:          buildDescription(),
+        p_user_id:              user!.id,
+        p_amounts:              amounts,
+        p_payment_methods:      methods,
+        p_client_membership_id: membershipId,
+        p_gift_card_id:         giftCardId,
+      })
+      if (error) throw new Error(error.message || 'Error al cerrar la sesión')
+
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['today-metrics'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
+      if (giftCardId) qc.invalidateQueries({ queryKey: ['gift_cards'] })
+
       if (isOwnerOrAdmin && currentTenantId) {
         setPaidAmount(paymentType === 'efectivo_digital' ? montoFinal : 0)
         setStep('prompt')
