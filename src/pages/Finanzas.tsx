@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect } from 'react'
+import { useState, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
@@ -36,6 +37,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { supabase } from '@/lib/supabase'
+import { canAccess } from '@/lib/permissions'
 import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
 import type { Transaction, ServiceCostItem } from '@/types'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
@@ -2428,25 +2430,17 @@ function EmpDetailTable({ employees }: { employees: EmpMonthDetail[] }) {
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Finanzas() {
-  const { profile, permissions } = useAuth()
+  const { profile } = useAuth()
+  const [searchParams] = useSearchParams()
 
-  // Use permissions from roles table; fall back to role-name check while loading
-  const showCaja = permissions !== null
-    ? permissions.caja === true
-    : ['owner', 'partner_admin', 'therapist'].includes(profile?.role ?? '')
+  const showCaja = profile ? canAccess(profile.role, 'caja') : false
+  const showPL   = profile ? canAccess(profile.role, 'finanzas') : false
 
-  const showPL = permissions !== null
-    ? permissions.finanzas === true
-    : ['owner', 'partner_admin'].includes(profile?.role ?? '')
-
-  const [activeTab, setActiveTab] = useState<Tab>('caja')
-
-  // Once permissions resolve, land on the first visible tab
-  useEffect(() => {
-    if (permissions !== null) {
-      if (!showCaja && showPL) setActiveTab('pl')
-    }
-  }, [permissions]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [activeTab, setActiveTab] = useState<Tab>(() => {
+    const t = searchParams.get('tab')
+    if (t === 'pl' || t === 'movimientos') return t as Tab
+    return 'caja'
+  })
 
   const visibleTabs = [
     { key: 'caja'        as Tab, label: 'Caja',                show: showCaja },

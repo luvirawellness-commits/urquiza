@@ -816,7 +816,7 @@ function Field({ label, value }: { label: string; value: string }) {
   )
 }
 
-function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose: () => void }) {
+function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: Appointment; onClose: () => void; readOnly?: boolean }) {
   const updateStatus = useUpdateAppointmentStatus()
   const [showPayment, setShowPayment] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
@@ -842,11 +842,13 @@ function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose:
             {appt.notes && <Field label="Motivo" value={appt.notes} />}
             <div className="flex justify-end gap-2 border-t pt-3">
               <Button variant="outline" size="sm" onClick={onClose}>Cerrar</Button>
-              <Button variant="destructive" size="sm"
-                onClick={() => changeStatus('cancelled')} disabled={updateStatus.isPending}>
-                {updateStatus.isPending && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
-                Eliminar bloqueo
-              </Button>
+              {!readOnly && (
+                <Button variant="destructive" size="sm"
+                  onClick={() => changeStatus('cancelled')} disabled={updateStatus.isPending}>
+                  {updateStatus.isPending && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
+                  Eliminar bloqueo
+                </Button>
+              )}
             </div>
           </div>
         </DialogContent>
@@ -892,7 +894,7 @@ function AppointmentDetailModal({ appt, onClose }: { appt: Appointment; onClose:
               )}
             </div>
 
-            {!TERMINAL.includes(appt.status) && (
+            {!readOnly && !TERMINAL.includes(appt.status) && (
               <div className="border-t pt-4 space-y-2">
                 <p className="text-xs font-medium text-muted-foreground">Cambiar estado:</p>
                 <div className="flex gap-2 flex-wrap">
@@ -1771,7 +1773,15 @@ export default function Agenda() {
   const [prefill, setPrefill] = useState<TurnoPrefill | null>(null)
   const [showCancelled, setShowCancelled] = useState(false)
 
+  const { user, profile } = useAuth()
+  const isTherapist = profile?.role === 'therapist'
+
   const { data: therapists = [] } = useTherapists()
+
+  // Therapist sees only their own column and appointments
+  const visibleTherapists = isTherapist && user
+    ? therapists.filter(t => t.id === user.id)
+    : therapists
 
   const [startISO, endISO] = useMemo(() => {
     const dk = dateKey(currentDate)
@@ -1788,7 +1798,10 @@ export default function Agenda() {
     return [`${dateKey(mon)}T00:00:00`, sun.toISOString()]
   }, [view, currentDate])
 
-  const { data: appointments = [], isLoading } = useAppointments(startISO, endISO)
+  const { data: rawAppointments = [], isLoading } = useAppointments(startISO, endISO)
+  const appointments = isTherapist && user
+    ? rawAppointments.filter(a => a.therapist_id === user.id)
+    : rawAppointments
 
   function goToday() {
     const d = new Date(); d.setHours(0,0,0,0); setCurrentDate(d)
@@ -1850,10 +1863,12 @@ export default function Agenda() {
           >
             {showCancelled ? 'Ocultar cancelados' : 'Ver cancelados'}
           </button>
-          <Button size="sm" onClick={() => { setPrefill(null); setIsSobreTurno(false); setNewTurnoOpen(true) }}>
-            <Plus className="w-4 h-4 mr-1.5" />
-            Nuevo turno
-          </Button>
+          {!isTherapist && (
+            <Button size="sm" onClick={() => { setPrefill(null); setIsSobreTurno(false); setNewTurnoOpen(true) }}>
+              <Plus className="w-4 h-4 mr-1.5" />
+              Nuevo turno
+            </Button>
+          )}
           <div className="flex border rounded-lg overflow-hidden text-sm">
             <button
               className={cn('px-3 py-1.5 font-medium transition-colors', view === 'day' ? 'bg-plum-800 text-white' : 'text-muted-foreground hover:bg-gray-50')}
@@ -1883,10 +1898,10 @@ export default function Agenda() {
         ) : view === 'day' ? (
           <DayView
             date={currentDate}
-            therapists={therapists}
+            therapists={visibleTherapists}
             appointments={appointments}
             showCancelled={showCancelled}
-            onSlotClick={setSlotTarget}
+            onSlotClick={isTherapist ? () => {} : setSlotTarget}
             onAppointmentClick={setSelectedAppt}
           />
         ) : (
@@ -1900,8 +1915,8 @@ export default function Agenda() {
         )}
       </div>
 
-      {/* Slot popup menu */}
-      {slotTarget && (
+      {/* Slot popup menu — hidden for therapist (read-only) */}
+      {!isTherapist && slotTarget && (
         <SlotMenu
           target={slotTarget}
           therapists={therapists}
@@ -1912,7 +1927,7 @@ export default function Agenda() {
         />
       )}
 
-      {newTurnoOpen && (
+      {!isTherapist && newTurnoOpen && (
         <NuevoTurnoModal
           open={newTurnoOpen}
           prefill={prefill}
@@ -1920,7 +1935,7 @@ export default function Agenda() {
           onClose={() => { setNewTurnoOpen(false); setSlotTarget(null); setPrefill(null) }}
         />
       )}
-      {bloqueoOpen && bloqueoSlot && (
+      {!isTherapist && bloqueoOpen && bloqueoSlot && (
         <BloqueoModal
           slot={bloqueoSlot}
           therapists={therapists}
@@ -1928,7 +1943,7 @@ export default function Agenda() {
         />
       )}
       {selectedAppt && (
-        <AppointmentDetailModal appt={selectedAppt} onClose={() => setSelectedAppt(null)} />
+        <AppointmentDetailModal appt={selectedAppt} onClose={() => setSelectedAppt(null)} readOnly={isTherapist} />
       )}
     </div>
   )

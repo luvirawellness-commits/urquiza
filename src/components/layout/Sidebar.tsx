@@ -2,30 +2,29 @@ import { NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, Users, CalendarDays, TrendingUp, Gift,
   ShoppingBag, ShoppingCart, Settings, LogOut, Menu, X, Users2, Building2,
-  ChevronDown, Loader2, Check, CreditCard, ScrollText, ShieldAlert, Receipt,
+  ChevronDown, Loader2, Check, CreditCard, ScrollText, ShieldAlert, Receipt, Wallet,
 } from 'lucide-react'
 import { useState } from 'react'
 import { useAuth } from '@/contexts/AuthContext'
 import { Avatar, AvatarFallback } from '@/components/ui/avatar'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { canAccess, type AppModule } from '@/lib/permissions'
 
-// permKeys: visible if ANY of the listed permission keys is true.
-// Items without permKeys are always visible (Dashboard, Clientes, Agenda).
-// roles[] is the fallback used while permissions are still loading (null).
-const navItems = [
-  { to: '/dashboard',  label: 'Dashboard',  icon: LayoutDashboard },
-  { to: '/clientes',   label: 'Clientes',   icon: Users },
-  { to: '/agenda',     label: 'Agenda',     icon: CalendarDays },
-  { to: '/finanzas',    label: 'Finanzas',    icon: TrendingUp,   permKeys: ['caja', 'finanzas'],  roles: ['owner', 'partner_admin', 'therapist'] },
-  { to: '/rrhh',        label: 'RRHH',        icon: Users2,       permKeys: ['rrhh'],              roles: ['owner', 'partner_admin'] },
-  { to: '/membresias',  label: 'Membresías',  icon: CreditCard,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
-  { to: '/auditoria',   label: 'Auditoría',   icon: ScrollText,   permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
-  { to: '/usuarios',    label: 'Usuarios',    icon: Users,                                         roles: ['owner', 'partner_admin'] },
-  { to: '/productos',   label: 'Productos',   icon: ShoppingBag,  permKeys: ['productos'],         roles: ['owner', 'partner_admin'] },
-  { to: '/gift-cards',  label: 'Gift Cards',  icon: Gift,         permKeys: ['gift_cards'],        roles: ['owner', 'partner_admin'] },
-  { to: '/compras',     label: 'Compras',     icon: ShoppingCart,                                  roles: ['owner', 'partner_admin'] },
-  { to: '/facturacion', label: 'Facturación', icon: Receipt,      permKeys: ['configuracion'],     roles: ['owner', 'partner_admin'] },
+const navItems: { to: string; label: string; icon: React.ComponentType<{ className?: string }>; module: AppModule }[] = [
+  { to: '/dashboard',       label: 'Dashboard',   icon: LayoutDashboard, module: 'dashboard' },
+  { to: '/clientes',        label: 'Clientes',    icon: Users,           module: 'clientes' },
+  { to: '/agenda',          label: 'Agenda',      icon: CalendarDays,    module: 'agenda' },
+  { to: '/finanzas',        label: 'Caja',        icon: Wallet,          module: 'caja' },
+  { to: '/finanzas?tab=pl', label: 'Finanzas',    icon: TrendingUp,      module: 'finanzas' },
+  { to: '/membresias',      label: 'Membresías',  icon: CreditCard,      module: 'membresias' },
+  { to: '/gift-cards',      label: 'Gift Cards',  icon: Gift,            module: 'gift_cards' },
+  { to: '/facturacion',     label: 'Facturación', icon: Receipt,         module: 'facturacion' },
+  { to: '/rrhh',            label: 'RRHH',        icon: Users2,          module: 'rrhh' },
+  { to: '/productos',       label: 'Productos',   icon: ShoppingBag,     module: 'productos' },
+  { to: '/compras',         label: 'Compras',     icon: ShoppingCart,    module: 'configuracion' },
+  { to: '/auditoria',       label: 'Auditoría',   icon: ScrollText,      module: 'configuracion' },
+  { to: '/usuarios',        label: 'Usuarios',    icon: Users2,          module: 'usuarios' },
 ]
 
 function TenantSwitcher() {
@@ -89,7 +88,7 @@ function TenantSwitcher() {
 }
 
 export function Sidebar() {
-  const { profile, signOut, permissions } = useAuth()
+  const { profile, signOut } = useAuth()
   const navigate = useNavigate()
   const [mobileOpen, setMobileOpen] = useState(false)
 
@@ -102,26 +101,15 @@ export function Sidebar() {
     ? profile.full_name.split(' ').map((n) => n[0]).slice(0, 2).join('').toUpperCase()
     : '?'
 
-  console.log('[DEBUG Sidebar] role:', profile?.role, '| permissions:', permissions)
+  const role = profile?.role ?? ''
 
-  // Use permissions from roles table; fall back to role[] while still loading (null)
-  const filteredNav = navItems.filter((item) => {
-    if (!item.permKeys) return true // Dashboard, Clientes, Agenda — always visible
-    if (profile?.role === 'super_admin') return true // super_admin sees all modules
-    if (permissions !== null) return item.permKeys.some((k) => permissions[k] === true)
-    // Fallback while permissions are loading
-    return !item.roles || item.roles.includes(profile?.role ?? '')
+  const filteredNav = navItems.filter(({ module }) => {
+    if (!profile) return false
+    if (role === 'super_admin' || role === 'owner') return true
+    return canAccess(role, module)
   })
 
-  console.log('[DEBUG Sidebar] filteredNav labels:', filteredNav.map((i) => i.label))
-
-  // Configuración admin: visible if role is owner, super_admin, or permissions.configuracion is set
-  const showAdminLink =
-    profile?.role === 'owner' ||
-    profile?.role === 'super_admin' ||
-    (permissions !== null && permissions['configuracion'] === true)
-
-  console.log('[DEBUG Sidebar] showAdminLink:', showAdminLink)
+  const showAdminLink = role === 'owner' || role === 'super_admin'
 
   const sidebarContent = (
     <div className="flex flex-col h-full">

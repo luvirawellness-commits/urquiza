@@ -1,6 +1,7 @@
-import { Navigate, Outlet } from 'react-router-dom'
+import { Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '@/contexts/AuthContext'
 import { ReactNode } from 'react'
+import { canAccess, getDefaultRouteForRole, type AppModule } from '@/lib/permissions'
 
 interface ProtectedRouteProps {
   children?: ReactNode
@@ -9,8 +10,26 @@ interface ProtectedRouteProps {
   anyPermission?: string[] // require ANY of these permission keys
 }
 
+// Maps URL base-path → AppModule for the module-level access guard
+const PATH_MODULE: Record<string, AppModule> = {
+  '/dashboard':          'dashboard',
+  '/agenda':             'agenda',
+  '/clientes':           'clientes',
+  '/finanzas':           'caja',
+  '/membresias':         'membresias',
+  '/gift-cards':         'gift_cards',
+  '/facturacion':        'facturacion',
+  '/rrhh':               'rrhh',
+  '/productos':          'productos',
+  '/compras':            'configuracion',
+  '/auditoria':          'configuracion',
+  '/usuarios':           'usuarios',
+  '/configuracion-admin':'configuracion',
+}
+
 export function ProtectedRoute({ children, roles, permission, anyPermission }: ProtectedRouteProps) {
   const { user, profile, loading, permissions } = useAuth()
+  const location = useLocation()
 
   if (loading) {
     return (
@@ -36,15 +55,22 @@ export function ProtectedRoute({ children, roles, permission, anyPermission }: P
     if (needsTerms) return <Navigate to="/aceptar-terminos" replace />
   }
 
-  // Owner and super_admin bypass every permission check
+  // Owner and super_admin bypass every permission/module check
   if (profile?.role === 'owner' || profile?.role === 'super_admin') {
     return children ? <>{children}</> : <Outlet />
   }
 
+  // Module-level access guard using static role→module map
+  if (profile) {
+    const basePath = '/' + location.pathname.split('/')[1]
+    const requiredModule = PATH_MODULE[basePath]
+    if (requiredModule && !canAccess(profile.role, requiredModule)) {
+      return <Navigate to={getDefaultRouteForRole(profile.role)} replace />
+    }
+  }
+
   // Permission-based checks (preferred over role names)
   if (permission !== undefined || anyPermission !== undefined) {
-    // If permissions haven't loaded yet, allow access — the sidebar already hides
-    // the nav item, and the page itself can show an empty state if needed
     if (permissions === null) return children ? <>{children}</> : <Outlet />
 
     const allowed = anyPermission
@@ -57,7 +83,7 @@ export function ProtectedRoute({ children, roles, permission, anyPermission }: P
 
   // Legacy role-based check
   if (roles && profile && !roles.includes(profile.role)) {
-    return <Navigate to="/dashboard" replace />
+    return <Navigate to={getDefaultRouteForRole(profile.role)} replace />
   }
 
   return children ? <>{children}</> : <Outlet />
