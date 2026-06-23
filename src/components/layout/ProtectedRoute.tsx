@@ -30,6 +30,12 @@ export function ProtectedRoute({ children, roles, permission, anyPermission }: P
 
   if (!user) return <Navigate to="/auth" replace />
 
+  // Terms acceptance gate — super_admin (platform operator) is exempt
+  if (profile && profile.role !== 'super_admin') {
+    const needsTerms = !profile.terms_accepted_at || profile.terms_version !== '1.0'
+    if (needsTerms) return <Navigate to="/aceptar-terminos" replace />
+  }
+
   // Owner and super_admin bypass every permission check
   if (profile?.role === 'owner' || profile?.role === 'super_admin') {
     return children ? <>{children}</> : <Outlet />

@@ -38,6 +38,8 @@ export interface UserProfile {
   avatar_url?: string
   active?: boolean
   created_at: string
+  terms_accepted_at?: string | null
+  terms_version?: string | null
 }
 
 export interface Client {

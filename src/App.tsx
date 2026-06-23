@@ -23,6 +23,7 @@ import Pago from '@/pages/Pago'
 import PagoExitoso from '@/pages/PagoExitoso'
 import PagoFallido from '@/pages/PagoFallido'
 import Facturacion from '@/pages/Facturacion'
+import AceptarTerminos from '@/pages/AceptarTerminos'
 
 function ProtectedLayout() {
   return (
@@ -40,6 +41,7 @@ export default function App() {
           <Routes>
             <Route path="/auth" element={<Auth />} />
             <Route path="/registro" element={<Registro />} />
+            <Route path="/aceptar-terminos" element={<AceptarTerminos />} />
             <Route path="/pago" element={<Pago />} />
             <Route path="/pago-exitoso" element={<PagoExitoso />} />
             <Route path="/pago-fallido" element={<PagoFallido />} />
