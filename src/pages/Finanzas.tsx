@@ -591,9 +591,9 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
       await insertTx.mutateAsync(depositPayload)
       qc.invalidateQueries({ queryKey: ['last-caja-close'] })
 
-      // Auto-adjust fondo when there was a discrepancy
-      if (diferencia !== null && diferencia !== 0 && currentTenantId) {
-        const nuevoFondo = Math.max(0, fondoFijo + diferencia)
+      // Always recalculate fondo: what's left after deposit (based on system records)
+      const nuevoFondo = Math.max(0, totalEsperado - depositarNum)
+      if (currentTenantId) {
         await supabase.from('tenants').update({ caja_fondo_fijo: nuevoFondo }).eq('id', currentTenantId)
         await refreshTenants()
       }
