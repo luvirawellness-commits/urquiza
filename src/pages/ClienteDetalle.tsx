@@ -2,11 +2,14 @@ import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft, Phone, Mail, Calendar, Hash, Loader2,
-  CreditCard, Plus, Users,
+  CreditCard, Plus, Users, History, DollarSign, Gift,
 } from 'lucide-react'
 import { useClient } from '@/hooks/useClients'
 import { useClients } from '@/hooks/useClients'
 import { useClientActiveMemberships, useAddBeneficiary } from '@/hooks/useClientMemberships'
+import { useClientAppointments } from '@/hooks/useAppointments'
+import { useClientTransactions } from '@/hooks/useFinanzas'
+import { useClientGiftCards } from '@/hooks/useGiftCards'
 import { useAuth } from '@/contexts/AuthContext'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -16,7 +19,7 @@ import { Label } from '@/components/ui/label'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { cn, formatDate, formatCurrency } from '@/lib/utils'
+import { cn, formatDate, formatCurrency, formatTime } from '@/lib/utils'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import type { ClientMembership } from '@/types'
 
@@ -238,6 +241,204 @@ function MembershipsSection({ clientId }: { clientId: string }) {
   )
 }
 
+// ── Status config shared ──────────────────────────────────────────────────────
+
+const APPT_STATUS_LABEL: Record<string, string> = {
+  completed: 'Completado',
+  cancelled: 'Cancelado',
+  no_show: 'No se presentó',
+  confirmed: 'Confirmado',
+  pending: 'Pendiente',
+  blocked: 'Bloqueado',
+}
+
+const APPT_STATUS_CLASS: Record<string, string> = {
+  completed: 'bg-green-100 text-green-700',
+  cancelled: 'bg-red-100 text-red-700',
+  no_show: 'bg-orange-100 text-orange-700',
+  confirmed: 'bg-blue-100 text-blue-700',
+  pending: 'bg-gray-100 text-gray-600',
+  blocked: 'bg-slate-100 text-slate-600',
+}
+
+const PAYMENT_METHOD_LABEL: Record<string, string> = {
+  cash: 'Efectivo',
+  transfer: 'Transferencia',
+  qr: 'QR',
+  mp: 'Mercado Pago',
+  debit: 'Débito',
+  credit: 'Crédito',
+}
+
+// ── AppointmentsSection ───────────────────────────────────────────────────────
+
+function AppointmentsSection({ clientId }: { clientId: string }) {
+  const { data: appointments, isLoading } = useClientAppointments(clientId)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+          <History className="w-4 h-4" /> Historial de turnos
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : !appointments || appointments.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">Sin turnos registrados</p>
+        ) : (
+          <div className="space-y-2">
+            {appointments.map((a) => (
+              <div key={a.id}
+                className="flex items-center justify-between gap-3 py-2 border-b last:border-b-0">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-plum-800 truncate">
+                    {a.service?.emoji ? `${a.service.emoji} ` : ''}{a.service?.name ?? '—'}
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatDate(a.scheduled_at)} · {formatTime(a.scheduled_at)}
+                    {a.therapist?.full_name ? ` · ${a.therapist.full_name}` : ''}
+                    {` · ${a.duration_minutes} min`}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  {a.price_charged != null && (
+                    <span className="text-sm font-medium text-plum-800">
+                      {formatCurrency(a.price_charged)}
+                    </span>
+                  )}
+                  <span className={cn(
+                    'text-xs font-semibold px-2 py-0.5 rounded-full',
+                    APPT_STATUS_CLASS[a.status] ?? 'bg-gray-100 text-gray-600',
+                  )}>
+                    {APPT_STATUS_LABEL[a.status] ?? a.status}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── TransactionsSection ───────────────────────────────────────────────────────
+
+function TransactionsSection({ clientId }: { clientId: string }) {
+  const { data: transactions, isLoading } = useClientTransactions(clientId)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+          <DollarSign className="w-4 h-4" /> Transacciones
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : !transactions || transactions.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">Sin transacciones registradas</p>
+        ) : (
+          <div className="space-y-2">
+            {transactions.map((t) => (
+              <div key={t.id}
+                className="flex items-center justify-between gap-3 py-2 border-b last:border-b-0">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{t.description}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {formatDate(t.date)}
+                    {t.payment_method
+                      ? ` · ${PAYMENT_METHOD_LABEL[t.payment_method] ?? t.payment_method}`
+                      : ''}
+                  </p>
+                </div>
+                <span className={cn(
+                  'text-sm font-semibold flex-shrink-0',
+                  t.type === 'income' ? 'text-green-700' : 'text-red-600',
+                )}>
+                  {t.type === 'income' ? '+' : '-'}{formatCurrency(t.amount)}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+// ── GiftCardsSection ──────────────────────────────────────────────────────────
+
+const GC_STATUS_LABEL: Record<string, string> = {
+  active: 'Activa',
+  used: 'Usada',
+  expired: 'Vencida',
+}
+
+const GC_STATUS_CLASS: Record<string, string> = {
+  active: 'bg-green-100 text-green-700',
+  used: 'bg-gray-100 text-gray-600',
+  expired: 'bg-red-100 text-red-700',
+}
+
+function GiftCardsSection({ clientId }: { clientId: string }) {
+  const { data: giftCards, isLoading } = useClientGiftCards(clientId)
+
+  return (
+    <Card>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-1.5">
+          <Gift className="w-4 h-4" /> Gift Cards
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <div className="flex justify-center py-4">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : !giftCards || giftCards.length === 0 ? (
+          <p className="text-sm text-muted-foreground py-2">Sin gift cards registradas</p>
+        ) : (
+          <div className="space-y-2">
+            {giftCards.map((gc) => (
+              <div key={gc.id}
+                className="flex items-center justify-between gap-3 py-2 border-b last:border-b-0">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium font-mono text-plum-800">{gc.code}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {gc.service?.emoji ? `${gc.service.emoji} ` : ''}{gc.service?.name ?? '—'}
+                    {gc.sold_at ? ` · Vendida ${formatDate(gc.sold_at)}` : ''}
+                    {gc.used_at ? ` · Usada ${formatDate(gc.used_at)}` : ''}
+                    {!gc.used_at && gc.expires_at ? ` · Vence ${formatDate(gc.expires_at)}` : ''}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className="text-sm font-semibold text-plum-800">
+                    {formatCurrency(gc.amount)}
+                  </span>
+                  <span className={cn(
+                    'text-xs font-semibold px-2 py-0.5 rounded-full',
+                    GC_STATUS_CLASS[gc.status] ?? 'bg-gray-100 text-gray-600',
+                  )}>
+                    {GC_STATUS_LABEL[gc.status] ?? gc.status}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ClienteDetalle() {
@@ -361,6 +562,9 @@ export default function ClienteDetalle() {
       </div>
 
       <MembershipsSection clientId={client.id} />
+      <AppointmentsSection clientId={client.id} />
+      <TransactionsSection clientId={client.id} />
+      <GiftCardsSection clientId={client.id} />
     </div>
   )
 }

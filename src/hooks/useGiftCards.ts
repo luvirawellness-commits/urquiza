@@ -130,6 +130,24 @@ export function useValidateGiftCard() {
   })
 }
 
+export function useClientGiftCards(clientId: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['client-gift-cards', tenantId, clientId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('gift_cards')
+        .select('id, code, amount, status, sold_at, used_at, expires_at, service:service_id(name, emoji)')
+        .eq('tenant_id', tenantId)
+        .eq('used_by_client_id', clientId)
+        .order('sold_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as unknown as GiftCard[]
+    },
+    enabled: !!clientId && !!tenantId,
+  })
+}
+
 export function useRedeemGiftCard() {
   const tenantId = useTenantId()
   const qc = useQueryClient()

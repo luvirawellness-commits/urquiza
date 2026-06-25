@@ -137,6 +137,36 @@ export function useInsertTransaction() {
   })
 }
 
+export function useClientTransactions(clientId: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['client-transactions', tenantId, clientId],
+    queryFn: async () => {
+      const { data: apptData } = await supabase
+        .from('appointments')
+        .select('id')
+        .eq('client_id', clientId)
+        .eq('tenant_id', tenantId)
+        .order('scheduled_at', { ascending: false })
+        .limit(50)
+
+      const apptIds = (apptData ?? []).map((a: { id: string }) => a.id)
+      if (apptIds.length === 0) return [] as Transaction[]
+
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, date, type, category, amount, payment_method, description, created_at')
+        .in('appointment_id', apptIds)
+        .eq('tenant_id', tenantId)
+        .order('date', { ascending: false })
+        .limit(20)
+      if (error) throw error
+      return (data ?? []) as Transaction[]
+    },
+    enabled: !!clientId && !!tenantId,
+  })
+}
+
 export function useClientMembership(clientId: string | null) {
   const tenantId = useTenantId()
   return useQuery({

@@ -281,6 +281,39 @@ export function useUseMembershipSession() {
   })
 }
 
+export type ClientAppointmentRow = {
+  id: string
+  scheduled_at: string
+  status: string
+  duration_minutes: number
+  price_charged: number | null
+  service: { name: string; emoji?: string | null } | null
+  therapist: { full_name: string } | null
+}
+
+export function useClientAppointments(clientId: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['client-appointments', tenantId, clientId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('appointments')
+        .select(`
+          id, scheduled_at, status, duration_minutes, price_charged,
+          service:services!fk_apt_service(name, emoji),
+          therapist:users!fk_apt_therapist(full_name)
+        `)
+        .eq('client_id', clientId)
+        .eq('tenant_id', tenantId)
+        .order('scheduled_at', { ascending: false })
+        .limit(20)
+      if (error) throw error
+      return (data ?? []) as unknown as ClientAppointmentRow[]
+    },
+    enabled: !!clientId && !!tenantId,
+  })
+}
+
 export function useUpdateClientAfterSession() {
   const qc = useQueryClient()
   return useMutation({
