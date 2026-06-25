@@ -7,3 +7,12 @@ project_id = "qklmedcvjacblxngsikl"
 # inside the function itself — JWT verification is intentionally disabled.
 [functions.mp-webhook]
 verify_jwt = false
+
+# whatsapp-webhook receives unauthenticated GET (verification) and POST (messages)
+# requests from Meta. Verification uses WHATSAPP_VERIFY_TOKEN env var.
+[functions.whatsapp-webhook]
+verify_jwt = false
+
+# whatsapp-reminders is called by a cron scheduler — no JWT available.
+[functions.whatsapp-reminders]
+verify_jwt = false
