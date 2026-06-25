@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useUpdateAppointment, useServices, useTherapists, type Therapist,
 } from '@/hooks/useAppointments'
-import { useClientActiveMemberships } from '@/hooks/useClientMemberships'
+import { useClientActiveMemberships, useTenantActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
-import { useClients, useCreateClient } from '@/hooks/useClients'
+import { useClients, useCreateClient, useClient, useUpdateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
 import { useCreateAbsence, useEmployeeSchedules, type WeeklySchedule } from '@/hooks/useRRHH'
@@ -197,12 +197,102 @@ const PAYMENT_METHODS = [
 type PaymentType = 'efectivo_digital' | 'membresia' | 'gift_card'
 type SplitRow = { method: string; amount: string }
 
+// ── MiniCalendar ──────────────────────────────────────────────────────────────
+
+function MiniCalendar({ currentDate, onSelect, onClose }: {
+  currentDate: Date
+  onSelect: (d: Date) => void
+  onClose: () => void
+}) {
+  const [month, setMonth] = useState(() => new Date(currentDate.getFullYear(), currentDate.getMonth(), 1))
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    function handle(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose()
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [onClose])
+
+  const MONTH_NAMES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+  const year = month.getFullYear()
+  const mon = month.getMonth()
+  const firstDay = new Date(year, mon, 1).getDay()
+  const startOffset = firstDay === 0 ? 6 : firstDay - 1
+  const daysInMonth = new Date(year, mon + 1, 0).getDate()
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const selKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}-${currentDate.getDate()}`
+  const cells: (number | null)[] = [
+    ...Array(startOffset).fill(null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ]
+  while (cells.length % 7 !== 0) cells.push(null)
+
+  return (
+    <div
+      ref={ref}
+      className="absolute top-full mt-1 left-0 z-50 bg-white rounded-xl shadow-xl border border-gray-200 p-3 w-64"
+    >
+      <div className="flex items-center justify-between mb-2">
+        <button
+          type="button"
+          onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() - 1, 1))}
+          className="p-1 hover:bg-gray-100 rounded-md text-plum-800"
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </button>
+        <span className="text-sm font-semibold text-plum-800 capitalize">
+          {MONTH_NAMES[mon]} {year}
+        </span>
+        <button
+          type="button"
+          onClick={() => setMonth(m => new Date(m.getFullYear(), m.getMonth() + 1, 1))}
+          className="p-1 hover:bg-gray-100 rounded-md text-plum-800"
+        >
+          <ChevronRight className="w-4 h-4" />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 mb-1">
+        {['Lu','Ma','Mi','Ju','Vi','Sá','Do'].map(d => (
+          <div key={d} className="text-center text-[10px] text-muted-foreground font-medium py-0.5">{d}</div>
+        ))}
+      </div>
+      <div className="grid grid-cols-7 gap-0.5">
+        {cells.map((day, i) => {
+          if (day === null) return <div key={i} />
+          const d = new Date(year, mon, day)
+          const isToday = d.getTime() === today.getTime()
+          const isSelected = `${year}-${mon}-${day}` === selKey
+          return (
+            <button
+              key={i}
+              type="button"
+              onClick={() => { onSelect(d); onClose() }}
+              className={cn(
+                'w-full aspect-square flex items-center justify-center text-xs rounded-md font-medium transition-colors',
+                isSelected
+                  ? 'bg-plum-800 text-white'
+                  : isToday
+                    ? 'bg-gold-100 text-plum-800 font-bold ring-1 ring-gold-400'
+                    : 'hover:bg-plum-50 text-gray-700',
+              )}
+            >
+              {day}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
 // ── DayApptBlock ──────────────────────────────────────────────────────────────
 
 function DayApptBlock({
-  appt, color, onClick,
+  appt, color, onClick, hasMembership = false,
 }: {
-  appt: Appointment; color: string; onClick: () => void
+  appt: Appointment; color: string; onClick: () => void; hasMembership?: boolean
 }) {
   const top = timeToY(new Date(appt.scheduled_at).getHours(), new Date(appt.scheduled_at).getMinutes())
   const height = Math.max(appt.duration_minutes * (HOUR_PX / 60), 22)
@@ -231,6 +321,13 @@ function DayApptBlock({
       }}
       onClick={(e) => { e.stopPropagation(); onClick() }}
     >
+      {hasMembership && !isBlock && !isCancelled && (
+        <div className="absolute top-0.5 right-0.5 z-10 pointer-events-none">
+          <span className="text-[8px] font-bold px-1 py-px rounded bg-gold-400 text-plum-900 leading-none">
+            MEM
+          </span>
+        </div>
+      )}
       <div className="px-1.5 py-0.5 h-full overflow-hidden">
         {isBlock ? (
           <p className="text-[13px] font-medium leading-tight mt-0.5" style={{ color: bloqueoStyle.text }}>
@@ -820,6 +917,36 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   const updateStatus = useUpdateAppointmentStatus()
   const [showPayment, setShowPayment] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
+  const [editingNotes, setEditingNotes] = useState(false)
+  const [notesValue, setNotesValue] = useState('')
+  const [notesSaving, setNotesSaving] = useState(false)
+
+  const { data: clientData } = useClient(appt.client_id ?? '')
+  const updateClientMutation = useUpdateClient()
+
+  useEffect(() => {
+    if (clientData) setNotesValue(clientData.notes ?? '')
+  }, [clientData?.id, clientData?.notes])
+
+  async function saveNotes() {
+    if (!clientData) return
+    setNotesSaving(true)
+    try {
+      await updateClientMutation.mutateAsync({
+        id: clientData.id,
+        first_name: clientData.first_name,
+        phone: clientData.phone ?? '',
+        last_name: clientData.last_name,
+        email: clientData.email,
+        birthdate: clientData.birthdate,
+        source: clientData.source,
+        notes: notesValue,
+      })
+      setEditingNotes(false)
+    } finally {
+      setNotesSaving(false)
+    }
+  }
 
   async function changeStatus(status: AppointmentStatus) {
     await updateStatus.mutateAsync({ id: appt.id, status })
@@ -888,8 +1015,60 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
               </div>
               {appt.notes && (
                 <div className="col-span-2">
-                  <p className="text-xs text-muted-foreground mb-1">Notas</p>
+                  <p className="text-xs text-muted-foreground mb-1">Notas del turno</p>
                   <p className="text-sm">{appt.notes}</p>
+                </div>
+              )}
+              {appt.client_id && (
+                <div className="col-span-2 border-t pt-3 mt-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs font-medium text-muted-foreground">Notas del cliente</p>
+                    {!editingNotes && !readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingNotes(true)}
+                        className="text-xs text-plum-700 hover:underline"
+                      >
+                        Editar
+                      </button>
+                    )}
+                  </div>
+                  {editingNotes ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={notesValue}
+                        onChange={e => setNotesValue(e.target.value)}
+                        rows={3}
+                        className="w-full text-sm border rounded-md px-3 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-plum-800"
+                        placeholder="Observaciones, alergias, preferencias..."
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={saveNotes}
+                          disabled={notesSaving}
+                          className="bg-plum-800 hover:bg-plum-700 text-white text-xs h-7 px-3"
+                        >
+                          {notesSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Guardar'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { setEditingNotes(false); setNotesValue(clientData?.notes ?? '') }}
+                          className="text-xs h-7 px-3"
+                        >
+                          Cancelar
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-700">
+                      {clientData?.notes
+                        ? clientData.notes
+                        : <span className="italic text-muted-foreground text-xs">Sin notas</span>
+                      }
+                    </p>
+                  )}
                 </div>
               )}
             </div>
@@ -1510,10 +1689,11 @@ function SlotMenu({ target, therapists, onNewTurno, onBloqueo, onSobreTurno, onC
 const HOURS = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR + i)
 
 function DayView({
-  date, therapists, appointments, showCancelled, onSlotClick, onAppointmentClick,
+  date, therapists, appointments, showCancelled, membershipClientSet, onSlotClick, onAppointmentClick,
 }: {
   date: Date; therapists: Therapist[]; appointments: Appointment[]
   showCancelled: boolean
+  membershipClientSet: Set<string>
   onSlotClick: (t: SlotTarget) => void; onAppointmentClick: (a: Appointment) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -1654,6 +1834,7 @@ function DayView({
                   {/* Appointment blocks */}
                   {colAppts.map(appt => (
                     <DayApptBlock key={appt.id} appt={appt} color={color}
+                      hasMembership={!!appt.client_id && membershipClientSet.has(appt.client_id)}
                       onClick={() => onAppointmentClick(appt)} />
                   ))}
                 </div>
@@ -1669,10 +1850,11 @@ function DayView({
 // ── WeekView ──────────────────────────────────────────────────────────────────
 
 function WeekView({
-  weekStart, appointments, showCancelled, onDayClick, onAppointmentClick,
+  weekStart, appointments, showCancelled, membershipClientSet, onDayClick, onAppointmentClick,
 }: {
   weekStart: Date; appointments: Appointment[]
   showCancelled: boolean
+  membershipClientSet: Set<string>
   onDayClick: (d: Date) => void; onAppointmentClick: (a: Appointment) => void
 }) {
   const today = new Date(); today.setHours(0,0,0,0)
@@ -1728,13 +1910,18 @@ function WeekView({
                   const isCompleted = appt.status === 'completed'
                   return (
                     <button key={appt.id}
-                      className="w-full text-left rounded-lg p-2 hover:opacity-80 transition-opacity"
+                      className="w-full text-left rounded-lg p-2 hover:opacity-80 transition-opacity relative"
                       style={{
                         backgroundColor: isCancelled ? '#f3f4f6' : isCompleted ? '#2563EB18' : `${color}18`,
                         borderLeft: `3px solid ${isCancelled ? '#9ca3af' : isCompleted ? '#2563EB' : color}`,
                         opacity: isCancelled ? 0.6 : 1,
                       }}
                       onClick={() => onAppointmentClick(appt)}>
+                      {!isCancelled && appt.status !== 'blocked' && appt.client_id && membershipClientSet.has(appt.client_id) && (
+                        <span className="absolute top-1 right-1 text-[8px] font-bold px-1 py-px rounded bg-gold-400 text-plum-900 leading-none">
+                          MEM
+                        </span>
+                      )}
                       <p className="text-[10px] font-semibold text-gray-700 truncate">{formatTime(appt.scheduled_at)}</p>
                       <p className={cn('text-[11px] font-bold truncate mt-0.5', isCancelled ? 'text-gray-400 line-through' : 'text-plum-800')}>
                         {appt.status === 'blocked' ? '🚫 Bloqueado' : clientName(appt)}
@@ -1772,6 +1959,7 @@ export default function Agenda() {
   const [isSobreTurno, setIsSobreTurno] = useState(false)
   const [prefill, setPrefill] = useState<TurnoPrefill | null>(null)
   const [showCancelled, setShowCancelled] = useState(false)
+  const [showDatePicker, setShowDatePicker] = useState(false)
 
   const { user, profile } = useAuth()
   const isTherapist = profile?.role === 'therapist'
@@ -1802,6 +1990,36 @@ export default function Agenda() {
   const appointments = isTherapist && user
     ? rawAppointments.filter(a => a.therapist_id === user.id)
     : rawAppointments
+
+  const qc = useQueryClient()
+
+  const { data: tenantMemberships = [] } = useTenantActiveMemberships()
+  const membershipClientSet = useMemo(() => {
+    const s = new Set<string>()
+    for (const m of tenantMemberships) {
+      const sessionsQty = m.plan?.sessions_qty ?? 0
+      const sessionsUsed = m.sessions_used ?? 0
+      if (sessionsQty - sessionsUsed > 0) {
+        s.add(m.client_id)
+        for (const b of m.beneficiaries ?? []) {
+          if (b.client_id) s.add(b.client_id)
+        }
+      }
+    }
+    return s
+  }, [tenantMemberships])
+
+  const [isRefreshing, setIsRefreshing] = useState(false)
+
+  async function handleRefresh() {
+    console.log('handleRefresh called')
+    setIsRefreshing(true)
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ['appointments'] }),
+      qc.invalidateQueries({ queryKey: ['tenant-active-memberships'] }),
+    ])
+    setTimeout(() => setIsRefreshing(false), 800)
+  }
 
   function goToday() {
     const d = new Date(); d.setHours(0,0,0,0); setCurrentDate(d)
@@ -1847,10 +2065,34 @@ export default function Agenda() {
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>
-          <h2 className="text-sm font-semibold text-plum-800 capitalize hidden sm:block">{dateLabel}</h2>
+          <div className="relative hidden sm:block">
+            <button
+              type="button"
+              onClick={() => setShowDatePicker(v => !v)}
+              className="text-sm font-semibold text-plum-800 capitalize hover:bg-plum-50 px-2 py-1 rounded-md transition-colors"
+            >
+              {dateLabel}
+            </button>
+            {showDatePicker && (
+              <MiniCalendar
+                currentDate={currentDate}
+                onSelect={(d) => { setCurrentDate(d); setView('day') }}
+                onClose={() => setShowDatePicker(false)}
+              />
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleRefresh}
+            className="p-1.5 rounded-md border border-input bg-white text-muted-foreground hover:bg-gray-50 hover:text-plum-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Recargar agenda"
+            disabled={isRefreshing}
+          >
+            <RefreshCw className={cn('w-3.5 h-3.5', isRefreshing && 'animate-spin')} />
+          </button>
           <button
             type="button"
             onClick={() => setShowCancelled(v => !v)}
@@ -1901,6 +2143,7 @@ export default function Agenda() {
             therapists={visibleTherapists}
             appointments={appointments}
             showCancelled={showCancelled}
+            membershipClientSet={membershipClientSet}
             onSlotClick={isTherapist ? () => {} : setSlotTarget}
             onAppointmentClick={setSelectedAppt}
           />
@@ -1909,6 +2152,7 @@ export default function Agenda() {
             weekStart={getMonday(currentDate)}
             appointments={appointments}
             showCancelled={showCancelled}
+            membershipClientSet={membershipClientSet}
             onDayClick={(d) => { setCurrentDate(d); setView('day') }}
             onAppointmentClick={setSelectedAppt}
           />
