@@ -234,3 +234,21 @@ export interface InventoryCountItem {
   notes?: string
   supply?: { id: string; name: string; code: string; unit: string } | null
 }
+
+export interface SupplierInvoice {
+  id: string
+  tenant_id: string
+  supplier_name: string
+  invoice_number?: string | null
+  description: string
+  category: string
+  amount: number
+  issue_date: string
+  due_date: string
+  status: 'pending' | 'paid'
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  created_at: string
+  updated_at?: string | null
+}

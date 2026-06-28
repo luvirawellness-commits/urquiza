@@ -35,6 +35,7 @@ import {
   useDashboardAlerts,
   useReservasOnline,
 } from '@/hooks/useFinanzas'
+import { useOverdueSupplierInvoicesCount } from '@/hooks/useSupplierInvoices'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -354,6 +355,8 @@ export default function Dashboard() {
   }
 
   const isReceptionist = profile?.role === 'receptionist'
+  const isOwner = profile?.role === 'owner'
+  const { data: invoiceAlerts } = useOverdueSupplierInvoicesCount({ enabled: isOwner })
 
   const metricCards = [
     {
@@ -386,10 +389,12 @@ export default function Dashboard() {
     },
   ]
 
+  const hasInvoiceAlerts = isOwner && ((invoiceAlerts?.overdue ?? 0) > 0 || (invoiceAlerts?.dueSoon ?? 0) > 0)
   const hasAlerts =
     (alerts?.atRiskClients.length ?? 0) > 0 ||
     (alerts?.expiringMemberships.length ?? 0) > 0 ||
-    (alerts?.lowSessionMemberships.length ?? 0) > 0
+    (alerts?.lowSessionMemberships.length ?? 0) > 0 ||
+    hasInvoiceAlerts
 
   const tabs: { key: DashTab; label: string }[] = [
     { key: 'resumen',  label: 'Resumen' },
@@ -683,6 +688,38 @@ export default function Dashboard() {
                             </div>
                           )
                         })}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+                {hasInvoiceAlerts && (
+                  <Card className={(invoiceAlerts?.overdue ?? 0) > 0 ? 'border-red-200' : 'border-orange-200'}>
+                    <CardHeader className="pb-2">
+                      <CardTitle className={`flex items-center gap-2 text-sm font-semibold ${(invoiceAlerts?.overdue ?? 0) > 0 ? 'text-red-700' : 'text-orange-700'}`}>
+                        <AlertTriangle className="w-4 h-4" />
+                        Facturas de proveedores
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent className="pb-3 pt-0">
+                      <div className="text-sm space-y-1">
+                        {(invoiceAlerts?.overdue ?? 0) > 0 && (
+                          <p className="text-red-700 font-medium">
+                            {invoiceAlerts!.overdue} factura{invoiceAlerts!.overdue !== 1 ? 's' : ''} vencida{invoiceAlerts!.overdue !== 1 ? 's' : ''} sin pagar
+                          </p>
+                        )}
+                        {(invoiceAlerts?.dueSoon ?? 0) > 0 && (
+                          <p className="text-orange-700">
+                            {invoiceAlerts!.dueSoon} factura{invoiceAlerts!.dueSoon !== 1 ? 's' : ''} vence{invoiceAlerts!.dueSoon !== 1 ? 'n' : ''} en los próximos 7 días
+                          </p>
+                        )}
+                      </div>
+                      <div className="mt-2">
+                        <Link
+                          to="/finanzas?tab=proveedores"
+                          className="text-xs text-plum-600 hover:text-plum-800 hover:underline"
+                        >
+                          Ver facturas →
+                        </Link>
                       </div>
                     </CardContent>
                   </Card>

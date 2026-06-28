@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown, FileText,
+  Plus, CheckCircle2,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
@@ -38,11 +39,16 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { supabase } from '@/lib/supabase'
 import { canAccess } from '@/lib/permissions'
-import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
-import type { Transaction, ServiceCostItem } from '@/types'
+import { cn, formatCurrency, formatDate, MONTHS_ES, exportToExcel } from '@/lib/utils'
+import type { Transaction, ServiceCostItem, SupplierInvoice } from '@/types'
+import {
+  useSupplierInvoices,
+  useCreateSupplierInvoice,
+  useMarkInvoicePaid,
+} from '@/hooks/useSupplierInvoices'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
-type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres'
+type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres' | 'proveedores'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -2656,26 +2662,446 @@ function TabCierresCaja() {
   )
 }
 
+// ── TabProveedores ─────────────────────────────────────────────────────────────
+type InvoiceWithOverdue = SupplierInvoice & { isOverdue: boolean }
+
+function TabProveedores() {
+  const { profile } = useAuth()
+  const today = getArgentinaDateString()
+  const monthStart = today.slice(0, 7) + '-01'
+
+  const [from, setFrom] = useState(monthStart)
+  const [to, setTo] = useState(today)
+  const [statusFilter, setStatusFilter] = useState<'all' | 'pending' | 'overdue' | 'paid'>('all')
+  const [supplierSearch, setSupplierSearch] = useState('')
+
+  const { data: invoicesRaw = [], isLoading } = useSupplierInvoices({ from, to })
+  const createInvoice = useCreateSupplierInvoice()
+  const markPaid = useMarkInvoicePaid()
+
+  // New invoice modal
+  const [showNew, setShowNew] = useState(false)
+  const [newForm, setNewForm] = useState({
+    supplier_name: '',
+    invoice_number: '',
+    description: '',
+    category: 'supplies',
+    amount: '',
+    issue_date: today,
+    due_date: '',
+  })
+  const [newError, setNewError] = useState<string | null>(null)
+  const [newBusy, setNewBusy] = useState(false)
+
+  // Pay modal
+  const [payInvoice, setPayInvoice] = useState<InvoiceWithOverdue | null>(null)
+  const [payMethod, setPayMethod] = useState('transfer')
+  const [payDate, setPayDate] = useState(today)
+  const [payBusy, setPayBusy] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
+
+  const filtered = useMemo(() => {
+    let rows = invoicesRaw as InvoiceWithOverdue[]
+    if (supplierSearch.trim()) {
+      const q = supplierSearch.toLowerCase()
+      rows = rows.filter((i) => i.supplier_name.toLowerCase().includes(q))
+    }
+    if (statusFilter === 'pending') return rows.filter((i) => i.status === 'pending' && !i.isOverdue)
+    if (statusFilter === 'overdue') return rows.filter((i) => i.isOverdue)
+    if (statusFilter === 'paid') return rows.filter((i) => i.status === 'paid')
+    return rows
+  }, [invoicesRaw, statusFilter, supplierSearch])
+
+  const summary = useMemo(() => {
+    const all = invoicesRaw as InvoiceWithOverdue[]
+    const pending = all.filter((i) => i.status === 'pending' && !i.isOverdue)
+    const overdue = all.filter((i) => i.isOverdue)
+    const paidMes = all.filter((i) => i.status === 'paid' && (i.paid_date ?? '').startsWith(today.slice(0, 7)))
+    const next = [...pending].sort((a, b) => a.due_date.localeCompare(b.due_date))[0]
+    return {
+      totalPendiente: pending.reduce((s, i) => s + i.amount, 0),
+      countPendiente: pending.length,
+      totalVencido: overdue.reduce((s, i) => s + i.amount, 0),
+      countVencido: overdue.length,
+      pagadoMes: paidMes.reduce((s, i) => s + i.amount, 0),
+      proximoVencimiento: next?.due_date ?? null,
+    }
+  }, [invoicesRaw, today])
+
+  function resetNewForm() {
+    setNewForm({ supplier_name: '', invoice_number: '', description: '', category: 'supplies', amount: '', issue_date: today, due_date: '' })
+    setNewError(null)
+  }
+
+  async function handleCreate() {
+    setNewError(null)
+    if (!newForm.supplier_name.trim()) { setNewError('El proveedor es requerido.'); return }
+    if (!newForm.description.trim()) { setNewError('La descripción es requerida.'); return }
+    if (!newForm.amount || Number(newForm.amount) <= 0) { setNewError('El monto debe ser mayor a 0.'); return }
+    if (!newForm.due_date) { setNewError('La fecha de vencimiento es requerida.'); return }
+    setNewBusy(true)
+    try {
+      await createInvoice.mutateAsync({
+        supplier_name: newForm.supplier_name.trim(),
+        invoice_number: newForm.invoice_number.trim() || undefined,
+        description: newForm.description.trim(),
+        category: newForm.category,
+        amount: Number(newForm.amount),
+        issue_date: newForm.issue_date,
+        due_date: newForm.due_date,
+        userId: profile?.id ?? '',
+      })
+      setShowNew(false)
+      resetNewForm()
+    } catch (e: unknown) {
+      setNewError(e instanceof Error ? e.message : 'Error al guardar la factura.')
+    } finally {
+      setNewBusy(false)
+    }
+  }
+
+  async function handleMarkPaid() {
+    if (!payInvoice) return
+    setPayError(null)
+    setPayBusy(true)
+    try {
+      await markPaid.mutateAsync({
+        invoiceId: payInvoice.id,
+        transactionId: payInvoice.transaction_id,
+        paymentMethod: payMethod,
+        paidDate: payDate,
+      })
+      setPayInvoice(null)
+    } catch (e: unknown) {
+      setPayError(e instanceof Error ? e.message : 'Error al registrar el pago.')
+    } finally {
+      setPayBusy(false)
+    }
+  }
+
+  function handleExport() {
+    if (!filtered.length) return
+    exportToExcel(
+      filtered.map((i) => ({
+        Proveedor: i.supplier_name,
+        'N° Factura': i.invoice_number ?? '',
+        Descripción: i.description,
+        Categoría: CAT_LABELS[i.category] ?? i.category,
+        Monto: i.amount,
+        'Fecha emisión': i.issue_date,
+        'Fecha vencimiento': i.due_date,
+        Estado: i.isOverdue ? 'Vencida' : i.status === 'paid' ? 'Pagada' : 'Pendiente',
+        'Método de pago': i.payment_method ? (PM_LABELS[i.payment_method] ?? i.payment_method) : '',
+        'Fecha de pago': i.paid_date ?? '',
+      })),
+      `facturas_proveedores_${from}_${to}`,
+    )
+  }
+
+  function InvoiceStatusBadge({ inv }: { inv: InvoiceWithOverdue }) {
+    if (inv.status === 'paid')
+      return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-green-100 text-green-800">Pagada</span>
+    if (inv.isOverdue)
+      return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-red-100 text-red-800">Vencida</span>
+    return <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-700">Pendiente</span>
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-plum-800">Facturas de Proveedores</h2>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleExport} disabled={!filtered.length}>
+            <FileDown className="w-4 h-4 mr-1.5" />
+            Exportar
+          </Button>
+          <Button size="sm" className="bg-plum-700 hover:bg-plum-800 text-white" onClick={() => setShowNew(true)}>
+            <Plus className="w-4 h-4 mr-1.5" />
+            Nueva factura
+          </Button>
+        </div>
+      </div>
+
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="pt-4 pb-4">
+            <p className="text-xs text-muted-foreground mb-1">Total pendiente</p>
+            <p className="text-xl font-bold text-plum-800">{formatCurrency(summary.totalPendiente)}</p>
+            <p className="text-xs text-muted-foreground mt-1">{summary.countPendiente} factura{summary.countPendiente !== 1 ? 's' : ''}</p>
+          </CardContent>
+        </Card>
+        <Card className={summary.countVencido > 0 ? 'border-red-300' : ''}>
+          <CardContent className="pt-4 pb-4">
+            <p className="text-xs text-muted-foreground mb-1">Total vencido</p>
+            <p className={cn('text-xl font-bold', summary.countVencido > 0 ? 'text-red-600' : 'text-plum-800')}>{formatCurrency(summary.totalVencido)}</p>
+            <p className="text-xs text-muted-foreground mt-1">{summary.countVencido} factura{summary.countVencido !== 1 ? 's' : ''}</p>
+          </CardContent>
+        </Card>
+        <Card className="border-green-200">
+          <CardContent className="pt-4 pb-4">
+            <p className="text-xs text-muted-foreground mb-1">Pagado este mes</p>
+            <p className="text-xl font-bold text-green-700">{formatCurrency(summary.pagadoMes)}</p>
+          </CardContent>
+        </Card>
+        <Card className={summary.proximoVencimiento ? 'border-orange-200' : ''}>
+          <CardContent className="pt-4 pb-4">
+            <p className="text-xs text-muted-foreground mb-1">Próximo vencimiento</p>
+            <p className="text-xl font-bold text-orange-700">
+              {summary.proximoVencimiento ? formatDate(summary.proximoVencimiento) : '—'}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Filters */}
+      <Card>
+        <CardContent className="pt-4 pb-4">
+          <div className="flex flex-wrap gap-3 items-center">
+            <div className="flex items-center gap-2">
+              <Label className="text-xs whitespace-nowrap">Desde</Label>
+              <Input type="date" className="h-8 text-sm w-36" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Label className="text-xs whitespace-nowrap">Hasta</Label>
+              <Input type="date" className="h-8 text-sm w-36" value={to} onChange={(e) => setTo(e.target.value)} />
+            </div>
+            <select
+              className={cn(selectCls, 'h-8 w-36')}
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value as typeof statusFilter)}
+            >
+              <option value="all">Todos</option>
+              <option value="pending">Pendiente</option>
+              <option value="overdue">Vencida</option>
+              <option value="paid">Pagada</option>
+            </select>
+            <Input
+              className="h-8 text-sm w-48"
+              placeholder="Buscar proveedor…"
+              value={supplierSearch}
+              onChange={(e) => setSupplierSearch(e.target.value)}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Invoice table */}
+      <Card>
+        <CardContent className="p-0">
+          {isLoading ? (
+            <div className="p-8 flex justify-center">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : filtered.length === 0 ? (
+            <p className="py-10 text-center text-sm text-muted-foreground">Sin facturas para los filtros seleccionados.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    <th className="text-left px-4 py-2.5 font-medium text-muted-foreground">Proveedor</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">N° Factura</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Descripción</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Categoría</th>
+                    <th className="text-right px-3 py-2.5 font-medium text-muted-foreground">Monto</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Emisión</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Vencimiento</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Estado</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Pago</th>
+                    <th className="px-4 py-2.5"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y">
+                  {filtered.map((inv) => (
+                    <tr key={inv.id} className="hover:bg-gray-50">
+                      <td className="px-4 py-2.5 font-medium">{inv.supplier_name}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{inv.invoice_number ?? '—'}</td>
+                      <td className="px-3 py-2.5 max-w-[180px] truncate text-muted-foreground">{inv.description}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{CAT_LABELS[inv.category] ?? inv.category}</td>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold">{formatCurrency(inv.amount)}</td>
+                      <td className="px-3 py-2.5 text-muted-foreground">{formatDate(inv.issue_date)}</td>
+                      <td className={cn('px-3 py-2.5', inv.isOverdue ? 'text-red-600 font-semibold' : 'text-muted-foreground')}>
+                        {formatDate(inv.due_date)}
+                      </td>
+                      <td className="px-3 py-2.5"><InvoiceStatusBadge inv={inv} /></td>
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        {inv.payment_method ? (PM_LABELS[inv.payment_method] ?? inv.payment_method) : '—'}
+                      </td>
+                      <td className="px-4 py-2.5">
+                        {inv.status === 'pending' && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="h-7 text-xs"
+                            onClick={() => {
+                              setPayInvoice(inv)
+                              setPayMethod('transfer')
+                              setPayDate(today)
+                              setPayError(null)
+                            }}
+                          >
+                            <CheckCircle2 className="w-3 h-3 mr-1" />
+                            Pagar
+                          </Button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Nueva Factura modal */}
+      <Dialog open={showNew} onOpenChange={(o) => { if (!o) { setShowNew(false); resetNewForm() } }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Nueva Factura de Proveedor</DialogTitle>
+            <DialogDescription>Registrá una factura pendiente de pago. Se crea un gasto en estado pendiente en P&L.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2 space-y-1.5">
+                <Label>Proveedor *</Label>
+                <Input
+                  value={newForm.supplier_name}
+                  onChange={(e) => setNewForm({ ...newForm, supplier_name: e.target.value })}
+                  placeholder="Nombre del proveedor"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>N° Factura</Label>
+                <Input
+                  value={newForm.invoice_number}
+                  onChange={(e) => setNewForm({ ...newForm, invoice_number: e.target.value })}
+                  placeholder="Opcional"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Monto *</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={newForm.amount}
+                  onChange={(e) => setNewForm({ ...newForm, amount: e.target.value })}
+                  placeholder="0,00"
+                />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Descripción *</Label>
+                <Input
+                  value={newForm.description}
+                  onChange={(e) => setNewForm({ ...newForm, description: e.target.value })}
+                  placeholder="Descripción del gasto"
+                />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Categoría *</Label>
+                <select
+                  className={selectCls}
+                  value={newForm.category}
+                  onChange={(e) => setNewForm({ ...newForm, category: e.target.value })}
+                >
+                  {EXPENSE_CATEGORIES_CAJA.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de emisión *</Label>
+                <Input
+                  type="date"
+                  value={newForm.issue_date}
+                  onChange={(e) => setNewForm({ ...newForm, issue_date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de vencimiento *</Label>
+                <Input
+                  type="date"
+                  value={newForm.due_date}
+                  onChange={(e) => setNewForm({ ...newForm, due_date: e.target.value })}
+                />
+              </div>
+            </div>
+            {newError && <p className="text-sm text-red-600">{newError}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => { setShowNew(false); resetNewForm() }} disabled={newBusy}>
+                Cancelar
+              </Button>
+              <Button className="bg-plum-700 hover:bg-plum-800 text-white" onClick={handleCreate} disabled={newBusy}>
+                {newBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</> : 'Guardar factura'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Marcar como pagada modal */}
+      <Dialog open={!!payInvoice} onOpenChange={(o) => { if (!o) setPayInvoice(null) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Marcar como pagada</DialogTitle>
+            <DialogDescription>
+              {payInvoice?.supplier_name} — {payInvoice ? formatCurrency(payInvoice.amount) : ''}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="space-y-1.5">
+              <Label>Método de pago</Label>
+              <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
+                {PAYMENT_METHODS.map((pm) => (
+                  <option key={pm.value} value={pm.value}>{pm.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Fecha de pago</Label>
+              <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+            </div>
+            {payError && <p className="text-sm text-red-600">{payError}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setPayInvoice(null)} disabled={payBusy}>
+                Cancelar
+              </Button>
+              <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={handleMarkPaid} disabled={payBusy}>
+                {payBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Procesando...</> : 'Confirmar pago'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Finanzas() {
   const { profile } = useAuth()
   const [searchParams] = useSearchParams()
 
-  const showCaja    = profile ? canAccess(profile.role, 'caja') : false
-  const showPL      = profile ? canAccess(profile.role, 'finanzas') : false
-  const showCierres = profile?.role === 'owner' || profile?.role === 'partner_admin'
+  const showCaja       = profile ? canAccess(profile.role, 'caja') : false
+  const showPL         = profile ? canAccess(profile.role, 'finanzas') : false
+  const showCierres    = profile?.role === 'owner' || profile?.role === 'partner_admin'
+  const showProveedores = profile?.role === 'owner'
 
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
-    if (t === 'pl' || t === 'movimientos') return t as Tab
+    if (t === 'pl' || t === 'movimientos' || t === 'proveedores') return t as Tab
     return 'caja'
   })
 
   const visibleTabs = [
-    { key: 'caja'        as Tab, label: 'Caja',                show: showCaja    },
-    { key: 'movimientos' as Tab, label: 'Movimientos de Caja', show: showCaja    },
-    { key: 'pl'          as Tab, label: 'P&L y Reportes',      show: showPL      },
-    { key: 'cierres'     as Tab, label: 'Cierres de Caja',     show: showCierres },
+    { key: 'caja'         as Tab, label: 'Caja',                show: showCaja        },
+    { key: 'movimientos'  as Tab, label: 'Movimientos de Caja', show: showCaja        },
+    { key: 'pl'           as Tab, label: 'P&L y Reportes',      show: showPL          },
+    { key: 'cierres'      as Tab, label: 'Cierres de Caja',     show: showCierres     },
+    { key: 'proveedores'  as Tab, label: 'Proveedores',         show: showProveedores },
   ].filter((t) => t.show)
 
   return (
@@ -2703,10 +3129,11 @@ export default function Finanzas() {
         ))}
       </div>
 
-      {activeTab === 'caja'        && showCaja    && <TabCaja />}
-      {activeTab === 'movimientos' && showCaja    && <TabMovimientos />}
-      {activeTab === 'pl'          && showPL      && <TabPL />}
-      {activeTab === 'cierres'     && showCierres && <TabCierresCaja />}
+      {activeTab === 'caja'        && showCaja        && <TabCaja />}
+      {activeTab === 'movimientos' && showCaja        && <TabMovimientos />}
+      {activeTab === 'pl'          && showPL          && <TabPL />}
+      {activeTab === 'cierres'     && showCierres     && <TabCierresCaja />}
+      {activeTab === 'proveedores' && showProveedores && <TabProveedores />}
     </div>
   )
 }
