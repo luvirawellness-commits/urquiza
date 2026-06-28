@@ -534,22 +534,22 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const today = getArgentinaDateString()
 
   const totals = useMemo(() => {
-    if (!txs) return { ingresos: 0, egresos: 0, efectivo: 0, pmBreakdown: {} as Record<string, number> }
+    if (!txs) return { ingresos: 0, egresos: 0, cashIncome: 0, gastosEfectivo: 0, efectivo: 0, pmBreakdown: {} as Record<string, number> }
     const ingresos = txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)
     const egresos = txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
     const cashIncome = txs
       .filter((t) => t.type === 'income' && t.payment_method === 'cash')
       .reduce((s, t) => s + t.amount, 0)
-    const cashExpense = txs
-      .filter((t) => t.type === 'expense' && t.payment_method === 'cash')
+    const gastosEfectivo = txs
+      .filter((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
       .reduce((s, t) => s + t.amount, 0)
-    const efectivo = cashIncome - cashExpense
+    const efectivo = cashIncome - gastosEfectivo
     const pmBreakdown: Record<string, number> = {}
     txs.filter((t) => t.type === 'income').forEach((t) => {
       const pm = t.payment_method ?? 'other'
       pmBreakdown[pm] = (pmBreakdown[pm] ?? 0) + t.amount
     })
-    return { ingresos, egresos, efectivo, pmBreakdown }
+    return { ingresos, egresos, cashIncome, gastosEfectivo, efectivo, pmBreakdown }
   }, [txs])
 
   const fondoFijo = currentTenant?.caja_fondo_fijo ?? 0
@@ -567,11 +567,12 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   )
 
   async function handleConfirm() {
-    if (!depositar || depositarNum <= 0) return
     setBusy(true)
     setError(null)
     try {
-      let description = `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`
+      let description = depositarNum > 0
+        ? `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`
+        : `Cierre de caja sin depósito${notas ? ` · ${notas}` : ''}`
       if (contadoNum !== null) {
         const difLabel = diferencia! > 0 ? 'sobrante' : 'faltante'
         description += ` · Conteo físico: ${formatCurrency(contadoNum)}, Esperado: ${formatCurrency(totalEsperado)}, Diferencia: ${formatCurrency(Math.abs(diferencia!))} (${difLabel})`
@@ -587,7 +588,7 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
         status: 'paid',
         is_recurring: false,
       }
-      console.log('[CierreCaja] INSERT - Depósito a caja mayor:', depositPayload)
+      console.log('[CierreCaja] INSERT - Cierre de caja:', depositPayload)
       await insertTx.mutateAsync(depositPayload)
       qc.invalidateQueries({ queryKey: ['last-caja-close'] })
 
@@ -599,7 +600,9 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
       }
 
       setSuccess(
-        `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`,
+        depositarNum > 0
+          ? `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`
+          : `Caja cerrada. Sin efectivo depositado. Fondo para mañana: ${formatCurrency(efectivoQueda)}`,
       )
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la caja')
@@ -686,7 +689,13 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-muted-foreground">+ Efectivo del día</span>
-                  <span className="tabular-nums font-medium text-gray-700">{formatCurrency(totals.efectivo)}</span>
+                  <span className="tabular-nums font-medium text-gray-700">{formatCurrency(totals.cashIncome)}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-muted-foreground">− Gastos en efectivo</span>
+                  <span className="tabular-nums font-medium text-red-600">
+                    {totals.gastosEfectivo > 0 ? `-${formatCurrency(totals.gastosEfectivo)}` : formatCurrency(0)}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between border-t pt-1.5">
                   <span className="font-semibold text-plum-800">= Total esperado en caja</span>
@@ -764,13 +773,13 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
               {hayDiferencia && !confirmDiff ? (
                 <Button
                   className="flex-1 bg-amber-500 hover:bg-amber-600 text-white"
-                  disabled={busy || !depositar}
+                  disabled={busy}
                   onClick={() => setConfirmDiff(true)}
                 >
                   Cerrar con diferencia ⚠️
                 </Button>
               ) : (
-                <Button onClick={handleConfirm} className="flex-1" disabled={busy || !depositar}>
+                <Button onClick={handleConfirm} className="flex-1" disabled={busy}>
                   {busy
                     ? <><Loader2 className="w-4 h-4 animate-spin mr-2" /> Cerrando...</>
                     : hayDiferencia ? 'Confirmar igualmente' : 'Cerrar caja del día'}
@@ -2431,7 +2440,10 @@ function EmpDetailTable({ employees }: { employees: EmpMonthDetail[] }) {
 // ── Tab Cierres de Caja ───────────────────────────────────────────────────────
 function TabCierresCaja() {
   const tenantId = useTenantId()
+  const { currentTenant } = useAuth()
+  const currentFondo = currentTenant?.caja_fondo_fijo ?? 0
 
+  // Last 50 cash_transfer transactions = the cierres
   const { data: cierres, isLoading: cierresLoading } = useQuery({
     queryKey: ['cierres-caja', tenantId],
     queryFn: async () => {
@@ -2452,14 +2464,14 @@ function TabCierresCaja() {
     ? cierres[cierres.length - 1].date
     : null
 
-  const { data: incomeTxs, isLoading: txsLoading } = useQuery({
-    queryKey: ['cierres-caja-income', tenantId, oldestDate],
+  // All income + cash-expense transactions in the covered range (for breakdown)
+  const { data: periodTxs, isLoading: txsLoading } = useQuery({
+    queryKey: ['cierres-caja-txs', tenantId, oldestDate],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('transactions')
-        .select('id, amount, payment_method, created_at')
+        .select('id, type, amount, payment_method, category, created_at')
         .eq('tenant_id', tenantId)
-        .eq('type', 'income')
         .gte('date', oldestDate!)
         .order('created_at', { ascending: true })
       if (error) throw error
@@ -2470,39 +2482,65 @@ function TabCierresCaja() {
 
   const isLoading = cierresLoading || txsLoading
 
-  function getBreakdown(idx: number) {
-    if (!cierres || !incomeTxs) return null
-    const cierre = cierres[idx]
-    const prevCierre = cierres[idx + 1]
-    const period = incomeTxs.filter((tx) => {
-      if (!tx.created_at || !cierre.created_at) return false
-      if (tx.created_at > cierre.created_at) return false
-      if (prevCierre?.created_at && tx.created_at <= prevCierre.created_at) return false
-      return true
+  // Per-cierre breakdown computed once (array aligned with cierres)
+  const breakdowns = useMemo(() => {
+    if (!cierres || !periodTxs) return null
+    return cierres.map((cierre, idx) => {
+      const prevCierre = cierres[idx + 1]
+      const period = periodTxs.filter((tx) => {
+        if (!tx.created_at || !cierre.created_at) return false
+        if (tx.created_at > cierre.created_at) return false
+        if (prevCierre?.created_at && tx.created_at <= prevCierre.created_at) return false
+        return true
+      })
+      const incSum = (methods: string[]) =>
+        period.filter((t) => t.type === 'income' && methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
+      const efectivoDelDia = incSum(['cash'])
+      const gastosEfectivo = period
+        .filter((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+        .reduce((s, t) => s + t.amount, 0)
+      const credito  = incSum(['credit'])
+      const debito   = incSum(['debit'])
+      const qrTransf = incSum(['qr', 'transfer', 'mp'])
+      const totalIngresado = efectivoDelDia + credito + debito + qrTransf - gastosEfectivo
+      return { efectivoDelDia, gastosEfectivo, credito, debito, qrTransf, totalIngresado }
     })
-    const sum = (methods: string[]) =>
-      period.filter((t) => methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
-    const efectivo = sum(['cash'])
-    const credito = sum(['credit'])
-    const debito = sum(['debit'])
-    const qrTransf = sum(['qr', 'transfer', 'mp'])
-    const total = period.reduce((s, t) => s + t.amount, 0)
-    return { efectivo, credito, debito, qrTransf, total }
-  }
+  }, [cierres, periodTxs])
+
+  // Reconstruct fondo inicial for each cierre by working backwards from the current fondo.
+  // Formula: nuevoFondo = fondoInicial + efectivoNeto - depositado
+  // → fondoInicial = fondoResultante + depositado - efectivoNeto
+  const fondos = useMemo(() => {
+    if (!cierres || !breakdowns) return null
+    const result: { fondoInicial: number; fondoResultante: number }[] = []
+    let fondoResultante = currentFondo
+    for (let i = 0; i < cierres.length; i++) {
+      const bd = breakdowns[i]
+      const efectivoNeto = bd.efectivoDelDia - bd.gastosEfectivo
+      const fondoInicial = fondoResultante + cierres[i].amount - efectivoNeto
+      result.push({ fondoInicial, fondoResultante })
+      fondoResultante = fondoInicial
+    }
+    return result
+  }, [cierres, breakdowns, currentFondo])
 
   function handleExport() {
-    if (!cierres) return
+    if (!cierres || !breakdowns || !fondos) return
     const rows = cierres.map((c, i) => {
-      const bd = getBreakdown(i)
+      const bd = breakdowns[i]
+      const fo = fondos[i]
       return {
         'Fecha y hora del cierre': new Date(c.created_at ?? '').toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }),
-        'Efectivo': bd?.efectivo ?? 0,
-        'Tarjeta Crédito': bd?.credito ?? 0,
-        'Tarjeta Débito': bd?.debito ?? 0,
-        'QR/Transferencia': bd?.qrTransf ?? 0,
-        'Total ingresado': bd?.total ?? 0,
+        'Fondo inicial': fo.fondoInicial,
+        'Efectivo del día': bd.efectivoDelDia,
+        'Gastos en efectivo': bd.gastosEfectivo,
+        'Total esperado': fo.fondoInicial + bd.efectivoDelDia - bd.gastosEfectivo,
+        'Tarjeta Crédito': bd.credito,
+        'Tarjeta Débito': bd.debito,
+        'QR/Transferencia': bd.qrTransf,
+        'Total ingresado': bd.totalIngresado,
         'Depositado': c.amount,
-        'Diferencia (ef. - dep.)': (bd?.efectivo ?? 0) - c.amount,
+        'Fondo resultante': fo.fondoResultante,
         'Notas': c.description ?? '',
       }
     })
@@ -2544,21 +2582,26 @@ function TabCierresCaja() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-gray-50">
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha y hora</th>
-                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Efectivo</th>
+                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha y hora</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fondo inicial</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Efectivo día</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Gastos ef.</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Total esp.</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Crédito</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Débito</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">QR/Transf.</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Total</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Depositado</th>
-                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Diferencia</th>
-                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Notas</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fondo result.</th>
+                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground">Notas</th>
                 </tr>
               </thead>
               <tbody>
                 {cierres.map((c, i) => {
-                  const bd = getBreakdown(i)
-                  const diff = (bd?.efectivo ?? 0) - c.amount
+                  const bd = breakdowns?.[i]
+                  const fo = fondos?.[i]
+                  if (!bd || !fo) return null
+                  const totalEsperado = fo.fondoInicial + bd.efectivoDelDia - bd.gastosEfectivo
                   return (
                     <tr key={c.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
@@ -2568,34 +2611,37 @@ function TabCierresCaja() {
                           hour: '2-digit', minute: '2-digit',
                         })}
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd ? formatCurrency(bd.efectivo) : '—'}
+                      <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
+                        {formatCurrency(fo.fondoInicial)}
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd ? formatCurrency(bd.credito) : '—'}
+                      <td className="px-3 py-2.5 text-right tabular-nums text-green-600">
+                        {formatCurrency(bd.efectivoDelDia)}
                       </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd ? formatCurrency(bd.debito) : '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd ? formatCurrency(bd.qrTransf) : '—'}
+                      <td className="px-3 py-2.5 text-right tabular-nums text-red-600">
+                        {bd.gastosEfectivo > 0 ? `-${formatCurrency(bd.gastosEfectivo)}` : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
-                        {bd ? formatCurrency(bd.total) : '—'}
+                        {formatCurrency(totalEsperado)}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd.credito > 0 ? formatCurrency(bd.credito) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd.debito > 0 ? formatCurrency(bd.debito) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd.qrTransf > 0 ? formatCurrency(bd.qrTransf) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
-                        {formatCurrency(c.amount)}
+                        {formatCurrency(bd.totalIngresado)}
                       </td>
-                      <td className={cn(
-                        'px-3 py-2.5 text-right tabular-nums font-semibold',
-                        !bd ? 'text-muted-foreground'
-                          : diff === 0 ? 'text-gray-500'
-                          : diff > 0 ? 'text-green-600'
-                          : 'text-red-600',
-                      )}>
-                        {bd ? `${diff > 0 ? '+' : ''}${formatCurrency(diff)}` : '—'}
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {c.amount > 0 ? formatCurrency(c.amount) : '—'}
                       </td>
-                      <td className="px-4 py-2.5 text-xs text-muted-foreground max-w-[200px] truncate">
+                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
+                        {formatCurrency(fo.fondoResultante)}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground max-w-[180px] truncate">
                         {c.description ?? '—'}
                       </td>
                     </tr>
