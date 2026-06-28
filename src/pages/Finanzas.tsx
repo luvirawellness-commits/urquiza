@@ -62,6 +62,14 @@ const PAYMENT_METHODS = [
   { value: 'credit', label: 'Crédito' },
 ] as const
 
+const EXPENSE_PAYMENT_METHODS = [
+  ...PAYMENT_METHODS,
+  { value: 'safe', label: 'Caja fuerte 🔒' },
+]
+
+const CARD_METHODS = ['qr', 'mp', 'debit', 'credit']
+const SAFE_METHODS = ['safe', 'caja_fuerte']
+
 const EXPENSE_CATEGORIES_CAJA = [
   { value: 'supplies', label: 'Insumos' },
   { value: 'rent', label: 'Alquiler' },
@@ -389,7 +397,7 @@ function SectionGastosDelDia() {
               <Label>Medio de pago</Label>
               <select className={selectCls} value={paymentMethod}
                 onChange={(e) => setPaymentMethod(e.target.value)}>
-                {PAYMENT_METHODS.map((pm) => (
+                {EXPENSE_PAYMENT_METHODS.map((pm) => (
                   <option key={pm.value} value={pm.value}>{pm.label}</option>
                 ))}
               </select>
@@ -418,8 +426,11 @@ function SectionMovimientosHoy() {
 
   const txs = useMemo(() => {
     if (!allTxs) return allTxs
-    if (!lastCloseAt) return allTxs
-    return allTxs.filter((tx) => !tx.created_at || tx.created_at > lastCloseAt)
+    return allTxs.filter((tx) => {
+      if (tx.status === 'pending') return false
+      if (lastCloseAt && tx.created_at && tx.created_at <= lastCloseAt) return false
+      return true
+    })
   }, [allTxs, lastCloseAt])
 
   const { profile } = useAuth()
@@ -819,6 +830,7 @@ function TabMovimientos() {
   const txs = useMemo(() => {
     if (!rawTxs) return []
     return rawTxs.filter((tx) => {
+      if (tx.status === 'pending') return false
       if (tipoFilter !== 'all' && tx.type !== tipoFilter) return false
       if (medioFilter !== 'all') {
         if (medioFilter === 'card') {
@@ -1381,12 +1393,13 @@ function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: st
 
 // ── Section Balance de Tesorería ───────────────────────────────────────────────
 function BolsilloCard({
-  icon, label, declared, movements, current, hasPostTxs, note,
+  icon, label, declared, income, expense, current, note,
 }: {
   icon: string; label: string
-  declared: number; movements: number; current: number
-  hasPostTxs: boolean; note?: string
+  declared: number; income: number; expense: number; current: number
+  note?: string
 }) {
+  const hasMov = income > 0 || expense > 0
   return (
     <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
@@ -1398,11 +1411,21 @@ function BolsilloCard({
           <span>Saldo declarado</span>
           <span className="tabular-nums">{formatCurrency(declared)}</span>
         </div>
-        {hasPostTxs ? (
-          <div className={cn('flex justify-between', movements >= 0 ? 'text-green-700' : 'text-red-600')}>
-            <span>Desde declaración</span>
-            <span className="tabular-nums">{movements >= 0 ? '+' : ''}{formatCurrency(movements)}</span>
-          </div>
+        {hasMov ? (
+          <>
+            {income > 0 && (
+              <div className="flex justify-between text-green-700">
+                <span>+ Ingresos</span>
+                <span className="tabular-nums">+{formatCurrency(income)}</span>
+              </div>
+            )}
+            {expense > 0 && (
+              <div className="flex justify-between text-red-600">
+                <span>− Egresos</span>
+                <span className="tabular-nums">−{formatCurrency(expense)}</span>
+              </div>
+            )}
+          </>
         ) : (
           <p className="text-[10px] italic">Sin movimientos desde la declaración</p>
         )}
@@ -1422,8 +1445,6 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
   const { data: settings = null } = useTenantPaymentSettings()
   const { data: holidays = [] } = useHolidays()
 
-  const cardMethods = ['qr', 'mp', 'debit', 'credit']
-
   const bolsillos = useMemo(() => {
     const cajon = currentTenant?.caja_fondo_fijo ?? 0
 
@@ -1436,15 +1457,20 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
     const sum = (filter: (t: Transaction) => boolean) =>
       postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
 
-    const deposits    = sum((t) => t.type === 'expense' && t.category === 'cash_transfer')
-    const cashOut     = sum((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+    // Pending supplier invoice transactions must not affect treasury until paid
+    const isPaid = (t: Transaction) => !t.status || t.status === 'paid'
+
+    const deposits    = sum((t) => t.type === 'expense' && isPaid(t) && t.category === 'cash_transfer')
+    const cashIn      = sum((t) => t.type === 'income' && t.payment_method === 'cash')
+    const cashOut     = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+    const safeOut     = sum((t) => t.type === 'expense' && isPaid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer')
     const transferIn  = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
-    const transferOut = sum((t) => t.type === 'expense' && t.payment_method === 'transfer')
-    const cardIn      = sum((t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''))
-    const cardOut     = sum((t) => t.type === 'expense' && cardMethods.includes(t.payment_method ?? ''))
+    const transferOut = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'transfer')
+    const cardIn      = sum((t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''))
+    const cardOut     = sum((t) => t.type === 'expense' && isPaid(t) && CARD_METHODS.includes(t.payment_method ?? ''))
 
     const cardIncomeTxs = postTxs.filter(
-      (t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''),
+      (t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''),
     )
 
     const openingSafe     = balance?.opening_safe ?? 0
@@ -1452,12 +1478,10 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
     const openingCards    = balance?.opening_bank_cards ?? 0
 
     return {
-      cajon,
-      hasPostTxs: postTxs.length > 0,
-      openingSafe,     cajaMayorMov: deposits - cashOut,     cajaMayor:        openingSafe + deposits - cashOut,
-      openingTransfer, transferMov:  transferIn - transferOut, transferBalance: openingTransfer + transferIn - transferOut,
-      openingCards,    cardMov:      cardIn - cardOut,         cardBalance:     openingCards + cardIn - cardOut,
-      cardOut,
+      cajon, cashIn, cashOut, deposits,
+      openingSafe, safeOut, cajaMayor: openingSafe + deposits - safeOut,
+      openingTransfer, transferIn, transferOut, transferBalance: openingTransfer + transferIn - transferOut,
+      openingCards, cardIn, cardOut, cardBalance: openingCards + cardIn - cardOut,
       cardIncomeTxs,
     }
   }, [txs, balance, currentTenant])
@@ -1494,12 +1518,38 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {/* Cajón: current fondo fijo (tracked by daily close, no opening) */}
+              {/* Cajón: fondo fijo + period cash movements (informational) */}
               <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <span>💵</span><span>Cajón</span>
                 </div>
-                <p className="text-[11px] text-muted-foreground">Saldo actual (fondo diario)</p>
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <div className="flex justify-between">
+                    <span>Fondo de caja</span>
+                    <span className="tabular-nums">{formatCurrency(bolsillos.cajon)}</span>
+                  </div>
+                  {bolsillos.cashIn > 0 && (
+                    <div className="flex justify-between text-green-700">
+                      <span>+ Efectivo cobrado</span>
+                      <span className="tabular-nums">+{formatCurrency(bolsillos.cashIn)}</span>
+                    </div>
+                  )}
+                  {bolsillos.cashOut > 0 && (
+                    <div className="flex justify-between text-red-600">
+                      <span>− Gastos efectivo</span>
+                      <span className="tabular-nums">−{formatCurrency(bolsillos.cashOut)}</span>
+                    </div>
+                  )}
+                  {bolsillos.deposits > 0 && (
+                    <div className="flex justify-between text-blue-600">
+                      <span>→ Depósito a caja fuerte</span>
+                      <span className="tabular-nums">−{formatCurrency(bolsillos.deposits)}</span>
+                    </div>
+                  )}
+                  {bolsillos.cashIn === 0 && bolsillos.cashOut === 0 && bolsillos.deposits === 0 && (
+                    <p className="text-[10px] italic">Sin movimientos desde la declaración</p>
+                  )}
+                </div>
                 <div className="text-base font-bold text-plum-800 tabular-nums border-t pt-1.5">
                   {formatCurrency(bolsillos.cajon)}
                 </div>
@@ -1507,18 +1557,18 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
               <BolsilloCard
                 icon="🔒" label="Caja fuerte"
                 declared={bolsillos.openingSafe}
-                movements={bolsillos.cajaMayorMov}
+                income={bolsillos.deposits}
+                expense={bolsillos.safeOut}
                 current={bolsillos.cajaMayor}
-                hasPostTxs={bolsillos.hasPostTxs}
               />
               <BolsilloCard
                 icon="🏦" label="Transferencias"
                 declared={bolsillos.openingTransfer}
-                movements={bolsillos.transferMov}
+                income={bolsillos.transferIn}
+                expense={bolsillos.transferOut}
                 current={bolsillos.transferBalance}
-                hasPostTxs={bolsillos.hasPostTxs}
               />
-              {/* QR / Tarjetas: split into settled and pending */}
+              {/* QR / Tarjetas: settled/pending split */}
               <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <span>💳</span><span>QR / Tarjetas</span>
@@ -1528,20 +1578,26 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
                     <span>Saldo declarado</span>
                     <span className="tabular-nums">{formatCurrency(bolsillos.openingCards)}</span>
                   </div>
-                  {bolsillos.hasPostTxs ? (
+                  {(bolsillos.cardIn > 0 || bolsillos.cardOut > 0) ? (
                     <>
-                      <div className={cn('flex justify-between', bolsillos.cardMov >= 0 ? 'text-green-700' : 'text-red-600')}>
-                        <span>Desde declaración</span>
-                        <span className="tabular-nums">{bolsillos.cardMov >= 0 ? '+' : ''}{formatCurrency(bolsillos.cardMov)}</span>
-                      </div>
-                      <div className="flex justify-between text-green-700">
-                        <span>↳ Acreditado</span>
-                        <span className="tabular-nums">+{formatCurrency(cardInSettled)}</span>
-                      </div>
-                      {cardInPending > 0 && (
-                        <div className="flex justify-between text-amber-600">
-                          <span>↳ Pendiente</span>
-                          <span className="tabular-nums">+{formatCurrency(cardInPending)}</span>
+                      {bolsillos.cardIn > 0 && (
+                        <>
+                          <div className="flex justify-between text-green-700">
+                            <span>+ Ingresos</span>
+                            <span className="tabular-nums">+{formatCurrency(bolsillos.cardIn)}</span>
+                          </div>
+                          {cardInPending > 0 && (
+                            <div className="flex justify-between text-amber-600 pl-3">
+                              <span>↳ Pendiente acred.</span>
+                              <span className="tabular-nums">+{formatCurrency(cardInPending)}</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                      {bolsillos.cardOut > 0 && (
+                        <div className="flex justify-between text-red-600">
+                          <span>− Egresos</span>
+                          <span className="tabular-nums">−{formatCurrency(bolsillos.cardOut)}</span>
                         </div>
                       )}
                     </>
@@ -2905,7 +2961,7 @@ function TabProveedores() {
             <div className="space-y-1.5">
               <Label>Método de pago</Label>
               <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
-                {PAYMENT_METHODS.map((pm) => (
+                {EXPENSE_PAYMENT_METHODS.map((pm) => (
                   <option key={pm.value} value={pm.value}>{pm.label}</option>
                 ))}
               </select>

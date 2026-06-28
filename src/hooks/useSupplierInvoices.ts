@@ -129,21 +129,25 @@ export function useMarkInvoicePaid() {
         .eq('tenant_id', tenantId)
       if (invError) throw invError
 
-      if (input.transactionId) {
-        const { error: txError } = await supabase
-          .from('transactions')
-          .update({
-            status: 'paid',
-            payment_method: input.paymentMethod,
-            date: input.paidDate,
-          })
-          .eq('id', input.transactionId)
-          .eq('tenant_id', tenantId)
-        if (txError) throw txError
+      if (!input.transactionId) {
+        console.warn('[useMarkInvoicePaid] invoice has no linked transaction_id — skipping transaction update', input.invoiceId)
+        return
       }
+
+      const { error: txError } = await supabase
+        .from('transactions')
+        .update({
+          status: 'paid',
+          payment_method: input.paymentMethod,
+          date: input.paidDate,
+        })
+        .eq('id', input.transactionId)
+        .eq('tenant_id', tenantId)
+      if (txError) throw txError
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['supplier-invoices'] })
+      qc.invalidateQueries({ queryKey: ['today-transactions'] })
       qc.invalidateQueries({ queryKey: ['transactions'] })
       qc.invalidateQueries({ queryKey: ['today-metrics'] })
       qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })

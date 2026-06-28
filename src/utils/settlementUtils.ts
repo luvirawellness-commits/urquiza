@@ -29,7 +29,7 @@ export function addCalendarDays(startDate: Date, days: number): Date {
 }
 
 // Payment methods that settle same-day (no lag)
-const SAME_DAY_METHODS = new Set(['cash', 'transfer'])
+const SAME_DAY_METHODS = new Set(['cash', 'transfer', 'safe'])
 
 // Map transaction payment_method to settlement config key
 function resolveMethod(
