@@ -1,9 +1,9 @@
-import { useState, useMemo } from 'react'
+﻿import { useState, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
-  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown, FileText,
+  TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
   Plus, CheckCircle2,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
@@ -27,10 +27,7 @@ import {
   useAbsencesRange,
   calcMonthScheduleHours,
 } from '@/hooks/useRRHH'
-import {
-  useTreasuryDeclarations, useTreasuryItems, useCreateTreasuryDeclaration,
-} from '@/hooks/useTreasury'
-import type { TreasuryItem } from '@/hooks/useTreasury'
+import { useMonthlyBalances } from '@/hooks/useTreasury'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -1376,384 +1373,142 @@ function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: st
   )
 }
 
-// ── Treasury helpers ───────────────────────────────────────────────────────────
-type TreasuryTheoreticals = { cash: number; transfer: number; mpQr: number; cards: number; cajaMayor: number }
-
-function TreasurySectionHeader({ label }: { label: string }) {
-  return (
-    <tr className="bg-gray-50">
-      <td colSpan={4} className="py-1.5 text-[10px] font-semibold text-plum-700 uppercase tracking-widest">
-        {label}
-      </td>
-    </tr>
-  )
-}
-
-function TreasuryItemRow({
-  label, theoretical, declared, onDeclaredChange,
-}: {
-  label: string; theoretical: number; declared: string
-  onDeclaredChange: (val: string) => void
-}) {
-  const diff = (Number(declared) || 0) - theoretical
-  return (
-    <tr className="border-b last:border-0">
-      <td className="py-2 pr-3 text-sm text-gray-700">{label}</td>
-      <td className="py-2 px-3 text-sm text-right tabular-nums text-muted-foreground">
-        {formatCurrency(theoretical)}
-      </td>
-      <td className="py-2 px-3">
-        <Input type="number" min="0" step="1" value={declared}
-          onChange={(e) => onDeclaredChange(e.target.value)}
-          className="text-right h-7 text-sm w-28 ml-auto" />
-      </td>
-      <td className={cn(
-        'py-2 pl-3 text-sm text-right tabular-nums font-medium w-28',
-        diff === 0 ? 'text-gray-500' : diff > 0 ? 'text-green-700' : 'text-red-600',
-      )}>
-        {diff > 0 ? '+' : ''}{formatCurrency(diff)}
-      </td>
-    </tr>
-  )
-}
-
-// ── Nueva Declaración modal ────────────────────────────────────────────────────
-function NuevaDeclaracionModal({
-  month, theoreticals, onClose,
-}: {
-  month: string; theoreticals: TreasuryTheoreticals; onClose: () => void
-}) {
-  const { user } = useAuth()
-  const createDeclaration = useCreateTreasuryDeclaration()
-  const [cashDeclared, setCashDeclared] = useState(String(Math.max(0, Math.round(theoreticals.cash))))
-  const [bankAccounts, setBankAccounts] = useState<{ label: string; declared: string }[]>([
-    { label: 'Transferencias', declared: String(Math.max(0, Math.round(theoreticals.transfer))) },
-  ])
-  const [mpQrDeclared, setMpQrDeclared] = useState(String(Math.max(0, Math.round(theoreticals.mpQr))))
-  const [cardsDeclared, setCardsDeclared] = useState(String(Math.max(0, Math.round(theoreticals.cards))))
-  const [notes, setNotes] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  function updateBankAccount(i: number, field: 'label' | 'declared', value: string) {
-    setBankAccounts((prev) => prev.map((ba, idx) => idx === i ? { ...ba, [field]: value } : ba))
-  }
-
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault()
-    if (!user) return
-    setError(null)
-    const items = [
-      { category: 'cash', label: 'Efectivo en caja', theoretical_amount: theoreticals.cash, declared_amount: Number(cashDeclared) || 0 },
-      ...bankAccounts.map((ba, i) => ({
-        category: 'transfer',
-        label: ba.label || `Cuenta ${i + 1}`,
-        theoretical_amount: i === 0 ? theoreticals.transfer : 0,
-        declared_amount: Number(ba.declared) || 0,
-      })),
-      { category: 'mp_qr', label: 'MP / QR', theoretical_amount: theoreticals.mpQr, declared_amount: Number(mpQrDeclared) || 0 },
-      { category: 'cards', label: 'Tarjetas', theoretical_amount: theoreticals.cards, declared_amount: Number(cardsDeclared) || 0 },
-    ]
-    try {
-      await createDeclaration.mutateAsync({ month, declared_by: user.id, notes: notes || undefined, items })
-      onClose()
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
-  const [y, mo] = month.split('-')
-
-  return (
-    <Dialog open onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            <Wallet className="w-4 h-4" /> Nueva Declaración de Tesorería
-          </DialogTitle>
-          <DialogDescription>{MONTHS_ES[parseInt(mo) - 1]} {y}</DialogDescription>
-        </DialogHeader>
-
-        <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="overflow-x-auto">
-            <table className="w-full">
-              <thead>
-                <tr className="border-b">
-                  <th className="text-left text-xs text-muted-foreground font-medium pb-2">Concepto</th>
-                  <th className="text-right text-xs text-muted-foreground font-medium pb-2 px-3 min-w-[100px]">Teórico</th>
-                  <th className="text-right text-xs text-muted-foreground font-medium pb-2 px-3 min-w-[110px]">Declarado</th>
-                  <th className="text-right text-xs text-muted-foreground font-medium pb-2 pl-3 min-w-[100px]">Diferencia</th>
-                </tr>
-              </thead>
-              <tbody>
-                <TreasurySectionHeader label="Efectivo" />
-                <TreasuryItemRow
-                  label="Efectivo en caja" theoretical={theoreticals.cash}
-                  declared={cashDeclared} onDeclaredChange={setCashDeclared}
-                />
-                {theoreticals.cajaMayor > 0 && (
-                  <tr className="border-b last:border-0 bg-amber-50/40">
-                    <td className="py-2 pr-3 text-sm text-gray-600">
-                      <span className="flex items-center gap-1.5">
-                        <Landmark className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                        Caja Mayor (depósitos acumulados)
-                      </span>
-                    </td>
-                    <td className="py-2 px-3 text-sm text-right tabular-nums text-amber-700 font-medium">
-                      {formatCurrency(theoreticals.cajaMayor)}
-                    </td>
-                    <td className="py-2 px-3 text-sm text-right text-muted-foreground italic">solo lectura</td>
-                    <td className="py-2 pl-3 text-sm text-right text-muted-foreground">—</td>
-                  </tr>
-                )}
-
-                <TreasurySectionHeader label="Cuentas bancarias" />
-                {bankAccounts.map((ba, i) => (
-                  <tr key={i} className="border-b">
-                    <td className="py-2 pr-3">
-                      <Input value={ba.label}
-                        onChange={(e) => updateBankAccount(i, 'label', e.target.value)}
-                        placeholder={`Cuenta ${i + 1}`} className="h-7 text-sm" />
-                    </td>
-                    <td className="py-2 px-3 text-sm text-right tabular-nums text-muted-foreground">
-                      {formatCurrency(i === 0 ? theoreticals.transfer : 0)}
-                    </td>
-                    <td className="py-2 px-3">
-                      <Input type="number" min="0" step="1" value={ba.declared}
-                        onChange={(e) => updateBankAccount(i, 'declared', e.target.value)}
-                        className="text-right h-7 text-sm w-28 ml-auto" />
-                    </td>
-                    <td className="py-2 pl-3">
-                      {(() => {
-                        const theoretical = i === 0 ? theoreticals.transfer : 0
-                        const diff = (Number(ba.declared) || 0) - theoretical
-                        return (
-                          <div className="flex items-center justify-end gap-2">
-                            <span className={cn(
-                              'text-sm tabular-nums font-medium',
-                              diff === 0 ? 'text-gray-500' : diff > 0 ? 'text-green-700' : 'text-red-600',
-                            )}>
-                              {diff > 0 ? '+' : ''}{formatCurrency(diff)}
-                            </span>
-                            {i > 0 && (
-                              <button type="button"
-                                onClick={() => setBankAccounts((p) => p.filter((_, idx) => idx !== i))}
-                                className="text-muted-foreground hover:text-red-500 text-xl leading-none ml-1">
-                                ×
-                              </button>
-                            )}
-                          </div>
-                        )
-                      })()}
-                    </td>
-                  </tr>
-                ))}
-
-                <TreasurySectionHeader label="Medios electrónicos" />
-                <TreasuryItemRow
-                  label="MP / QR" theoretical={theoreticals.mpQr}
-                  declared={mpQrDeclared} onDeclaredChange={setMpQrDeclared}
-                />
-                <TreasuryItemRow
-                  label="Tarjetas (débito + crédito)" theoretical={theoreticals.cards}
-                  declared={cardsDeclared} onDeclaredChange={setCardsDeclared}
-                />
-              </tbody>
-            </table>
-          </div>
-
-          <Button type="button" variant="outline" size="sm"
-            onClick={() => setBankAccounts((p) => [...p, { label: '', declared: '' }])}
-            className="text-xs gap-1">
-            + Agregar cuenta bancaria
-          </Button>
-
-          <div className="space-y-1">
-            <Label className="text-xs">Notas</Label>
-            <Input placeholder="Opcional" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </div>
-
-          {error && <p className="text-sm text-red-600">{error}</p>}
-
-          <div className="flex gap-2 pt-1">
-            <Button type="button" variant="outline" onClick={onClose} className="flex-1">Cancelar</Button>
-            <Button type="submit" className="flex-1" disabled={createDeclaration.isPending}>
-              {createDeclaration.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
-              Guardar declaración
-            </Button>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 // ── Section Balance de Tesorería ───────────────────────────────────────────────
-function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: string }) {
-  const { user } = useAuth()
-  const [showModal, setShowModal] = useState(false)
-  const [expandedId, setExpandedId] = useState<string | null>(null)
-  const { data: declarations, isLoading } = useTreasuryDeclarations(month)
-  const { data: expandedItems, isLoading: expandedLoading } = useTreasuryItems(expandedId)
+function BolsilloCard({
+  icon, label, declared, movements, current, hasPostTxs, note,
+}: {
+  icon: string; label: string
+  declared: number; movements: number; current: number
+  hasPostTxs: boolean; note?: string
+}) {
+  return (
+    <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <span>{icon}</span>
+        <span>{label}</span>
+      </div>
+      <div className="text-[11px] text-muted-foreground space-y-0.5">
+        <div className="flex justify-between">
+          <span>Saldo declarado</span>
+          <span className="tabular-nums">{formatCurrency(declared)}</span>
+        </div>
+        {hasPostTxs ? (
+          <div className={cn('flex justify-between', movements >= 0 ? 'text-green-700' : 'text-red-600')}>
+            <span>Desde declaración</span>
+            <span className="tabular-nums">{movements >= 0 ? '+' : ''}{formatCurrency(movements)}</span>
+          </div>
+        ) : (
+          <p className="text-[10px] italic">Sin movimientos desde la declaración</p>
+        )}
+      </div>
+      <div className="text-base font-bold text-plum-800 tabular-nums border-t pt-1.5">
+        {formatCurrency(current)}
+      </div>
+      {note && <p className="text-[10px] text-muted-foreground">{note}</p>}
+    </div>
+  )
+}
 
-  const theoreticals = useMemo((): TreasuryTheoreticals => {
-    const cajaMayor = txs
-      .filter((t) => t.type === 'expense' && t.category === 'cash_transfer')
-      .reduce((s, t) => s + t.amount, 0)
-    const netPm = (methods: string[], excludeCashTransfer = false) => {
-      const inc = txs
-        .filter((t) => t.type === 'income' && methods.includes(t.payment_method ?? ''))
-        .reduce((s, t) => s + t.amount, 0)
-      const exp = txs
-        .filter(
-          (t) =>
-            t.type === 'expense' &&
-            methods.includes(t.payment_method ?? '') &&
-            (!excludeCashTransfer || t.category !== 'cash_transfer'),
-        )
-        .reduce((s, t) => s + t.amount, 0)
-      return inc - exp
-    }
+function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: string }) {
+  const { currentTenant } = useAuth()
+  const [y, m] = month.split('-').map(Number)
+  const { data: balance, isLoading } = useMonthlyBalances(y, m)
+
+  const bolsillos = useMemo(() => {
+    const cajon = currentTenant?.caja_fondo_fijo ?? 0
+
+    // Only count transactions created AFTER the declaration date
+    const declaredAt = balance?.declared_at ?? null
+    const postTxs = declaredAt
+      ? txs.filter((t) => (t.created_at ?? '') > declaredAt)
+      : []
+
+    const cardMethods = ['qr', 'mp', 'debit', 'credit']
+    const sum = (filter: (t: Transaction) => boolean) =>
+      postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
+
+    const deposits      = sum((t) => t.type === 'expense' && t.category === 'cash_transfer')
+    const cashOut       = sum((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+    const transferIn    = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
+    const transferOut   = sum((t) => t.type === 'expense' && t.payment_method === 'transfer')
+    const cardIn        = sum((t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''))
+    const cardOut       = sum((t) => t.type === 'expense' && cardMethods.includes(t.payment_method ?? ''))
+
+    const openingSafe     = balance?.opening_safe ?? 0
+    const openingTransfer = balance?.opening_bank_transfer ?? 0
+    const openingCards    = balance?.opening_bank_cards ?? 0
+
     return {
-      cash: netPm(['cash'], true),
-      transfer: netPm(['transfer']),
-      mpQr: netPm(['mp', 'qr']),
-      cards: netPm(['debit', 'credit']),
-      cajaMayor,
+      cajon,
+      hasPostTxs: postTxs.length > 0,
+      openingSafe,     cajaMayorMov: deposits - cashOut,     cajaMayor:        openingSafe + deposits - cashOut,
+      openingTransfer, transferMov:  transferIn - transferOut, transferBalance: openingTransfer + transferIn - transferOut,
+      openingCards,    cardMov:      cardIn - cardOut,         cardBalance:     openingCards + cardIn - cardOut,
     }
-  }, [txs])
+  }, [txs, balance, currentTenant])
+
+  const total = bolsillos.cajon + bolsillos.cajaMayor + bolsillos.transferBalance + bolsillos.cardBalance
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base text-plum-800 flex items-center gap-2">
-            <Wallet className="w-4 h-4" /> Balance de Tesorería
-          </CardTitle>
-          <Button size="sm" variant="outline" className="gap-1 text-xs h-7 px-2.5"
-            onClick={() => setShowModal(true)}>
-            + Nueva declaración
-          </Button>
-        </div>
+        <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+          <Wallet className="w-4 h-4" /> Balance de Tesorería
+        </CardTitle>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-4">
         {isLoading ? (
           <div className="flex justify-center py-6">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
           </div>
-        ) : !declarations || declarations.length === 0 ? (
-          <div className="text-center py-8 text-muted-foreground bg-gray-50 rounded-xl">
-            <Wallet className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            <p className="text-sm">Sin declaraciones este mes</p>
-          </div>
         ) : (
-          <div className="space-y-2">
-            {declarations.map((d) => {
-              const isExpanded = expandedId === d.id
-              return (
-                <div key={d.id} className="border rounded-lg overflow-hidden">
-                  <button
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-50 transition-colors text-left"
-                    onClick={() => setExpandedId(isExpanded ? null : d.id)}
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-plum-800">
-                        {new Date(d.declared_at).toLocaleDateString('es-AR', { day: 'numeric', month: 'long' })}
-                        {' '}
-                        <span className="text-muted-foreground font-normal text-xs">
-                          {new Date(d.declared_at).toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' })}
-                        </span>
-                      </span>
-                      {d.declared_by === user?.id && (
-                        <Badge variant="outline" className="text-[10px] h-4 px-1">por mí</Badge>
-                      )}
-                    </div>
-                    <ChevronRight className={cn(
-                      'w-4 h-4 text-muted-foreground transition-transform',
-                      isExpanded && 'rotate-90',
-                    )} />
-                  </button>
-
-                  {isExpanded && (
-                    <div className="border-t bg-gray-50/50 px-4 pb-4">
-                      {expandedLoading ? (
-                        <div className="flex justify-center py-4">
-                          <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
-                        </div>
-                      ) : expandedItems ? (
-                        <>
-                          <table className="w-full mt-3">
-                            <thead>
-                              <tr className="border-b">
-                                <th className="text-left text-xs text-muted-foreground font-medium pb-2">Concepto</th>
-                                <th className="text-right text-xs text-muted-foreground font-medium pb-2 px-3">Teórico</th>
-                                <th className="text-right text-xs text-muted-foreground font-medium pb-2 px-3">Declarado</th>
-                                <th className="text-right text-xs text-muted-foreground font-medium pb-2 pl-3">Diferencia</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {expandedItems.map((item: TreasuryItem) => {
-                                const diff = item.declared_amount - item.theoretical_amount
-                                return (
-                                  <tr key={item.id} className="border-b last:border-0">
-                                    <td className="py-2 text-sm text-gray-700">{item.label}</td>
-                                    <td className="py-2 px-3 text-sm text-right tabular-nums text-muted-foreground">
-                                      {formatCurrency(item.theoretical_amount)}
-                                    </td>
-                                    <td className="py-2 px-3 text-sm text-right tabular-nums">
-                                      {formatCurrency(item.declared_amount)}
-                                    </td>
-                                    <td className={cn(
-                                      'py-2 pl-3 text-sm text-right tabular-nums font-medium',
-                                      diff === 0 ? 'text-gray-500' : diff > 0 ? 'text-green-700' : 'text-red-600',
-                                    )}>
-                                      {diff > 0 ? '+' : ''}{formatCurrency(diff)}
-                                    </td>
-                                  </tr>
-                                )
-                              })}
-                            </tbody>
-                            {expandedItems.length > 0 && (() => {
-                              const totalDiff = expandedItems.reduce(
-                                (s: number, i: TreasuryItem) => s + (i.declared_amount - i.theoretical_amount), 0,
-                              )
-                              return (
-                                <tfoot>
-                                  <tr className="border-t-2">
-                                    <td colSpan={3} className="pt-2 text-sm font-semibold text-plum-800">
-                                      Total diferencia
-                                    </td>
-                                    <td className={cn(
-                                      'pt-2 pl-3 text-sm text-right tabular-nums font-bold',
-                                      totalDiff === 0 ? 'text-gray-500' : totalDiff > 0 ? 'text-green-700' : 'text-red-600',
-                                    )}>
-                                      {totalDiff > 0 ? '+' : ''}{formatCurrency(totalDiff)}
-                                    </td>
-                                  </tr>
-                                </tfoot>
-                              )
-                            })()}
-                          </table>
-                          {d.notes && (
-                            <p className="text-xs text-muted-foreground mt-2 italic">Nota: {d.notes}</p>
-                          )}
-                        </>
-                      ) : null}
-                    </div>
-                  )}
+          <>
+            {!balance && (
+              <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Sin saldos iniciales declarados para este mes. Configurá los saldos en Compras → Tesorería.
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-3">
+              {/* Cajón: current fondo fijo (tracked by daily close, no opening) */}
+              <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <span>💵</span><span>Cajón</span>
                 </div>
-              )
-            })}
-          </div>
+                <p className="text-[11px] text-muted-foreground">Saldo actual (fondo diario)</p>
+                <div className="text-base font-bold text-plum-800 tabular-nums border-t pt-1.5">
+                  {formatCurrency(bolsillos.cajon)}
+                </div>
+              </div>
+              <BolsilloCard
+                icon="🔒" label="Caja fuerte"
+                declared={bolsillos.openingSafe}
+                movements={bolsillos.cajaMayorMov}
+                current={bolsillos.cajaMayor}
+                hasPostTxs={bolsillos.hasPostTxs}
+              />
+              <BolsilloCard
+                icon="🏦" label="Transferencias"
+                declared={bolsillos.openingTransfer}
+                movements={bolsillos.transferMov}
+                current={bolsillos.transferBalance}
+                hasPostTxs={bolsillos.hasPostTxs}
+              />
+              <BolsilloCard
+                icon="💳" label="QR / Tarjetas"
+                declared={bolsillos.openingCards}
+                movements={bolsillos.cardMov}
+                current={bolsillos.cardBalance}
+                hasPostTxs={bolsillos.hasPostTxs}
+                note="Settlement sin ajuste (Stage 1)"
+              />
+            </div>
+            <div className="border-t pt-3 flex items-center justify-between">
+              <span className="text-sm font-semibold text-plum-800">Total tesorería</span>
+              <span className="text-lg font-bold text-plum-800 tabular-nums">{formatCurrency(total)}</span>
+            </div>
+          </>
         )}
       </CardContent>
-
-      {showModal && (
-        <NuevaDeclaracionModal
-          month={month}
-          theoreticals={theoreticals}
-          onClose={() => setShowModal(false)}
-        />
-      )}
     </Card>
   )
 }

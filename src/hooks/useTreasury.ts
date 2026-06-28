@@ -2,6 +2,35 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
 
+export type PaymentSettings = {
+  id: string
+  tenant_id: string
+  qr_settlement_days: number
+  qr_settlement_type: 'corridos' | 'habiles'
+  debit_settlement_days: number
+  debit_settlement_type: 'corridos' | 'habiles'
+  credit_settlement_days: number
+  credit_settlement_type: 'corridos' | 'habiles'
+  created_at: string
+  updated_at: string
+}
+
+export type MonthlyBalance = {
+  id: string
+  tenant_id: string
+  year: number
+  month: number
+  opening_cash: number
+  opening_safe: number
+  opening_bank_transfer: number
+  opening_bank_cards: number
+  declared_by?: string | null
+  declared_at: string
+  notes?: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type TreasuryDeclaration = {
   id: string
   tenant_id: string
@@ -53,6 +82,114 @@ export function useTreasuryItems(declarationId: string | null) {
       return data as TreasuryItem[]
     },
     enabled: !!declarationId,
+  })
+}
+
+export function useTenantPaymentSettings() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['tenant-payment-settings', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('tenant_payment_settings')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .maybeSingle()
+      if (error) throw error
+      return data as PaymentSettings | null
+    },
+    enabled: !!tenantId,
+  })
+}
+
+export function useUpdatePaymentSettings() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (settings: {
+      qr_settlement_days: number
+      qr_settlement_type: 'corridos' | 'habiles'
+      debit_settlement_days: number
+      debit_settlement_type: 'corridos' | 'habiles'
+      credit_settlement_days: number
+      credit_settlement_type: 'corridos' | 'habiles'
+    }) => {
+      const { data, error } = await supabase
+        .from('tenant_payment_settings')
+        .upsert(
+          { tenant_id: tenantId, ...settings, updated_at: new Date().toISOString() },
+          { onConflict: 'tenant_id' },
+        )
+        .select()
+        .single()
+      if (error) throw error
+      return data as PaymentSettings
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['tenant-payment-settings', tenantId] })
+    },
+  })
+}
+
+export function useMonthlyBalances(year: number, month: number) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['monthly-balances', tenantId, year, month],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('monthly_balances')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('year', year)
+        .eq('month', month)
+        .maybeSingle()
+      if (error) throw error
+      return data as MonthlyBalance | null
+    },
+    enabled: !!tenantId && !!year && !!month,
+  })
+}
+
+export function useUpsertMonthlyBalance() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (payload: {
+      year: number
+      month: number
+      opening_cash: number
+      opening_safe: number
+      opening_bank_transfer: number
+      opening_bank_cards: number
+      declared_by: string
+      notes?: string
+    }) => {
+      const { data, error } = await supabase
+        .from('monthly_balances')
+        .upsert(
+          {
+            tenant_id: tenantId,
+            year: payload.year,
+            month: payload.month,
+            opening_cash: payload.opening_cash,
+            opening_safe: payload.opening_safe,
+            opening_bank_transfer: payload.opening_bank_transfer,
+            opening_bank_cards: payload.opening_bank_cards,
+            declared_by: payload.declared_by,
+            declared_at: new Date().toISOString(),
+            notes: payload.notes ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'tenant_id,year,month' },
+        )
+        .select()
+        .single()
+      if (error) throw error
+      return data as MonthlyBalance
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['monthly-balances', tenantId, vars.year, vars.month] })
+    },
   })
 }
 
