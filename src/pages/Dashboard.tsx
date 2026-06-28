@@ -353,6 +353,8 @@ export default function Dashboard() {
     return 'Buenas noches'
   }
 
+  const isReceptionist = profile?.role === 'receptionist'
+
   const metricCards = [
     {
       title: 'Sesiones hoy',
@@ -361,13 +363,13 @@ export default function Dashboard() {
       description: 'Sesiones completadas hoy',
       color: 'bg-gold-500',
     },
-    {
+    ...(!isReceptionist ? [{
       title: 'Facturación del mes',
       value: formatCurrency(metrics?.billingThisMonth ?? 0),
       icon: TrendingUp,
       description: 'Ingresos cobrados este mes',
       color: 'bg-plum-600',
-    },
+    }] : []),
     {
       title: 'Clientes activos',
       value: metrics?.activeClients ?? 0,

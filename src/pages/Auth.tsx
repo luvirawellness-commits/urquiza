@@ -117,7 +117,7 @@ export default function Auth() {
             style={{ borderRadius: '37%' }}
           />
           <h1 className="text-white text-2xl font-semibold">Luvira OS</h1>
-          <p className="text-plum-300 text-sm mt-1">Centro de Bienestar · Buenos Aires</p>
+          <p className="text-plum-300 text-sm mt-1">Sistema integral 360</p>
         </div>
 
         {/* Card */}
@@ -229,14 +229,14 @@ export default function Auth() {
           <p className="text-xs text-muted-foreground text-center mt-4 leading-relaxed">
             Al iniciar sesión aceptás nuestros{' '}
             <span className="text-plum-600">Términos y Condiciones</span> y la{' '}
-            <span className="text-plum-600">Política de Privacidad</span> de Luvira Wellness.
+            <span className="text-plum-600">Política de Privacidad</span> de Luvira OS.
             <br />
             Los datos son procesados conforme a la Ley 25.326.
           </p>
         </div>
 
         <p className="text-center text-plum-400 text-xs mt-6">
-          © {new Date().getFullYear()} Luvira Wellness · Buenos Aires
+          © {new Date().getFullYear()} Luvira OS · Buenos Aires
         </p>
       </div>
     </div>

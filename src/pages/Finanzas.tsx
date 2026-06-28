@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, Landmark, FileDown, FileText,
@@ -42,7 +42,7 @@ import { cn, formatCurrency, MONTHS_ES, exportToExcel } from '@/lib/utils'
 import type { Transaction, ServiceCostItem } from '@/types'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
-type Tab = 'caja' | 'movimientos' | 'pl'
+type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -2428,13 +2428,196 @@ function EmpDetailTable({ employees }: { employees: EmpMonthDetail[] }) {
   )
 }
 
+// ── Tab Cierres de Caja ───────────────────────────────────────────────────────
+function TabCierresCaja() {
+  const tenantId = useTenantId()
+
+  const { data: cierres, isLoading: cierresLoading } = useQuery({
+    queryKey: ['cierres-caja', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, date, amount, description, created_at')
+        .eq('tenant_id', tenantId)
+        .eq('category', 'cash_transfer')
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) throw error
+      return data ?? []
+    },
+    enabled: !!tenantId,
+  })
+
+  const oldestDate = cierres && cierres.length > 0
+    ? cierres[cierres.length - 1].date
+    : null
+
+  const { data: incomeTxs, isLoading: txsLoading } = useQuery({
+    queryKey: ['cierres-caja-income', tenantId, oldestDate],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, amount, payment_method, created_at')
+        .eq('tenant_id', tenantId)
+        .eq('type', 'income')
+        .gte('date', oldestDate!)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      return data ?? []
+    },
+    enabled: !!tenantId && !!oldestDate,
+  })
+
+  const isLoading = cierresLoading || txsLoading
+
+  function getBreakdown(idx: number) {
+    if (!cierres || !incomeTxs) return null
+    const cierre = cierres[idx]
+    const prevCierre = cierres[idx + 1]
+    const period = incomeTxs.filter((tx) => {
+      if (!tx.created_at || !cierre.created_at) return false
+      if (tx.created_at > cierre.created_at) return false
+      if (prevCierre?.created_at && tx.created_at <= prevCierre.created_at) return false
+      return true
+    })
+    const sum = (methods: string[]) =>
+      period.filter((t) => methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
+    const efectivo = sum(['cash'])
+    const credito = sum(['credit'])
+    const debito = sum(['debit'])
+    const qrTransf = sum(['qr', 'transfer', 'mp'])
+    const total = period.reduce((s, t) => s + t.amount, 0)
+    return { efectivo, credito, debito, qrTransf, total }
+  }
+
+  function handleExport() {
+    if (!cierres) return
+    const rows = cierres.map((c, i) => {
+      const bd = getBreakdown(i)
+      return {
+        'Fecha y hora del cierre': new Date(c.created_at ?? '').toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }),
+        'Efectivo': bd?.efectivo ?? 0,
+        'Tarjeta Crédito': bd?.credito ?? 0,
+        'Tarjeta Débito': bd?.debito ?? 0,
+        'QR/Transferencia': bd?.qrTransf ?? 0,
+        'Total ingresado': bd?.total ?? 0,
+        'Depositado': c.amount,
+        'Diferencia (ef. - dep.)': (bd?.efectivo ?? 0) - c.amount,
+        'Notas': c.description ?? '',
+      }
+    })
+    exportToExcel(rows, 'cierres-de-caja.xlsx', 'Cierres de Caja')
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+              <Lock className="w-4 h-4" /> Cierres de Caja
+              {!isLoading && (
+                <span className="text-muted-foreground font-normal text-sm">({cierres?.length ?? 0})</span>
+              )}
+            </CardTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExport}
+              disabled={!cierres || cierres.length === 0}
+            >
+              <FileDown className="w-4 h-4 mr-1.5" /> Exportar Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 pb-4 overflow-x-auto">
+          {isLoading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-plum-800" />
+            </div>
+          ) : !cierres || cierres.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-b-xl">
+              <Lock className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">Sin cierres de caja registrados</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-gray-50">
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha y hora</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Efectivo</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Crédito</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Débito</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">QR/Transf.</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Total</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Depositado</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Diferencia</th>
+                  <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Notas</th>
+                </tr>
+              </thead>
+              <tbody>
+                {cierres.map((c, i) => {
+                  const bd = getBreakdown(i)
+                  const diff = (bd?.efectivo ?? 0) - c.amount
+                  return (
+                    <tr key={c.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                        {new Date(c.created_at ?? '').toLocaleString('es-AR', {
+                          timeZone: 'America/Argentina/Buenos_Aires',
+                          day: '2-digit', month: '2-digit', year: 'numeric',
+                          hour: '2-digit', minute: '2-digit',
+                        })}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd ? formatCurrency(bd.efectivo) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd ? formatCurrency(bd.credito) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd ? formatCurrency(bd.debito) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {bd ? formatCurrency(bd.qrTransf) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
+                        {bd ? formatCurrency(bd.total) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
+                        {formatCurrency(c.amount)}
+                      </td>
+                      <td className={cn(
+                        'px-3 py-2.5 text-right tabular-nums font-semibold',
+                        !bd ? 'text-muted-foreground'
+                          : diff === 0 ? 'text-gray-500'
+                          : diff > 0 ? 'text-green-600'
+                          : 'text-red-600',
+                      )}>
+                        {bd ? `${diff > 0 ? '+' : ''}${formatCurrency(diff)}` : '—'}
+                      </td>
+                      <td className="px-4 py-2.5 text-xs text-muted-foreground max-w-[200px] truncate">
+                        {c.description ?? '—'}
+                      </td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Finanzas() {
   const { profile } = useAuth()
   const [searchParams] = useSearchParams()
 
-  const showCaja = profile ? canAccess(profile.role, 'caja') : false
-  const showPL   = profile ? canAccess(profile.role, 'finanzas') : false
+  const showCaja    = profile ? canAccess(profile.role, 'caja') : false
+  const showPL      = profile ? canAccess(profile.role, 'finanzas') : false
+  const showCierres = profile?.role === 'owner' || profile?.role === 'partner_admin'
 
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
@@ -2443,9 +2626,10 @@ export default function Finanzas() {
   })
 
   const visibleTabs = [
-    { key: 'caja'        as Tab, label: 'Caja',                show: showCaja },
-    { key: 'movimientos' as Tab, label: 'Movimientos de Caja', show: showCaja },
-    { key: 'pl'          as Tab, label: 'P&L y Reportes',      show: showPL  },
+    { key: 'caja'        as Tab, label: 'Caja',                show: showCaja    },
+    { key: 'movimientos' as Tab, label: 'Movimientos de Caja', show: showCaja    },
+    { key: 'pl'          as Tab, label: 'P&L y Reportes',      show: showPL      },
+    { key: 'cierres'     as Tab, label: 'Cierres de Caja',     show: showCierres },
   ].filter((t) => t.show)
 
   return (
@@ -2473,9 +2657,10 @@ export default function Finanzas() {
         ))}
       </div>
 
-      {activeTab === 'caja'        && showCaja && <TabCaja />}
-      {activeTab === 'movimientos' && showCaja && <TabMovimientos />}
-      {activeTab === 'pl'          && showPL   && <TabPL />}
+      {activeTab === 'caja'        && showCaja    && <TabCaja />}
+      {activeTab === 'movimientos' && showCaja    && <TabMovimientos />}
+      {activeTab === 'pl'          && showPL      && <TabPL />}
+      {activeTab === 'cierres'     && showCierres && <TabCierresCaja />}
     </div>
   )
 }
