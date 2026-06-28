@@ -1,6 +1,10 @@
+import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { getArgentinaDateString } from '../utils/dateUtils'
+import { getSettlementDate } from '../utils/settlementUtils'
+import type { Transaction } from '@/types'
 
 export type PaymentSettings = {
   id: string
@@ -231,4 +235,60 @@ export function useCreateTreasuryDeclaration() {
       qc.invalidateQueries({ queryKey: ['treasury_declarations', vars.month] })
     },
   })
+}
+
+export function useHolidays() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['holidays', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('holidays')
+        .select('date')
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+      return ((data ?? []) as { date: string }[]).map((r) => r.date)
+    },
+    enabled: !!tenantId,
+  })
+}
+
+export type PendingSettlement = {
+  transaction: Transaction
+  settlementDate: Date
+  daysUntilSettlement: number
+}
+
+export type SettlementSplit = {
+  settled: Transaction[]
+  pending: PendingSettlement[]
+}
+
+export function usePendingSettlements(
+  transactions: Transaction[],
+  settings: PaymentSettings | null,
+  holidays: string[],
+): SettlementSplit {
+  const today = getArgentinaDateString()
+  return useMemo(() => {
+    if (!settings) return { settled: transactions, pending: [] }
+    const todayDate = new Date(today + 'T00:00:00')
+    const settled: Transaction[] = []
+    const pending: PendingSettlement[] = []
+    for (const tx of transactions) {
+      const pm = tx.payment_method ?? 'cash'
+      const txDate = new Date((tx.date ?? today) + 'T00:00:00')
+      const settlementDate = getSettlementDate(txDate, pm, settings, holidays)
+      if (settlementDate <= todayDate) {
+        settled.push(tx)
+      } else {
+        const msPerDay = 1000 * 60 * 60 * 24
+        const daysUntilSettlement = Math.ceil(
+          (settlementDate.getTime() - todayDate.getTime()) / msPerDay,
+        )
+        pending.push({ transaction: tx, settlementDate, daysUntilSettlement })
+      }
+    }
+    return { settled, pending }
+  }, [transactions, settings, holidays, today])
 }

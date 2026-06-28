@@ -27,7 +27,13 @@ import {
   useAbsencesRange,
   calcMonthScheduleHours,
 } from '@/hooks/useRRHH'
-import { useMonthlyBalances } from '@/hooks/useTreasury'
+import {
+  useMonthlyBalances,
+  useTenantPaymentSettings,
+  useHolidays,
+  usePendingSettlements,
+} from '@/hooks/useTreasury'
+import type { PendingSettlement } from '@/hooks/useTreasury'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -1413,6 +1419,10 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
   const { currentTenant } = useAuth()
   const [y, m] = month.split('-').map(Number)
   const { data: balance, isLoading } = useMonthlyBalances(y, m)
+  const { data: settings = null } = useTenantPaymentSettings()
+  const { data: holidays = [] } = useHolidays()
+
+  const cardMethods = ['qr', 'mp', 'debit', 'credit']
 
   const bolsillos = useMemo(() => {
     const cajon = currentTenant?.caja_fondo_fijo ?? 0
@@ -1423,16 +1433,19 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
       ? txs.filter((t) => (t.created_at ?? '') > declaredAt)
       : []
 
-    const cardMethods = ['qr', 'mp', 'debit', 'credit']
     const sum = (filter: (t: Transaction) => boolean) =>
       postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
 
-    const deposits      = sum((t) => t.type === 'expense' && t.category === 'cash_transfer')
-    const cashOut       = sum((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
-    const transferIn    = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
-    const transferOut   = sum((t) => t.type === 'expense' && t.payment_method === 'transfer')
-    const cardIn        = sum((t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''))
-    const cardOut       = sum((t) => t.type === 'expense' && cardMethods.includes(t.payment_method ?? ''))
+    const deposits    = sum((t) => t.type === 'expense' && t.category === 'cash_transfer')
+    const cashOut     = sum((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+    const transferIn  = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
+    const transferOut = sum((t) => t.type === 'expense' && t.payment_method === 'transfer')
+    const cardIn      = sum((t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''))
+    const cardOut     = sum((t) => t.type === 'expense' && cardMethods.includes(t.payment_method ?? ''))
+
+    const cardIncomeTxs = postTxs.filter(
+      (t) => t.type === 'income' && cardMethods.includes(t.payment_method ?? ''),
+    )
 
     const openingSafe     = balance?.opening_safe ?? 0
     const openingTransfer = balance?.opening_bank_transfer ?? 0
@@ -1444,10 +1457,22 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
       openingSafe,     cajaMayorMov: deposits - cashOut,     cajaMayor:        openingSafe + deposits - cashOut,
       openingTransfer, transferMov:  transferIn - transferOut, transferBalance: openingTransfer + transferIn - transferOut,
       openingCards,    cardMov:      cardIn - cardOut,         cardBalance:     openingCards + cardIn - cardOut,
+      cardOut,
+      cardIncomeTxs,
     }
   }, [txs, balance, currentTenant])
 
-  const total = bolsillos.cajon + bolsillos.cajaMayor + bolsillos.transferBalance + bolsillos.cardBalance
+  const { settled: cardSettled, pending: cardPending } = usePendingSettlements(
+    bolsillos.cardIncomeTxs,
+    settings,
+    holidays,
+  )
+
+  const cardInSettled = cardSettled.reduce((s, t) => s + t.amount, 0)
+  const cardInPending = cardPending.reduce((s, p) => s + p.transaction.amount, 0)
+  const cardSettledBalance = bolsillos.openingCards + cardInSettled - bolsillos.cardOut
+
+  const total = bolsillos.cajon + bolsillos.cajaMayor + bolsillos.transferBalance + cardSettledBalance
 
   return (
     <Card>
@@ -1465,7 +1490,7 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
           <>
             {!balance && (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                Sin saldos iniciales declarados para este mes. Configurá los saldos en Compras → Tesorería.
+                Sin saldos iniciales declarados para este mes. Configurá los saldos en Configuración → Tesorería.
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
@@ -1493,19 +1518,89 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
                 current={bolsillos.transferBalance}
                 hasPostTxs={bolsillos.hasPostTxs}
               />
-              <BolsilloCard
-                icon="💳" label="QR / Tarjetas"
-                declared={bolsillos.openingCards}
-                movements={bolsillos.cardMov}
-                current={bolsillos.cardBalance}
-                hasPostTxs={bolsillos.hasPostTxs}
-                note="Settlement sin ajuste (Stage 1)"
-              />
+              {/* QR / Tarjetas: split into settled and pending */}
+              <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
+                <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+                  <span>💳</span><span>QR / Tarjetas</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground space-y-0.5">
+                  <div className="flex justify-between">
+                    <span>Saldo declarado</span>
+                    <span className="tabular-nums">{formatCurrency(bolsillos.openingCards)}</span>
+                  </div>
+                  {bolsillos.hasPostTxs ? (
+                    <>
+                      <div className={cn('flex justify-between', bolsillos.cardMov >= 0 ? 'text-green-700' : 'text-red-600')}>
+                        <span>Desde declaración</span>
+                        <span className="tabular-nums">{bolsillos.cardMov >= 0 ? '+' : ''}{formatCurrency(bolsillos.cardMov)}</span>
+                      </div>
+                      <div className="flex justify-between text-green-700">
+                        <span>↳ Acreditado</span>
+                        <span className="tabular-nums">+{formatCurrency(cardInSettled)}</span>
+                      </div>
+                      {cardInPending > 0 && (
+                        <div className="flex justify-between text-amber-600">
+                          <span>↳ Pendiente</span>
+                          <span className="tabular-nums">+{formatCurrency(cardInPending)}</span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="text-[10px] italic">Sin movimientos desde la declaración</p>
+                  )}
+                </div>
+                <div className="text-base font-bold text-plum-800 tabular-nums border-t pt-1.5">
+                  {formatCurrency(cardSettledBalance)}
+                  {cardInPending > 0 && (
+                    <span className="text-xs font-normal text-amber-600 ml-1.5">
+                      (+{formatCurrency(cardInPending)} pendiente)
+                    </span>
+                  )}
+                </div>
+              </div>
             </div>
+
             <div className="border-t pt-3 flex items-center justify-between">
               <span className="text-sm font-semibold text-plum-800">Total tesorería</span>
               <span className="text-lg font-bold text-plum-800 tabular-nums">{formatCurrency(total)}</span>
             </div>
+
+            {/* Próximas acreditaciones */}
+            {cardPending.length > 0 && (
+              <div className="border-t pt-3 space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+                  Próximas acreditaciones
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="border-b text-left text-muted-foreground">
+                        <th className="pb-1.5 font-medium">Fecha</th>
+                        <th className="pb-1.5 font-medium">Concepto</th>
+                        <th className="pb-1.5 font-medium text-right">Monto</th>
+                        <th className="pb-1.5 font-medium text-right">Acredita el</th>
+                        <th className="pb-1.5 font-medium text-right">Días</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...cardPending]
+                        .sort((a, b) => a.settlementDate.getTime() - b.settlementDate.getTime())
+                        .map((p: PendingSettlement) => (
+                          <tr key={p.transaction.id} className="border-b border-dashed last:border-0">
+                            <td className="py-1.5 text-muted-foreground">{formatDate(p.transaction.date)}</td>
+                            <td className="py-1.5 max-w-[120px] truncate">{p.transaction.description}</td>
+                            <td className="py-1.5 text-right tabular-nums text-green-700">+{formatCurrency(p.transaction.amount)}</td>
+                            <td className="py-1.5 text-right tabular-nums">{formatDate(p.settlementDate.toISOString().slice(0, 10))}</td>
+                            <td className="py-1.5 text-right tabular-nums text-amber-600 font-medium">
+                              {p.daysUntilSettlement}d
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
           </>
         )}
       </CardContent>
