@@ -558,3 +558,426 @@ export function useEmployeeSchedules() {
     enabled: !!tenantId,
   })
 }
+
+// ── Salary increases ──────────────────────────────────────────────────────────
+
+export type SalaryIncrease = {
+  id: string
+  tenant_id: string
+  user_id: string
+  type: 'percentage' | 'fixed'
+  percentage?: number | null
+  fixed_amount?: number | null
+  inflation_reference?: number | null
+  previous_salary: number
+  new_salary: number
+  effective_date: string
+  notes?: string | null
+  applied_by?: string | null
+  created_at: string
+}
+
+export function useSalaryIncreases(userId?: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['salary-increases', tenantId, userId],
+    queryFn: async () => {
+      let q = supabase
+        .from('salary_increases')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('effective_date', { ascending: false })
+      if (userId) q = q.eq('user_id', userId)
+      const { data, error } = await q
+      if (error) throw error
+      return data as SalaryIncrease[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+type CreateSalaryIncreaseInput = {
+  user_id: string
+  type: 'percentage' | 'fixed'
+  percentage?: number | null
+  fixed_amount?: number | null
+  inflation_reference?: number | null
+  previous_salary: number
+  new_salary: number
+  effective_date: string
+  notes?: string | null
+  applied_by: string
+}
+
+export function useCreateSalaryIncrease() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: CreateSalaryIncreaseInput) => {
+      const { data, error } = await supabase
+        .from('salary_increases')
+        .insert({ ...input, tenant_id: tenantId })
+        .select()
+        .single()
+      if (error) throw error
+      return data as SalaryIncrease
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['salary-increases', tenantId] })
+      qc.invalidateQueries({ queryKey: ['salary-increases', tenantId, vars.user_id] })
+    },
+  })
+}
+
+// ── Bonus payments (aguinaldo) ────────────────────────────────────────────────
+
+export type BonusPayment = {
+  id: string
+  tenant_id: string
+  user_id: string
+  period: 'june' | 'december'
+  year: number
+  best_salary: number
+  amount: number
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by?: string | null
+  created_at: string
+}
+
+export function useBonusPayments(year?: number) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['bonus-payments', tenantId, year],
+    queryFn: async () => {
+      let q = supabase
+        .from('bonus_payments')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('year', { ascending: false })
+      if (year) q = q.eq('year', year)
+      const { data, error } = await q
+      if (error) throw error
+      return data as BonusPayment[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+type UpsertBonusPaymentInput = {
+  user_id: string
+  period: 'june' | 'december'
+  year: number
+  best_salary: number
+  amount: number
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by: string
+}
+
+export function useUpsertBonusPayment() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: UpsertBonusPaymentInput) => {
+      const { data, error } = await supabase
+        .from('bonus_payments')
+        .upsert(
+          { ...input, tenant_id: tenantId },
+          { onConflict: 'tenant_id,user_id,period,year' },
+        )
+        .select()
+        .single()
+      if (error) throw error
+      return data as BonusPayment
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['bonus-payments', tenantId] })
+      qc.invalidateQueries({ queryKey: ['bonus-payments', tenantId, vars.year] })
+    },
+  })
+}
+
+// ── Vacation records ──────────────────────────────────────────────────────────
+
+export type VacationRecord = {
+  id: string
+  tenant_id: string
+  user_id: string
+  year: number
+  entitled_days: number
+  days_taken: number
+  days_remaining: number
+  start_date?: string | null
+  end_date?: string | null
+  daily_salary?: number | null
+  amount?: number | null
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by?: string | null
+  created_at: string
+}
+
+export function useVacationRecords(year?: number, userId?: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['vacation-records', tenantId, year, userId],
+    queryFn: async () => {
+      let q = supabase
+        .from('vacation_records')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('year', { ascending: false })
+      if (year) q = q.eq('year', year)
+      if (userId) q = q.eq('user_id', userId)
+      const { data, error } = await q
+      if (error) throw error
+      return data as VacationRecord[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+type UpsertVacationRecordInput = {
+  user_id: string
+  year: number
+  entitled_days: number
+  days_taken: number
+  start_date?: string | null
+  end_date?: string | null
+  daily_salary?: number | null
+  amount?: number | null
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by: string
+}
+
+export function useUpsertVacationRecord() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: UpsertVacationRecordInput) => {
+      const { data, error } = await supabase
+        .from('vacation_records')
+        .upsert(
+          { ...input, tenant_id: tenantId },
+          { onConflict: 'tenant_id,user_id,year' },
+        )
+        .select()
+        .single()
+      if (error) throw error
+      return data as VacationRecord
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['vacation-records', tenantId] })
+      qc.invalidateQueries({ queryKey: ['vacation-records', tenantId, vars.year] })
+      qc.invalidateQueries({ queryKey: ['vacation-records', tenantId, vars.year, vars.user_id] })
+    },
+  })
+}
+
+// ── Extended user data (salary + hire_date) ───────────────────────────────────
+
+export type EmployeeUserExtended = {
+  id: string
+  full_name: string
+  color_hex?: string | null
+  salary?: number | null
+  hire_date?: string | null
+}
+
+export function useEmployeeUsersWithSalary() {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['employee-users-extended', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, full_name, color_hex, salary, hire_date')
+        .eq('tenant_id', tenantId)
+        .eq('active', true)
+        .order('full_name')
+      if (error) throw error
+      return data as EmployeeUserExtended[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+export function useUpdateUserSalary() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ userId, salary }: { userId: string; salary: number }) => {
+      const { error } = await supabase
+        .from('users')
+        .update({ salary })
+        .eq('id', userId)
+        .eq('tenant_id', tenantId)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['employee-users-extended', tenantId] })
+    },
+  })
+}
+
+// ── Register bonus payment (aguinaldo) ────────────────────────────────────────
+
+type RegisterBonusInput = {
+  user_id: string
+  period: 'june' | 'december'
+  year: number
+  best_salary: number
+  amount: number
+  paid_date: string
+  payment_method: string
+  applied_by: string
+  logged_by_user_id: string
+}
+
+export function useRegisterBonusPayment() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: RegisterBonusInput) => {
+      const { data: bonus, error: bonusErr } = await supabase
+        .from('bonus_payments')
+        .upsert(
+          {
+            tenant_id: tenantId,
+            user_id: input.user_id,
+            period: input.period,
+            year: input.year,
+            best_salary: input.best_salary,
+            amount: input.amount,
+            paid_date: input.paid_date,
+            payment_method: input.payment_method,
+            applied_by: input.applied_by,
+          },
+          { onConflict: 'tenant_id,user_id,period,year' },
+        )
+        .select()
+        .single()
+      if (bonusErr) throw bonusErr
+
+      const periodLabel = input.period === 'june' ? '1er semestre' : '2do semestre'
+      const { data: tx, error: txErr } = await supabase
+        .from('transactions')
+        .insert({
+          tenant_id: tenantId,
+          type: 'expense',
+          category: 'aguinaldo',
+          amount: input.amount,
+          description: `Aguinaldo ${periodLabel} ${input.year}`,
+          date: input.paid_date,
+          user_id: input.logged_by_user_id,
+          payment_method: input.payment_method,
+          status: 'paid',
+          is_recurring: false,
+        })
+        .select()
+        .single()
+      if (txErr) throw txErr
+
+      await supabase
+        .from('bonus_payments')
+        .update({ transaction_id: tx.id })
+        .eq('id', bonus.id)
+        .eq('tenant_id', tenantId)
+
+      return { bonus, tx }
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['bonus-payments', tenantId] })
+      qc.invalidateQueries({ queryKey: ['bonus-payments', tenantId, vars.year] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['today-transactions'] })
+    },
+  })
+}
+
+// ── Register vacation payment ─────────────────────────────────────────────────
+
+type RegisterVacationInput = {
+  user_id: string
+  year: number
+  entitled_days: number
+  days_taken: number
+  start_date: string
+  end_date: string
+  daily_salary: number
+  amount: number
+  paid_date: string
+  payment_method: string
+  applied_by: string
+  logged_by_user_id: string
+  employee_name: string
+}
+
+export function useRegisterVacationPayment() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: RegisterVacationInput) => {
+      const { data: vac, error: vacErr } = await supabase
+        .from('vacation_records')
+        .upsert(
+          {
+            tenant_id: tenantId,
+            user_id: input.user_id,
+            year: input.year,
+            entitled_days: input.entitled_days,
+            days_taken: input.days_taken,
+            start_date: input.start_date,
+            end_date: input.end_date,
+            daily_salary: input.daily_salary,
+            amount: input.amount,
+            paid_date: input.paid_date,
+            payment_method: input.payment_method,
+            applied_by: input.applied_by,
+          },
+          { onConflict: 'tenant_id,user_id,year' },
+        )
+        .select()
+        .single()
+      if (vacErr) throw vacErr
+
+      const { data: tx, error: txErr } = await supabase
+        .from('transactions')
+        .insert({
+          tenant_id: tenantId,
+          type: 'expense',
+          category: 'vacaciones',
+          amount: input.amount,
+          description: `Vacaciones ${input.year} - ${input.employee_name}`,
+          date: input.paid_date,
+          user_id: input.logged_by_user_id,
+          payment_method: input.payment_method,
+          status: 'paid',
+          is_recurring: false,
+        })
+        .select()
+        .single()
+      if (txErr) throw txErr
+
+      await supabase
+        .from('vacation_records')
+        .update({ transaction_id: tx.id })
+        .eq('id', vac.id)
+        .eq('tenant_id', tenantId)
+
+      return { vac, tx }
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['vacation-records', tenantId] })
+      qc.invalidateQueries({ queryKey: ['vacation-records', tenantId, vars.year] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['today-transactions'] })
+    },
+  })
+}

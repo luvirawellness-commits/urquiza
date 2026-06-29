@@ -252,3 +252,53 @@ export interface SupplierInvoice {
   created_at: string
   updated_at?: string | null
 }
+
+export interface SalaryIncrease {
+  id: string
+  tenant_id: string
+  user_id: string
+  type: 'percentage' | 'fixed'
+  percentage?: number | null
+  fixed_amount?: number | null
+  inflation_reference?: number | null
+  previous_salary: number
+  new_salary: number
+  effective_date: string
+  notes?: string | null
+  applied_by?: string | null
+  created_at: string
+}
+
+export interface BonusPayment {
+  id: string
+  tenant_id: string
+  user_id: string
+  period: 'june' | 'december'
+  year: number
+  best_salary: number
+  amount: number
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by?: string | null
+  created_at: string
+}
+
+export interface VacationRecord {
+  id: string
+  tenant_id: string
+  user_id: string
+  year: number
+  entitled_days: number
+  days_taken: number
+  days_remaining: number
+  start_date?: string | null
+  end_date?: string | null
+  daily_salary?: number | null
+  amount?: number | null
+  paid_date?: string | null
+  payment_method?: string | null
+  transaction_id?: string | null
+  applied_by?: string | null
+  created_at: string
+}

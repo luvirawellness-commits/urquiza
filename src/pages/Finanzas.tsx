@@ -83,6 +83,8 @@ const EXPENSE_CATEGORIES_CAJA = [
   { value: 'bank_fees', label: 'Gastos Bancarios y Comisiones' },
   { value: 'maintenance', label: 'Mantenimiento' },
   { value: 'depreciation', label: 'Depreciación' },
+  { value: 'aguinaldo', label: 'Aguinaldo' },
+  { value: 'vacaciones', label: 'Vacaciones' },
   { value: 'withdrawal', label: 'Retiro de Socios' },
   { value: 'other', label: 'Otro' },
 ]
@@ -98,6 +100,7 @@ const CAT_LABELS: Record<string, string> = {
   salary_operativo: 'Sueldos Op.', salary_admin: 'Sueldos Admin.', salary: 'Sueldos',
   social_charges: 'Cargas Sociales', marketing: 'Marketing', management: 'Gestión',
   bank_fees: 'Gastos Bancarios', maintenance: 'Mantenimiento', depreciation: 'Depreciación',
+  aguinaldo: 'Aguinaldo', vacaciones: 'Vacaciones',
   withdrawal: 'Retiro Socios', cash_transfer: 'Depósito Caja', other: 'Otros',
 }
 
@@ -121,9 +124,11 @@ const MOV_CAT_OPTS = [
   { value: 'membership',label: 'Membresía' },
   { value: 'gift_card', label: 'Gift Card' },
   { value: 'supplies',  label: 'Insumos' },
-  { value: 'sueldos',   label: 'Sueldos' },
-  { value: 'marketing', label: 'Marketing' },
-  { value: 'other',     label: 'Otros' },
+  { value: 'sueldos',    label: 'Sueldos' },
+  { value: 'aguinaldo',  label: 'Aguinaldo' },
+  { value: 'vacaciones', label: 'Vacaciones' },
+  { value: 'marketing',  label: 'Marketing' },
+  { value: 'other',      label: 'Otros' },
 ]
 
 const SUELDOS_CATS = ['salary_operativo', 'salary_admin', 'salary', 'social_charges']

@@ -15,9 +15,12 @@ import {
   useCreateEmployee, useUpdateEmployee,
   useCreateAbsence, useUpsertCCSS, useUpdateCCSSStatus,
   useCreateHoliday, useDeleteHoliday,
+  useEmployeeUsersWithSalary, useUpdateUserSalary,
+  useSalaryIncreases, useBonusPayments, useVacationRecords,
+  useCreateSalaryIncrease, useRegisterBonusPayment, useRegisterVacationPayment,
   calcMonthScheduleHours, calcHolidayBonus,
   type JobPosition, type EmployeeProfile, type EmployeeCCSS, type Holiday, type HolidayDetail,
-  type WeeklySchedule,
+  type WeeklySchedule, type SalaryIncrease,
 } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -33,6 +36,16 @@ import { cn, MONTHS_ES, exportToExcel } from '@/lib/utils'
 
 const SELECT_CLS =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
+
+const RRHH_PAYMENT_METHODS = [
+  { value: 'cash', label: 'Efectivo' },
+  { value: 'transfer', label: 'Transferencia' },
+  { value: 'qr', label: 'QR' },
+  { value: 'mp', label: 'Mercado Pago' },
+  { value: 'debit', label: 'Débito' },
+  { value: 'credit', label: 'Crédito' },
+  { value: 'safe', label: 'Caja fuerte 🔒' },
+]
 
 const ABSENCE_LABELS: Record<string, string> = {
   absence: 'Ausencia', vacation: 'Vacaciones', medical: 'Médica', other: 'Otro',
@@ -1463,19 +1476,776 @@ function ProductividadTab() {
   )
 }
 
-type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados' | 'productividad'
+// ── Tab 7: Aumentos de sueldo ─────────────────────────────────────────────────
 
-const TABS: { key: RRHHTab; label: string }[] = [
+function AumentosTab() {
+  const { user } = useAuth()
+  const today = getArgentinaDateString()
+  const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
+  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
+  const [histFilterUser, setHistFilterUser] = useState('')
+  const { data: allIncreases = [], isLoading: incLoading } = useSalaryIncreases(histFilterUser || undefined)
+  const createIncrease = useCreateSalaryIncrease()
+  const updateSalary = useUpdateUserSalary()
+
+  const [inflacion, setInflacion] = useState('')
+  const [tipo, setTipo] = useState<'percentage' | 'fixed'>('percentage')
+  const [pct, setPct] = useState('')
+  const [fixedAmt, setFixedAmt] = useState('')
+  const [scope, setScope] = useState<'all' | 'specific'>('all')
+  const [selectedUserId, setSelectedUserId] = useState('')
+  const [effectiveDate, setEffectiveDate] = useState(today)
+  const [notes, setNotes] = useState('')
+  const [applying, setApplying] = useState(false)
+  const [applyError, setApplyError] = useState('')
+
+  const salaryMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const u of usersSalary) map.set(u.id, u.salary ?? 0)
+    return map
+  }, [usersSalary])
+
+  const activeEmployees = employees.filter(e => e.active)
+  const targetEmployees = scope === 'all'
+    ? activeEmployees
+    : activeEmployees.filter(e => e.user_id === selectedUserId)
+
+  const preview = useMemo(() => {
+    const pctVal = parseFloat(pct) || 0
+    const fixedVal = parseFloat(fixedAmt) || 0
+    return targetEmployees.map(emp => {
+      const current = salaryMap.get(emp.user_id) ?? 0
+      const increase = tipo === 'percentage' ? Math.round(current * pctVal / 100) : fixedVal
+      return { emp, current, increase, newSalary: current + increase }
+    })
+  }, [targetEmployees, salaryMap, tipo, pct, fixedAmt])
+
+  async function handleApply() {
+    if (preview.length === 0) { setApplyError('No hay empleados seleccionados'); return }
+    if (tipo === 'percentage' && !pct) { setApplyError('Ingresá el porcentaje'); return }
+    if (tipo === 'fixed' && !fixedAmt) { setApplyError('Ingresá el monto'); return }
+    setApplyError('')
+    setApplying(true)
+    try {
+      for (const { emp, current, increase, newSalary } of preview) {
+        if (increase <= 0) continue
+        await createIncrease.mutateAsync({
+          user_id: emp.user_id,
+          type: tipo,
+          percentage: tipo === 'percentage' ? parseFloat(pct) : null,
+          fixed_amount: tipo === 'fixed' ? parseFloat(fixedAmt) : null,
+          inflation_reference: inflacion ? parseFloat(inflacion) : null,
+          previous_salary: current,
+          new_salary: newSalary,
+          effective_date: effectiveDate,
+          notes: notes || null,
+          applied_by: user!.id,
+        })
+        await updateSalary.mutateAsync({ userId: emp.user_id, salary: newSalary })
+      }
+      setInflacion(''); setPct(''); setFixedAmt(''); setNotes('')
+      setScope('all'); setSelectedUserId('')
+    } catch (e: unknown) {
+      setApplyError(e instanceof Error ? e.message : 'Error al aplicar')
+    } finally {
+      setApplying(false)
+    }
+  }
+
+  const isLoading = empLoading || salLoading
+
+  return (
+    <div className="space-y-6">
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <p className="font-semibold text-plum-800">Aplicar aumento</p>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label>Inflación de referencia (%)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ej: 8.5"
+                value={inflacion}
+                onChange={e => { setInflacion(e.target.value); if (tipo === 'percentage') setPct(e.target.value) }} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Fecha efectiva</Label>
+              <Input type="date" value={effectiveDate} onChange={e => setEffectiveDate(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label>Tipo de aumento</Label>
+            <div className="flex gap-2">
+              {(['percentage', 'fixed'] as const).map(t => (
+                <button key={t} type="button" onClick={() => setTipo(t)}
+                  className={cn(
+                    'flex-1 py-2 px-3 text-sm border rounded-lg transition-colors',
+                    tipo === t ? 'border-plum-800 bg-plum-50 text-plum-800 font-medium' : 'hover:bg-gray-50',
+                  )}>
+                  {t === 'percentage' ? 'Por porcentaje' : 'Monto fijo'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {tipo === 'percentage' ? (
+            <div className="space-y-1.5">
+              <Label>Porcentaje de aumento (%)</Label>
+              <Input type="number" min="0" step="0.01" placeholder="ej: 8.5"
+                value={pct} onChange={e => setPct(e.target.value)} />
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              <Label>Monto fijo ($)</Label>
+              <Input type="number" min="0" step="1" placeholder="ej: 50000"
+                value={fixedAmt} onChange={e => setFixedAmt(e.target.value)} />
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label>Aplicar a</Label>
+            <div className="flex gap-2">
+              {(['all', 'specific'] as const).map(s => (
+                <button key={s} type="button" onClick={() => setScope(s)}
+                  className={cn(
+                    'flex-1 py-2 px-3 text-sm border rounded-lg transition-colors',
+                    scope === s ? 'border-plum-800 bg-plum-50 text-plum-800 font-medium' : 'hover:bg-gray-50',
+                  )}>
+                  {s === 'all' ? 'Todos los empleados' : 'Empleado específico'}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {scope === 'specific' && (
+            <div className="space-y-1.5">
+              <Label>Empleado</Label>
+              <select value={selectedUserId} onChange={e => setSelectedUserId(e.target.value)} className={SELECT_CLS}>
+                <option value="">Seleccionar...</option>
+                {activeEmployees.map(e => (
+                  <option key={e.user_id} value={e.user_id}>{e.user?.full_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          <div className="space-y-1.5">
+            <Label>Notas (opcional)</Label>
+            <textarea value={notes} onChange={e => setNotes(e.target.value)} placeholder="Observaciones..."
+              className="flex min-h-[72px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+          </div>
+
+          {preview.length > 0 && (
+            <div className="rounded-lg border overflow-hidden">
+              <table className="w-full text-sm">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    {['Nombre', 'Sueldo actual', 'Aumento', 'Nuevo sueldo'].map(h => (
+                      <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview.map(({ emp, current, increase, newSalary }) => (
+                    <tr key={emp.id} className="border-b last:border-b-0">
+                      <td className="px-3 py-2 font-medium text-plum-800">{emp.user?.full_name}</td>
+                      <td className="px-3 py-2 tabular-nums">{fmtARS(current)}</td>
+                      <td className="px-3 py-2 tabular-nums text-green-700">+{fmtARS(increase)}</td>
+                      <td className="px-3 py-2 tabular-nums font-semibold">{fmtARS(newSalary)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {applyError && <p className="text-sm text-red-600">{applyError}</p>}
+          <div className="flex justify-end">
+            <Button onClick={handleApply} disabled={applying || isLoading || preview.length === 0}>
+              {applying && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Aplicar aumento
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-5 space-y-4">
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <p className="font-semibold text-plum-800">Historial de aumentos</p>
+            <div className="flex items-center gap-2">
+              <select value={histFilterUser} onChange={e => setHistFilterUser(e.target.value)}
+                className={cn(SELECT_CLS, 'w-auto')}>
+                <option value="">Todos los empleados</option>
+                {activeEmployees.map(e => (
+                  <option key={e.user_id} value={e.user_id}>{e.user?.full_name}</option>
+                ))}
+              </select>
+              <Button variant="outline" size="sm" disabled={allIncreases.length === 0}
+                onClick={() => exportToExcel(
+                  allIncreases.map((i: SalaryIncrease) => {
+                    const emp = employees.find(e => e.user_id === i.user_id)
+                    return {
+                      'Fecha': i.effective_date,
+                      'Empleado': emp?.user?.full_name ?? i.user_id.slice(0, 8),
+                      'Tipo': i.type === 'percentage' ? 'Porcentaje' : 'Monto fijo',
+                      'Ref. inflación (%)': i.inflation_reference ?? '',
+                      'Porcentaje (%)': i.percentage ?? '',
+                      'Monto fijo ($)': i.fixed_amount ?? '',
+                      'Sueldo anterior': i.previous_salary,
+                      'Nuevo sueldo': i.new_salary,
+                      'Notas': i.notes ?? '',
+                    }
+                  }),
+                  'historial-aumentos.xlsx',
+                  'Aumentos',
+                )}>
+                <Download className="w-4 h-4 mr-1.5" />Excel
+              </Button>
+            </div>
+          </div>
+
+          {incLoading ? (
+            <div className="flex justify-center py-8"><Loader2 className="w-5 h-5 animate-spin text-plum-800" /></div>
+          ) : allIncreases.length === 0 ? (
+            <p className="text-center py-8 text-sm text-muted-foreground">Sin aumentos registrados</p>
+          ) : (
+            <div className="rounded-lg border overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[760px]">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    {['Fecha', 'Empleado', 'Tipo', 'Ref. inflación', '% / Monto', 'Sueldo ant.', 'Nuevo sueldo', 'Notas'].map(h => (
+                      <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {allIncreases.map((inc: SalaryIncrease) => {
+                    const emp = employees.find(e => e.user_id === inc.user_id)
+                    return (
+                      <tr key={inc.id} className="border-b last:border-b-0 hover:bg-gray-50">
+                        <td className="px-3 py-2 tabular-nums whitespace-nowrap">{inc.effective_date}</td>
+                        <td className="px-3 py-2 font-medium text-plum-800">{emp?.user?.full_name ?? '—'}</td>
+                        <td className="px-3 py-2">
+                          <Badge variant="outline" className={inc.type === 'percentage' ? 'border-blue-300 text-blue-700' : 'border-amber-300 text-amber-700'}>
+                            {inc.type === 'percentage' ? 'Porcentaje' : 'Monto fijo'}
+                          </Badge>
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">{inc.inflation_reference != null ? `${inc.inflation_reference}%` : '—'}</td>
+                        <td className="px-3 py-2 tabular-nums">
+                          {inc.type === 'percentage' ? `${inc.percentage}%` : fmtARS(inc.fixed_amount ?? 0)}
+                        </td>
+                        <td className="px-3 py-2 tabular-nums">{fmtARS(inc.previous_salary)}</td>
+                        <td className="px-3 py-2 tabular-nums font-medium text-green-700">{fmtARS(inc.new_salary)}</td>
+                        <td className="px-3 py-2 text-muted-foreground max-w-[160px] truncate">{inc.notes ?? '—'}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ── Tab 8: Aguinaldo ──────────────────────────────────────────────────────────
+
+type BonusPayFormState = {
+  monto: string
+  paymentMethod: string
+  paidDate: string
+}
+
+function AguinaldoTab() {
+  const { user } = useAuth()
+  const today = getArgentinaDateString()
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+
+  const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
+  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
+  const { data: allIncreases = [], isLoading: incLoading } = useSalaryIncreases()
+  const { data: bonusData = [], isLoading: bonusLoading } = useBonusPayments(year)
+  const registerBonus = useRegisterBonusPayment()
+
+  const [payModal, setPayModal] = useState<{
+    open: boolean; userId: string; employeeName: string
+    period: 'june' | 'december'; bestSalary: number; amount: number
+  }>({ open: false, userId: '', employeeName: '', period: 'june', bestSalary: 0, amount: 0 })
+  const [payForm, setPayForm] = useState<BonusPayFormState>({ monto: '', paymentMethod: 'transfer', paidDate: today })
+  const [payError, setPayError] = useState('')
+
+  const salaryMap = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const u of usersSalary) map.set(u.id, u.salary ?? 0)
+    return map
+  }, [usersSalary])
+
+  const activeEmployees = employees.filter(e => e.active)
+
+  function getBestSalary(userId: string, period: 'june' | 'december'): number {
+    const [startMo, endMo] = period === 'june' ? ['01', '06'] : ['07', '12']
+    const start = `${year}-${startMo}-01`
+    const end = `${year}-${endMo}-30`
+    const relevant = allIncreases.filter((i: SalaryIncrease) =>
+      i.user_id === userId && i.effective_date >= start && i.effective_date <= end,
+    )
+    if (relevant.length === 0) return salaryMap.get(userId) ?? 0
+    return Math.max(...relevant.map((i: SalaryIncrease) => i.new_salary))
+  }
+
+  function openPayModal(emp: EmployeeProfile, period: 'june' | 'december') {
+    const bestSalary = getBestSalary(emp.user_id, period)
+    const amount = Math.round(bestSalary / 2)
+    setPayModal({ open: true, userId: emp.user_id, employeeName: emp.user?.full_name ?? '', period, bestSalary, amount })
+    setPayForm({ monto: amount.toString(), paymentMethod: 'transfer', paidDate: today })
+    setPayError('')
+  }
+
+  async function handleRegisterBonus() {
+    const amount = parseFloat(payForm.monto)
+    if (!amount || amount <= 0) { setPayError('El monto es obligatorio'); return }
+    setPayError('')
+    try {
+      await registerBonus.mutateAsync({
+        user_id: payModal.userId,
+        period: payModal.period,
+        year,
+        best_salary: payModal.bestSalary,
+        amount,
+        paid_date: payForm.paidDate,
+        payment_method: payForm.paymentMethod,
+        applied_by: user!.id,
+        logged_by_user_id: user!.id,
+      })
+      setPayModal(p => ({ ...p, open: false }))
+    } catch (e: unknown) {
+      setPayError(e instanceof Error ? e.message : 'Error al registrar')
+    }
+  }
+
+  const isLoading = empLoading || salLoading || incLoading || bonusLoading
+
+  const PERIODS = [
+    { key: 'june' as const, label: 'Primer semestre (Junio)', months: 'Enero – Junio' },
+    { key: 'december' as const, label: 'Segundo semestre (Diciembre)', months: 'Julio – Diciembre' },
+  ]
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y - 1)}><ChevronLeft className="w-4 h-4" /></Button>
+        <span className="text-base font-semibold text-plum-800 min-w-[60px] text-center">{year}</span>
+        <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y + 1)}><ChevronRight className="w-4 h-4" /></Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
+      ) : (
+        PERIODS.map(({ key, label, months }) => {
+          const existingMap = new Map(bonusData.filter(b => b.period === key).map(b => [b.user_id, b]))
+          return (
+            <Card key={key}>
+              <CardContent className="p-5 space-y-3">
+                <div>
+                  <p className="font-semibold text-plum-800">{label}</p>
+                  <p className="text-xs text-muted-foreground">{months} {year}</p>
+                </div>
+                <div className="rounded-lg border overflow-hidden overflow-x-auto">
+                  <table className="w-full text-sm min-w-[620px]">
+                    <thead className="bg-gray-50 border-b">
+                      <tr>
+                        {['Empleado', 'Mejor sueldo semestre', 'Aguinaldo (÷2)', 'Estado', 'Fecha de pago', 'Acciones'].map(h => (
+                          <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {activeEmployees.length === 0 ? (
+                        <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Sin empleados activos</td></tr>
+                      ) : activeEmployees.map(emp => {
+                        const bestSalary = getBestSalary(emp.user_id, key)
+                        const amount = Math.round(bestSalary / 2)
+                        const existing = existingMap.get(emp.user_id)
+                        const isPaid = !!existing?.paid_date
+                        return (
+                          <tr key={emp.id} className="border-b last:border-b-0 hover:bg-gray-50">
+                            <td className="px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                                  style={{ backgroundColor: emp.user?.color_hex ?? '#7c3aed' }}>
+                                  {initials(emp.user?.full_name)}
+                                </div>
+                                <span className="font-medium text-plum-800">{emp.user?.full_name}</span>
+                              </div>
+                            </td>
+                            <td className="px-3 py-2 tabular-nums">{fmtARS(existing?.best_salary ?? bestSalary)}</td>
+                            <td className="px-3 py-2 tabular-nums font-semibold">{fmtARS(existing?.amount ?? amount)}</td>
+                            <td className="px-3 py-2">
+                              <span className={cn(
+                                'text-xs px-2 py-0.5 rounded-full font-medium',
+                                isPaid ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600',
+                              )}>
+                                {isPaid ? 'Pagado' : 'Pendiente'}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2 tabular-nums text-muted-foreground">{existing?.paid_date ?? '—'}</td>
+                            <td className="px-3 py-2">
+                              {!isPaid && (
+                                <Button size="sm" variant="outline" className="h-7 text-xs"
+                                  onClick={() => openPayModal(emp, key)}>
+                                  Registrar pago
+                                </Button>
+                              )}
+                            </td>
+                          </tr>
+                        )
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })
+      )}
+
+      <Dialog open={payModal.open} onOpenChange={v => { if (!v) setPayModal(p => ({ ...p, open: false })) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Registrar Pago de Aguinaldo</DialogTitle>
+            <DialogDescription>
+              {payModal.employeeName} · {payModal.period === 'june' ? '1er semestre' : '2do semestre'} {year}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="space-y-1.5">
+              <Label>Monto ($)</Label>
+              <Input type="number" min="0" value={payForm.monto}
+                onChange={e => setPayForm(p => ({ ...p, monto: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Medio de pago</Label>
+              <select value={payForm.paymentMethod}
+                onChange={e => setPayForm(p => ({ ...p, paymentMethod: e.target.value }))}
+                className={SELECT_CLS}>
+                {RRHH_PAYMENT_METHODS.map(m => (
+                  <option key={m.value} value={m.value}>{m.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Fecha de pago</Label>
+              <Input type="date" value={payForm.paidDate}
+                onChange={e => setPayForm(p => ({ ...p, paidDate: e.target.value }))} />
+            </div>
+            {payError && <p className="text-sm text-red-600">{payError}</p>}
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setPayModal(p => ({ ...p, open: false }))}>Cancelar</Button>
+              <Button onClick={handleRegisterBonus} disabled={registerBonus.isPending}>
+                {registerBonus.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                Confirmar pago
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// ── Tab 9: Vacaciones ─────────────────────────────────────────────────────────
+
+function calcEntitledDays(hireDate: string | null | undefined): { days: number; seniority: number; hasHireDate: boolean } {
+  if (!hireDate) return { days: 14, seniority: 0, hasHireDate: false }
+  const hire = new Date(hireDate + 'T00:00:00')
+  const now2 = new Date()
+  const seniority = Math.floor((now2.getTime() - hire.getTime()) / (1000 * 60 * 60 * 24 * 365.25))
+  let days = 14
+  if (seniority >= 20) days = 35
+  else if (seniority >= 10) days = 28
+  else if (seniority >= 5) days = 21
+  return { days, seniority, hasHireDate: true }
+}
+
+function calcDaysBetween(start: string, end: string): number {
+  if (!start || !end) return 0
+  const s = new Date(start + 'T00:00:00')
+  const e = new Date(end + 'T00:00:00')
+  return Math.max(0, Math.round((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1)
+}
+
+type VacPayFormState = {
+  startDate: string; endDate: string; daysTaken: string
+  dailySalary: string; amount: string; paymentMethod: string; paidDate: string
+}
+
+function VacacionesTab() {
+  const { user } = useAuth()
+  const today = getArgentinaDateString()
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+
+  const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
+  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
+  const { data: vacData = [], isLoading: vacLoading } = useVacationRecords(year)
+  const registerVacation = useRegisterVacationPayment()
+
+  const salaryMap = useMemo(() => {
+    const map = new Map<string, { salary: number | null; hire_date: string | null }>()
+    for (const u of usersSalary) map.set(u.id, { salary: u.salary ?? null, hire_date: u.hire_date ?? null })
+    return map
+  }, [usersSalary])
+
+  const [vacModal, setVacModal] = useState<{
+    open: boolean; emp: EmployeeProfile | null; entitledDays: number; existingDaysTaken: number
+  }>({ open: false, emp: null, entitledDays: 14, existingDaysTaken: 0 })
+  const [vacForm, setVacForm] = useState<VacPayFormState>({
+    startDate: '', endDate: '', daysTaken: '', dailySalary: '', amount: '', paymentMethod: 'transfer', paidDate: today,
+  })
+  const [vacError, setVacError] = useState('')
+
+  function openVacModal(emp: EmployeeProfile) {
+    const userInfo = salaryMap.get(emp.user_id)
+    const { days } = calcEntitledDays(userInfo?.hire_date)
+    const existing = vacData.find(v => v.user_id === emp.user_id)
+    const dailySalary = userInfo?.salary != null ? Math.round(userInfo.salary / 25) : 0
+    setVacModal({ open: true, emp, entitledDays: days, existingDaysTaken: existing?.days_taken ?? 0 })
+    setVacForm({ startDate: '', endDate: '', daysTaken: '', dailySalary: dailySalary.toString(), amount: '', paymentMethod: 'transfer', paidDate: today })
+    setVacError('')
+  }
+
+  function updateVacDates(field: 'startDate' | 'endDate', value: string) {
+    setVacForm(p => {
+      const newStart = field === 'startDate' ? value : p.startDate
+      const newEnd = field === 'endDate' ? value : p.endDate
+      const days = calcDaysBetween(newStart, newEnd)
+      const dailySal = parseFloat(p.dailySalary) || 0
+      return { ...p, [field]: value, daysTaken: days > 0 ? days.toString() : '', amount: days > 0 ? (days * dailySal).toString() : p.amount }
+    })
+  }
+
+  function updateDailySalary(value: string) {
+    setVacForm(p => {
+      const days = parseFloat(p.daysTaken) || 0
+      return { ...p, dailySalary: value, amount: days > 0 ? (days * (parseFloat(value) || 0)).toString() : p.amount }
+    })
+  }
+
+  async function handleRegisterVacation() {
+    if (!vacModal.emp) return
+    const days = parseFloat(vacForm.daysTaken)
+    const amount = parseFloat(vacForm.amount)
+    if (!vacForm.startDate || !vacForm.endDate) { setVacError('Las fechas son obligatorias'); return }
+    if (!days || days <= 0) { setVacError('Ingresá los días tomados'); return }
+    if (!amount || amount <= 0) { setVacError('El monto es obligatorio'); return }
+    const existing = vacData.find(v => v.user_id === vacModal.emp!.user_id)
+    const newTotal = (existing?.days_taken ?? 0) + days
+    setVacError('')
+    try {
+      await registerVacation.mutateAsync({
+        user_id: vacModal.emp.user_id,
+        year,
+        entitled_days: vacModal.entitledDays,
+        days_taken: newTotal,
+        start_date: vacForm.startDate,
+        end_date: vacForm.endDate,
+        daily_salary: parseFloat(vacForm.dailySalary) || 0,
+        amount,
+        paid_date: vacForm.paidDate,
+        payment_method: vacForm.paymentMethod,
+        applied_by: user!.id,
+        logged_by_user_id: user!.id,
+        employee_name: vacModal.emp.user?.full_name ?? '',
+      })
+      setVacModal(p => ({ ...p, open: false }))
+    } catch (e: unknown) {
+      setVacError(e instanceof Error ? e.message : 'Error al registrar')
+    }
+  }
+
+  const isLoading = empLoading || salLoading || vacLoading
+  const activeEmployees = employees.filter(e => e.active)
+
+  return (
+    <div className="space-y-5">
+      <div className="flex items-center gap-2">
+        <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y - 1)}><ChevronLeft className="w-4 h-4" /></Button>
+        <span className="text-base font-semibold text-plum-800 min-w-[60px] text-center">{year}</span>
+        <Button variant="outline" size="icon" className="w-8 h-8" onClick={() => setYear(y => y + 1)}><ChevronRight className="w-4 h-4" /></Button>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
+      ) : activeEmployees.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground bg-gray-50 rounded-xl">
+          <UserCheck className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No hay empleados activos</p>
+        </div>
+      ) : (
+        <div className="rounded-xl border overflow-hidden overflow-x-auto">
+          <table className="w-full text-sm min-w-[720px]">
+            <thead className="bg-gray-50 border-b">
+              <tr>
+                {['Empleado', 'Antigüedad', 'Días legales', 'Días tomados', 'Días restantes', 'Estado', 'Acciones'].map(h => (
+                  <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {activeEmployees.map(emp => {
+                const userInfo = salaryMap.get(emp.user_id)
+                const { days: entitledDays, seniority, hasHireDate } = calcEntitledDays(userInfo?.hire_date)
+                const existing = vacData.find(v => v.user_id === emp.user_id)
+                const daysTaken = existing?.days_taken ?? 0
+                const daysRemaining = entitledDays - daysTaken
+                const isComplete = daysTaken >= entitledDays
+                return (
+                  <tr key={emp.id} className="border-b last:border-b-0 hover:bg-gray-50">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-bold flex-shrink-0"
+                          style={{ backgroundColor: emp.user?.color_hex ?? '#7c3aed' }}>
+                          {initials(emp.user?.full_name)}
+                        </div>
+                        <span className="font-medium text-plum-800">{emp.user?.full_name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {hasHireDate
+                        ? `${seniority} año${seniority !== 1 ? 's' : ''}`
+                        : <span className="text-muted-foreground text-xs">Sin fecha de ingreso</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="font-medium">{entitledDays}d</span>
+                      {!hasHireDate && <span className="text-[10px] text-amber-600 ml-1">(sin antigüedad)</span>}
+                    </td>
+                    <td className="px-4 py-3 tabular-nums">{daysTaken}d</td>
+                    <td className="px-4 py-3 tabular-nums">
+                      <span className={cn('font-medium', daysRemaining <= 0 ? 'text-green-600' : daysRemaining <= 7 ? 'text-amber-600' : '')}>
+                        {Math.max(0, daysRemaining)}d
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={cn(
+                        'text-xs px-2 py-0.5 rounded-full font-medium',
+                        isComplete ? 'bg-green-100 text-green-700' : daysTaken > 0 ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-600',
+                      )}>
+                        {isComplete ? 'Completo' : daysTaken > 0 ? 'Parcial' : 'Pendiente'}
+                      </span>
+                    </td>
+                    <td className="px-4 py-3">
+                      {!isComplete && (
+                        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => openVacModal(emp)}>
+                          Registrar vacaciones
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Dialog open={vacModal.open} onOpenChange={v => { if (!v) setVacModal(p => ({ ...p, open: false })) }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Registrar Vacaciones</DialogTitle>
+            <DialogDescription>
+              {vacModal.emp?.user?.full_name} · {year} · {vacModal.entitledDays} días legales
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Fecha de inicio *</Label>
+                <Input type="date" value={vacForm.startDate} onChange={e => updateVacDates('startDate', e.target.value)} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de fin *</Label>
+                <Input type="date" value={vacForm.endDate} onChange={e => updateVacDates('endDate', e.target.value)} />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Días tomados</Label>
+                <Input type="number" min="1" value={vacForm.daysTaken}
+                  onChange={e => {
+                    const d = parseFloat(e.target.value) || 0
+                    const s = parseFloat(vacForm.dailySalary) || 0
+                    setVacForm(p => ({ ...p, daysTaken: e.target.value, amount: d > 0 ? (d * s).toString() : p.amount }))
+                  }} />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Sueldo diario ($)</Label>
+                <Input type="number" min="0" value={vacForm.dailySalary} onChange={e => updateDailySalary(e.target.value)} />
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Monto a pagar ($)</Label>
+              <Input type="number" min="0" value={vacForm.amount}
+                onChange={e => setVacForm(p => ({ ...p, amount: e.target.value }))} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-1.5">
+                <Label>Medio de pago</Label>
+                <select value={vacForm.paymentMethod}
+                  onChange={e => setVacForm(p => ({ ...p, paymentMethod: e.target.value }))}
+                  className={SELECT_CLS}>
+                  {RRHH_PAYMENT_METHODS.map(m => (
+                    <option key={m.value} value={m.value}>{m.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de pago</Label>
+                <Input type="date" value={vacForm.paidDate}
+                  onChange={e => setVacForm(p => ({ ...p, paidDate: e.target.value }))} />
+              </div>
+            </div>
+            {vacError && <p className="text-sm text-red-600">{vacError}</p>}
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" onClick={() => setVacModal(p => ({ ...p, open: false }))}>Cancelar</Button>
+              <Button onClick={handleRegisterVacation} disabled={registerVacation.isPending}>
+                {registerVacation.isPending && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                Confirmar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  )
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+
+type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados' | 'productividad' | 'aumentos' | 'aguinaldo' | 'vacaciones'
+
+type RRHHTabDef = { key: RRHHTab; label: string; ownerOnly?: boolean }
+
+const ALL_TABS: RRHHTabDef[] = [
   { key: 'puestos', label: 'Puestos' },
   { key: 'empleados', label: 'Empleados' },
   { key: 'liquidacion', label: 'Liquidación Mensual' },
   { key: 'ausencias', label: 'Ausencias' },
   { key: 'feriados', label: 'Feriados' },
   { key: 'productividad', label: 'Productividad' },
+  { key: 'aumentos', label: 'Aumentos', ownerOnly: true },
+  { key: 'aguinaldo', label: 'Aguinaldo', ownerOnly: true },
+  { key: 'vacaciones', label: 'Vacaciones', ownerOnly: true },
 ]
 
 export default function RRHH() {
+  const { profile } = useAuth()
+  const isOwner = profile?.role === 'owner'
   const [tab, setTab] = useState<RRHHTab>('puestos')
+  const tabs = ALL_TABS.filter(t => !t.ownerOnly || isOwner)
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -1485,13 +2255,13 @@ export default function RRHH() {
       </div>
 
       {/* Tabs */}
-      <div className="flex border-b gap-0">
-        {TABS.map(t => (
+      <div className="flex border-b gap-0 overflow-x-auto">
+        {tabs.map(t => (
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
             className={cn(
-              'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px',
+              'px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px whitespace-nowrap',
               tab === t.key
                 ? 'border-plum-800 text-plum-800'
                 : 'border-transparent text-muted-foreground hover:text-plum-700',
@@ -1509,6 +2279,9 @@ export default function RRHH() {
       {tab === 'ausencias' && <AusenciasTab />}
       {tab === 'feriados' && <FeriadosTab />}
       {tab === 'productividad' && <ProductividadTab />}
+      {tab === 'aumentos' && isOwner && <AumentosTab />}
+      {tab === 'aguinaldo' && isOwner && <AguinaldoTab />}
+      {tab === 'vacaciones' && isOwner && <VacacionesTab />}
     </div>
   )
 }
