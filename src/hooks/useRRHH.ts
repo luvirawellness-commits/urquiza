@@ -28,6 +28,7 @@ export type JobPosition = {
 export type EmployeeUser = {
   id: string; full_name: string; color_hex?: string | null
   schedule?: Record<string, { start: string; end: string }[]> | null
+  hire_date?: string | null
 }
 
 export type EmployeeProfile = {
@@ -143,7 +144,7 @@ export function useEmployeeProfiles() {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('employee_profiles')
-        .select('*, user:users!employee_profiles_user_id_fkey(id,full_name,color_hex,schedule), position:job_positions!employee_profiles_job_position_id_fkey(*)')
+        .select('*, user:users!employee_profiles_user_id_fkey(id,full_name,color_hex,schedule,hire_date), position:job_positions!employee_profiles_job_position_id_fkey(*)')
         .eq('tenant_id', tenantId)
         .order('created_at')
       if (error) throw error

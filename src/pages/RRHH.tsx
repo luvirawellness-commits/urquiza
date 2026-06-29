@@ -15,7 +15,6 @@ import {
   useCreateEmployee, useUpdateEmployee,
   useCreateAbsence, useUpsertCCSS, useUpdateCCSSStatus,
   useCreateHoliday, useDeleteHoliday,
-  useEmployeeUsersWithSalary, useUpdateUserSalary,
   useSalaryIncreases, useBonusPayments, useVacationRecords,
   useCreateSalaryIncrease, useRegisterBonusPayment, useRegisterVacationPayment,
   calcMonthScheduleHours, calcHolidayBonus,
@@ -1478,15 +1477,29 @@ function ProductividadTab() {
 
 // ── Tab 7: Aumentos de sueldo ─────────────────────────────────────────────────
 
+function getEmpRate(emp: EmployeeProfile): { rate: number; isHourly: boolean } {
+  const isHourly = emp.position?.contract_type === 'hourly'
+  return {
+    isHourly,
+    rate: isHourly ? (emp.position?.hourly_rate ?? 0) : (emp.position?.monthly_salary ?? 0),
+  }
+}
+
+function getEmpMonthlyEquivalent(emp: EmployeeProfile): number {
+  if (emp.position?.contract_type === 'hourly') {
+    return Math.round((emp.position.hourly_rate ?? 0) * (emp.position.expected_monthly_hours || 160))
+  }
+  return emp.position?.monthly_salary ?? 0
+}
+
 function AumentosTab() {
   const { user } = useAuth()
   const today = getArgentinaDateString()
   const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
-  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
   const [histFilterUser, setHistFilterUser] = useState('')
   const { data: allIncreases = [], isLoading: incLoading } = useSalaryIncreases(histFilterUser || undefined)
   const createIncrease = useCreateSalaryIncrease()
-  const updateSalary = useUpdateUserSalary()
+  const updateJobPos = useUpdateJobPosition()
 
   const [inflacion, setInflacion] = useState('')
   const [tipo, setTipo] = useState<'percentage' | 'fixed'>('percentage')
@@ -1499,12 +1512,6 @@ function AumentosTab() {
   const [applying, setApplying] = useState(false)
   const [applyError, setApplyError] = useState('')
 
-  const salaryMap = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const u of usersSalary) map.set(u.id, u.salary ?? 0)
-    return map
-  }, [usersSalary])
-
   const activeEmployees = employees.filter(e => e.active)
   const targetEmployees = scope === 'all'
     ? activeEmployees
@@ -1514,11 +1521,11 @@ function AumentosTab() {
     const pctVal = parseFloat(pct) || 0
     const fixedVal = parseFloat(fixedAmt) || 0
     return targetEmployees.map(emp => {
-      const current = salaryMap.get(emp.user_id) ?? 0
-      const increase = tipo === 'percentage' ? Math.round(current * pctVal / 100) : fixedVal
-      return { emp, current, increase, newSalary: current + increase }
+      const { rate, isHourly } = getEmpRate(emp)
+      const increase = tipo === 'percentage' ? Math.round(rate * pctVal / 100) : fixedVal
+      return { emp, rate, isHourly, increase, newRate: rate + increase }
     })
-  }, [targetEmployees, salaryMap, tipo, pct, fixedAmt])
+  }, [targetEmployees, tipo, pct, fixedAmt])
 
   async function handleApply() {
     if (preview.length === 0) { setApplyError('No hay empleados seleccionados'); return }
@@ -1527,7 +1534,7 @@ function AumentosTab() {
     setApplyError('')
     setApplying(true)
     try {
-      for (const { emp, current, increase, newSalary } of preview) {
+      for (const { emp, rate, increase, newRate, isHourly } of preview) {
         if (increase <= 0) continue
         await createIncrease.mutateAsync({
           user_id: emp.user_id,
@@ -1535,13 +1542,16 @@ function AumentosTab() {
           percentage: tipo === 'percentage' ? parseFloat(pct) : null,
           fixed_amount: tipo === 'fixed' ? parseFloat(fixedAmt) : null,
           inflation_reference: inflacion ? parseFloat(inflacion) : null,
-          previous_salary: current,
-          new_salary: newSalary,
+          previous_salary: rate,
+          new_salary: newRate,
           effective_date: effectiveDate,
           notes: notes || null,
           applied_by: user!.id,
         })
-        await updateSalary.mutateAsync({ userId: emp.user_id, salary: newSalary })
+        await updateJobPos.mutateAsync({
+          id: emp.job_position_id,
+          ...(isHourly ? { hourly_rate: newRate } : { monthly_salary: newRate }),
+        })
       }
       setInflacion(''); setPct(''); setFixedAmt(''); setNotes('')
       setScope('all'); setSelectedUserId('')
@@ -1551,8 +1561,6 @@ function AumentosTab() {
       setApplying(false)
     }
   }
-
-  const isLoading = empLoading || salLoading
 
   return (
     <div className="space-y-6">
@@ -1636,22 +1644,33 @@ function AumentosTab() {
           </div>
 
           {preview.length > 0 && (
-            <div className="rounded-lg border overflow-hidden">
-              <table className="w-full text-sm">
+            <div className="rounded-lg border overflow-hidden overflow-x-auto">
+              <table className="w-full text-sm min-w-[520px]">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    {['Nombre', 'Sueldo actual', 'Aumento', 'Nuevo sueldo'].map(h => (
-                      <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
+                    {['Nombre', 'Tipo', 'Valor actual', 'Aumento', 'Nuevo valor'].map(h => (
+                      <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {preview.map(({ emp, current, increase, newSalary }) => (
+                  {preview.map(({ emp, rate, isHourly, increase, newRate }) => (
                     <tr key={emp.id} className="border-b last:border-b-0">
                       <td className="px-3 py-2 font-medium text-plum-800">{emp.user?.full_name}</td>
-                      <td className="px-3 py-2 tabular-nums">{fmtARS(current)}</td>
-                      <td className="px-3 py-2 tabular-nums text-green-700">+{fmtARS(increase)}</td>
-                      <td className="px-3 py-2 tabular-nums font-semibold">{fmtARS(newSalary)}</td>
+                      <td className="px-3 py-2">
+                        <span className={cn('text-xs px-1.5 py-0.5 rounded font-medium', isHourly ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700')}>
+                          {isHourly ? 'Por hora' : 'Mensual'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 tabular-nums">
+                        {fmtARS(rate)}{isHourly ? '/h' : ''}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-green-700">
+                        +{fmtARS(increase)}{isHourly ? '/h' : ''}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums font-semibold">
+                        {fmtARS(newRate)}{isHourly ? '/h' : ''}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1661,7 +1680,7 @@ function AumentosTab() {
 
           {applyError && <p className="text-sm text-red-600">{applyError}</p>}
           <div className="flex justify-end">
-            <Button onClick={handleApply} disabled={applying || isLoading || preview.length === 0}>
+            <Button onClick={handleApply} disabled={applying || empLoading || preview.length === 0}>
               {applying && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
               Aplicar aumento
             </Button>
@@ -1685,15 +1704,15 @@ function AumentosTab() {
                 onClick={() => exportToExcel(
                   allIncreases.map((i: SalaryIncrease) => {
                     const emp = employees.find(e => e.user_id === i.user_id)
+                    const diff = i.new_salary - i.previous_salary
                     return {
                       'Fecha': i.effective_date,
                       'Empleado': emp?.user?.full_name ?? i.user_id.slice(0, 8),
                       'Tipo': i.type === 'percentage' ? 'Porcentaje' : 'Monto fijo',
                       'Ref. inflación (%)': i.inflation_reference ?? '',
-                      'Porcentaje (%)': i.percentage ?? '',
-                      'Monto fijo ($)': i.fixed_amount ?? '',
-                      'Sueldo anterior': i.previous_salary,
-                      'Nuevo sueldo': i.new_salary,
+                      'Diferencia': diff,
+                      'Valor anterior': i.previous_salary,
+                      'Nuevo valor': i.new_salary,
                       'Notas': i.notes ?? '',
                     }
                   }),
@@ -1711,10 +1730,10 @@ function AumentosTab() {
             <p className="text-center py-8 text-sm text-muted-foreground">Sin aumentos registrados</p>
           ) : (
             <div className="rounded-lg border overflow-hidden overflow-x-auto">
-              <table className="w-full text-sm min-w-[760px]">
+              <table className="w-full text-sm min-w-[720px]">
                 <thead className="bg-gray-50 border-b">
                   <tr>
-                    {['Fecha', 'Empleado', 'Tipo', 'Ref. inflación', '% / Monto', 'Sueldo ant.', 'Nuevo sueldo', 'Notas'].map(h => (
+                    {['Fecha', 'Empleado', 'Tipo', 'Ref. inflación', 'Diferencia', 'Valor ant.', 'Nuevo valor', 'Notas'].map(h => (
                       <th key={h} className="text-left px-3 py-2 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap">{h}</th>
                     ))}
                   </tr>
@@ -1722,6 +1741,10 @@ function AumentosTab() {
                 <tbody>
                   {allIncreases.map((inc: SalaryIncrease) => {
                     const emp = employees.find(e => e.user_id === inc.user_id)
+                    const diff = inc.new_salary - inc.previous_salary
+                    const diffLabel = inc.type === 'percentage' && inc.percentage != null
+                      ? `${inc.percentage}% (${diff >= 0 ? '+' : ''}${fmtARS(diff)})`
+                      : `${diff >= 0 ? '+' : ''}${fmtARS(diff)}`
                     return (
                       <tr key={inc.id} className="border-b last:border-b-0 hover:bg-gray-50">
                         <td className="px-3 py-2 tabular-nums whitespace-nowrap">{inc.effective_date}</td>
@@ -1732,11 +1755,9 @@ function AumentosTab() {
                           </Badge>
                         </td>
                         <td className="px-3 py-2 tabular-nums">{inc.inflation_reference != null ? `${inc.inflation_reference}%` : '—'}</td>
-                        <td className="px-3 py-2 tabular-nums">
-                          {inc.type === 'percentage' ? `${inc.percentage}%` : fmtARS(inc.fixed_amount ?? 0)}
-                        </td>
+                        <td className="px-3 py-2 tabular-nums text-green-700 font-medium">{diffLabel}</td>
                         <td className="px-3 py-2 tabular-nums">{fmtARS(inc.previous_salary)}</td>
-                        <td className="px-3 py-2 tabular-nums font-medium text-green-700">{fmtARS(inc.new_salary)}</td>
+                        <td className="px-3 py-2 tabular-nums font-medium text-plum-800">{fmtARS(inc.new_salary)}</td>
                         <td className="px-3 py-2 text-muted-foreground max-w-[160px] truncate">{inc.notes ?? '—'}</td>
                       </tr>
                     )
@@ -1766,7 +1787,6 @@ function AguinaldoTab() {
   const [year, setYear] = useState(now.getFullYear())
 
   const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
-  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
   const { data: allIncreases = [], isLoading: incLoading } = useSalaryIncreases()
   const { data: bonusData = [], isLoading: bonusLoading } = useBonusPayments(year)
   const registerBonus = useRegisterBonusPayment()
@@ -1778,27 +1798,21 @@ function AguinaldoTab() {
   const [payForm, setPayForm] = useState<BonusPayFormState>({ monto: '', paymentMethod: 'transfer', paidDate: today })
   const [payError, setPayError] = useState('')
 
-  const salaryMap = useMemo(() => {
-    const map = new Map<string, number>()
-    for (const u of usersSalary) map.set(u.id, u.salary ?? 0)
-    return map
-  }, [usersSalary])
-
   const activeEmployees = employees.filter(e => e.active)
 
-  function getBestSalary(userId: string, period: 'june' | 'december'): number {
+  function getBestSalary(emp: EmployeeProfile, period: 'june' | 'december'): number {
     const [startMo, endMo] = period === 'june' ? ['01', '06'] : ['07', '12']
     const start = `${year}-${startMo}-01`
     const end = `${year}-${endMo}-30`
     const relevant = allIncreases.filter((i: SalaryIncrease) =>
-      i.user_id === userId && i.effective_date >= start && i.effective_date <= end,
+      i.user_id === emp.user_id && i.effective_date >= start && i.effective_date <= end,
     )
-    if (relevant.length === 0) return salaryMap.get(userId) ?? 0
+    if (relevant.length === 0) return getEmpMonthlyEquivalent(emp)
     return Math.max(...relevant.map((i: SalaryIncrease) => i.new_salary))
   }
 
   function openPayModal(emp: EmployeeProfile, period: 'june' | 'december') {
-    const bestSalary = getBestSalary(emp.user_id, period)
+    const bestSalary = getBestSalary(emp, period)
     const amount = Math.round(bestSalary / 2)
     setPayModal({ open: true, userId: emp.user_id, employeeName: emp.user?.full_name ?? '', period, bestSalary, amount })
     setPayForm({ monto: amount.toString(), paymentMethod: 'transfer', paidDate: today })
@@ -1827,7 +1841,7 @@ function AguinaldoTab() {
     }
   }
 
-  const isLoading = empLoading || salLoading || incLoading || bonusLoading
+  const isLoading = empLoading || incLoading || bonusLoading
 
   const PERIODS = [
     { key: 'june' as const, label: 'Primer semestre (Junio)', months: 'Enero – Junio' },
@@ -1867,7 +1881,7 @@ function AguinaldoTab() {
                       {activeEmployees.length === 0 ? (
                         <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Sin empleados activos</td></tr>
                       ) : activeEmployees.map(emp => {
-                        const bestSalary = getBestSalary(emp.user_id, key)
+                        const bestSalary = getBestSalary(emp, key)
                         const amount = Math.round(bestSalary / 2)
                         const existing = existingMap.get(emp.user_id)
                         const isPaid = !!existing?.paid_date
@@ -1990,15 +2004,8 @@ function VacacionesTab() {
   const [year, setYear] = useState(now.getFullYear())
 
   const { data: employees = [], isLoading: empLoading } = useEmployeeProfiles()
-  const { data: usersSalary = [], isLoading: salLoading } = useEmployeeUsersWithSalary()
   const { data: vacData = [], isLoading: vacLoading } = useVacationRecords(year)
   const registerVacation = useRegisterVacationPayment()
-
-  const salaryMap = useMemo(() => {
-    const map = new Map<string, { salary: number | null; hire_date: string | null }>()
-    for (const u of usersSalary) map.set(u.id, { salary: u.salary ?? null, hire_date: u.hire_date ?? null })
-    return map
-  }, [usersSalary])
 
   const [vacModal, setVacModal] = useState<{
     open: boolean; emp: EmployeeProfile | null; entitledDays: number; existingDaysTaken: number
@@ -2009,10 +2016,10 @@ function VacacionesTab() {
   const [vacError, setVacError] = useState('')
 
   function openVacModal(emp: EmployeeProfile) {
-    const userInfo = salaryMap.get(emp.user_id)
-    const { days } = calcEntitledDays(userInfo?.hire_date)
+    const { days } = calcEntitledDays(emp.user?.hire_date)
     const existing = vacData.find(v => v.user_id === emp.user_id)
-    const dailySalary = userInfo?.salary != null ? Math.round(userInfo.salary / 25) : 0
+    const monthlyEquiv = getEmpMonthlyEquivalent(emp)
+    const dailySalary = Math.round(monthlyEquiv / 25)
     setVacModal({ open: true, emp, entitledDays: days, existingDaysTaken: existing?.days_taken ?? 0 })
     setVacForm({ startDate: '', endDate: '', daysTaken: '', dailySalary: dailySalary.toString(), amount: '', paymentMethod: 'transfer', paidDate: today })
     setVacError('')
@@ -2067,7 +2074,7 @@ function VacacionesTab() {
     }
   }
 
-  const isLoading = empLoading || salLoading || vacLoading
+  const isLoading = empLoading || vacLoading
   const activeEmployees = employees.filter(e => e.active)
 
   return (
@@ -2097,8 +2104,7 @@ function VacacionesTab() {
             </thead>
             <tbody>
               {activeEmployees.map(emp => {
-                const userInfo = salaryMap.get(emp.user_id)
-                const { days: entitledDays, seniority, hasHireDate } = calcEntitledDays(userInfo?.hire_date)
+                const { days: entitledDays, seniority, hasHireDate } = calcEntitledDays(emp.user?.hire_date)
                 const existing = vacData.find(v => v.user_id === emp.user_id)
                 const daysTaken = existing?.days_taken ?? 0
                 const daysRemaining = entitledDays - daysTaken
