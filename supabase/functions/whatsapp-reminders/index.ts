@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.220.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { checkRateLimit, rateLimitResponse } from '../_shared/rateLimit.ts'
 
 // Format Argentine phone numbers to WhatsApp E.164.
 // Handles: already-prefixed (+54... / 54...), local trunk (0...), plain 10-digit.
@@ -89,6 +90,14 @@ serve(async (req: Request) => {
   if (req.method !== 'POST' && req.method !== 'GET') {
     return new Response('Method Not Allowed', { status: 405 })
   }
+
+  const rl = await checkRateLimit({
+    key: 'whatsapp-reminders:global',
+    limit: 10,
+    windowSeconds: 60,
+  })
+
+  if (!rl.allowed) return rateLimitResponse(rl.resetIn)
 
   const accessToken   = Deno.env.get('WHATSAPP_ACCESS_TOKEN')
   const phoneNumberId = Deno.env.get('WHATSAPP_PHONE_NUMBER_ID')

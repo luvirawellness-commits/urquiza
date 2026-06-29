@@ -1,6 +1,19 @@
 import { serve } from 'https://deno.land/std@0.220.0/http/server.ts'
+import { checkRateLimit, rateLimitResponse } from '../_shared/rateLimit.ts'
 
 serve(async (req: Request) => {
+  const ip = req.headers.get('x-forwarded-for')
+    ?? req.headers.get('cf-connecting-ip')
+    ?? 'unknown'
+
+  const rl = await checkRateLimit({
+    key: `whatsapp-webhook:${ip}`,
+    limit: req.method === 'GET' ? 100 : 500,
+    windowSeconds: 60,
+  })
+
+  if (!rl.allowed) return rateLimitResponse(rl.resetIn)
+
   const url = new URL(req.url)
 
   // ── GET: webhook verification from Meta ──────────────────────────────────────

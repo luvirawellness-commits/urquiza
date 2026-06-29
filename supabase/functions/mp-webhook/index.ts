@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.220.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { checkRateLimit, rateLimitResponse } from '../_shared/rateLimit.ts'
 
 function json(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -50,6 +51,18 @@ serve(async (req: Request) => {
   console.log('Headers:', JSON.stringify(Object.fromEntries(req.headers.entries())))
 
   if (req.method === 'OPTIONS') return json({ ok: true })
+
+  const ip = req.headers.get('x-forwarded-for')
+    ?? req.headers.get('cf-connecting-ip')
+    ?? 'unknown'
+
+  const rl = await checkRateLimit({
+    key: `mp-webhook:${ip}`,
+    limit: 200,
+    windowSeconds: 60,
+  })
+
+  if (!rl.allowed) return rateLimitResponse(rl.resetIn)
 
   const webhookSecret = Deno.env.get('MP_WEBHOOK_SECRET')
   if (!webhookSecret) {
