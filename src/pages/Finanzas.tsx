@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
-  Plus, CheckCircle2,
+  Plus, CheckCircle2, Pencil,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
@@ -48,6 +48,7 @@ import {
   useSupplierInvoices,
   useCreateSupplierInvoice,
   useMarkInvoicePaid,
+  useUpdateSupplierInvoice,
 } from '@/hooks/useSupplierInvoices'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
@@ -2584,6 +2585,7 @@ function TabProveedores() {
   const { data: invoicesRaw = [], isLoading } = useSupplierInvoices({ from, to })
   const createInvoice = useCreateSupplierInvoice()
   const markPaid = useMarkInvoicePaid()
+  const updateInvoice = useUpdateSupplierInvoice()
 
   // New invoice modal
   const [showNew, setShowNew] = useState(false)
@@ -2605,6 +2607,29 @@ function TabProveedores() {
   const [payDate, setPayDate] = useState(today)
   const [payBusy, setPayBusy] = useState(false)
   const [payError, setPayError] = useState<string | null>(null)
+
+  // Edit modal
+  const [editInvoice, setEditInvoice] = useState<InvoiceWithOverdue | null>(null)
+  const [editForm, setEditForm] = useState({
+    supplier_name: '', invoice_number: '', description: '',
+    category: 'supplies', amount: '', issue_date: '', due_date: '',
+  })
+  const [editError, setEditError] = useState<string | null>(null)
+  const [editBusy, setEditBusy] = useState(false)
+
+  function openEdit(inv: InvoiceWithOverdue) {
+    setEditInvoice(inv)
+    setEditForm({
+      supplier_name: inv.supplier_name,
+      invoice_number: inv.invoice_number ?? '',
+      description: inv.description,
+      category: inv.category,
+      amount: String(inv.amount),
+      issue_date: inv.issue_date,
+      due_date: inv.due_date,
+    })
+    setEditError(null)
+  }
 
   const filtered = useMemo(() => {
     let rows = invoicesRaw as InvoiceWithOverdue[]
@@ -2682,6 +2707,34 @@ function TabProveedores() {
       setPayError(e instanceof Error ? e.message : 'Error al registrar el pago.')
     } finally {
       setPayBusy(false)
+    }
+  }
+
+  async function handleUpdate() {
+    if (!editInvoice) return
+    setEditError(null)
+    if (!editForm.supplier_name.trim()) { setEditError('El proveedor es requerido.'); return }
+    if (!editForm.description.trim()) { setEditError('La descripción es requerida.'); return }
+    if (!editForm.amount || Number(editForm.amount) <= 0) { setEditError('El monto debe ser mayor a 0.'); return }
+    if (!editForm.due_date) { setEditError('La fecha de vencimiento es requerida.'); return }
+    setEditBusy(true)
+    try {
+      await updateInvoice.mutateAsync({
+        invoiceId: editInvoice.id,
+        transactionId: editInvoice.transaction_id,
+        supplier_name: editForm.supplier_name.trim(),
+        invoice_number: editForm.invoice_number.trim() || undefined,
+        description: editForm.description.trim(),
+        category: editForm.category,
+        amount: Number(editForm.amount),
+        issue_date: editForm.issue_date,
+        due_date: editForm.due_date,
+      })
+      setEditInvoice(null)
+    } catch (e: unknown) {
+      setEditError(e instanceof Error ? e.message : 'Error al actualizar la factura.')
+    } finally {
+      setEditBusy(false)
     }
   }
 
@@ -2836,22 +2889,34 @@ function TabProveedores() {
                         {inv.payment_method ? (PM_LABELS[inv.payment_method] ?? inv.payment_method) : '—'}
                       </td>
                       <td className="px-4 py-2.5">
-                        {inv.status === 'pending' && (
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-xs"
-                            onClick={() => {
-                              setPayInvoice(inv)
-                              setPayMethod('transfer')
-                              setPayDate(today)
-                              setPayError(null)
-                            }}
-                          >
-                            <CheckCircle2 className="w-3 h-3 mr-1" />
-                            Pagar
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1.5">
+                          {profile?.role === 'owner' && inv.status !== 'paid' && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-7 w-7 p-0 text-muted-foreground hover:text-plum-800"
+                              onClick={() => openEdit(inv)}
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </Button>
+                          )}
+                          {inv.status === 'pending' && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 text-xs"
+                              onClick={() => {
+                                setPayInvoice(inv)
+                                setPayMethod('transfer')
+                                setPayDate(today)
+                                setPayError(null)
+                              }}
+                            >
+                              <CheckCircle2 className="w-3 h-3 mr-1" />
+                              Pagar
+                            </Button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -2977,6 +3042,94 @@ function TabProveedores() {
               </Button>
               <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={handleMarkPaid} disabled={payBusy}>
                 {payBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Procesando...</> : 'Confirmar pago'}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Editar factura modal */}
+      <Dialog open={!!editInvoice} onOpenChange={(o) => { if (!o) setEditInvoice(null) }}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Editar Factura</DialogTitle>
+            <DialogDescription>
+              Modificá los datos de la factura. Los cambios se aplican también al gasto vinculado en P&L.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="col-span-2 space-y-1.5">
+                <Label>Proveedor *</Label>
+                <Input
+                  value={editForm.supplier_name}
+                  onChange={(e) => setEditForm({ ...editForm, supplier_name: e.target.value })}
+                  placeholder="Nombre del proveedor"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>N° Factura</Label>
+                <Input
+                  value={editForm.invoice_number}
+                  onChange={(e) => setEditForm({ ...editForm, invoice_number: e.target.value })}
+                  placeholder="Opcional"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Monto *</Label>
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={editForm.amount}
+                  onChange={(e) => setEditForm({ ...editForm, amount: e.target.value })}
+                  placeholder="0,00"
+                />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Descripción *</Label>
+                <Input
+                  value={editForm.description}
+                  onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                  placeholder="Descripción del gasto"
+                />
+              </div>
+              <div className="col-span-2 space-y-1.5">
+                <Label>Categoría *</Label>
+                <select
+                  className={selectCls}
+                  value={editForm.category}
+                  onChange={(e) => setEditForm({ ...editForm, category: e.target.value })}
+                >
+                  {EXPENSE_CATEGORIES_CAJA.map((c) => (
+                    <option key={c.value} value={c.value}>{c.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de emisión *</Label>
+                <Input
+                  type="date"
+                  value={editForm.issue_date}
+                  onChange={(e) => setEditForm({ ...editForm, issue_date: e.target.value })}
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Fecha de vencimiento *</Label>
+                <Input
+                  type="date"
+                  value={editForm.due_date}
+                  onChange={(e) => setEditForm({ ...editForm, due_date: e.target.value })}
+                />
+              </div>
+            </div>
+            {editError && <p className="text-sm text-red-600">{editError}</p>}
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => setEditInvoice(null)} disabled={editBusy}>
+                Cancelar
+              </Button>
+              <Button className="bg-plum-700 hover:bg-plum-800 text-white" onClick={handleUpdate} disabled={editBusy}>
+                {editBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</> : 'Guardar cambios'}
               </Button>
             </div>
           </div>

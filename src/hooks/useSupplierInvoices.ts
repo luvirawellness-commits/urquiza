@@ -155,6 +155,68 @@ export function useMarkInvoicePaid() {
   })
 }
 
+type UpdateInvoiceInput = {
+  invoiceId: string
+  transactionId?: string | null
+  supplier_name: string
+  invoice_number?: string
+  description: string
+  category: string
+  amount: number
+  issue_date: string
+  due_date: string
+}
+
+export function useUpdateSupplierInvoice() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: UpdateInvoiceInput) => {
+      const { error: invError } = await supabase
+        .from('supplier_invoices')
+        .update({
+          supplier_name: input.supplier_name,
+          invoice_number: input.invoice_number ?? null,
+          description: input.description,
+          category: input.category,
+          amount: input.amount,
+          issue_date: input.issue_date,
+          due_date: input.due_date,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', input.invoiceId)
+        .eq('tenant_id', tenantId)
+        .neq('status', 'paid')
+      if (invError) throw invError
+
+      if (!input.transactionId) {
+        console.warn('[useUpdateSupplierInvoice] no transaction_id linked', input.invoiceId)
+        return
+      }
+
+      const desc = input.invoice_number
+        ? `${input.supplier_name} · Fac. ${input.invoice_number}: ${input.description}`
+        : `${input.supplier_name}: ${input.description}`
+
+      const { error: txError } = await supabase
+        .from('transactions')
+        .update({
+          amount: input.amount,
+          description: desc,
+          date: input.issue_date,
+          category: input.category,
+        })
+        .eq('id', input.transactionId)
+        .eq('tenant_id', tenantId)
+      if (txError) throw txError
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['supplier-invoices'] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+    },
+  })
+}
+
 export function useOverdueSupplierInvoicesCount(options?: { enabled?: boolean }) {
   const tenantId = useTenantId()
   const today = getArgentinaDateString()
