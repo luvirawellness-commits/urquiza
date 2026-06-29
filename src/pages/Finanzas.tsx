@@ -1126,7 +1126,7 @@ function PLRow({
 
 interface PLNumericFields {
   sesiones: number; membresias: number; giftCards: number; productos: number; totalIngresos: number
-  cmvTeorico: number; cmvReal: number; diferenciaCMV: number; costoOperativo: number; costoVentaTotal: number
+  cmvTeorico: number; cmvReal: number; diferenciaCMV: number; costoOperativo: number; aguinaldo: number; vacaciones: number; costoVentaTotal: number
   utilidadBruta: number
   sueldoAdmin: number; alquiler: number; servicios: number; gestion: number; marketing: number
   mantenimiento: number; depreciacion: number; retiroSocios: number; otros: number; royalty: number; totalGastosOp: number
@@ -1170,7 +1170,9 @@ function computePLMonth(
   const cmvReal = sum(exp.filter((t) => t.category === 'supplies'))
   const diferenciaCMV = cmvReal - cmvTeorico
   const costoOperativo = sum(exp.filter((t) => ['salary_operativo', 'salary', 'social_charges'].includes(t.category ?? '')))
-  const costoVentaTotal = cmvReal + costoOperativo
+  const aguinaldo = sum(exp.filter((t) => t.category === 'aguinaldo'))
+  const vacaciones = sum(exp.filter((t) => t.category === 'vacaciones'))
+  const costoVentaTotal = cmvReal + costoOperativo + aguinaldo + vacaciones
   const utilidadBruta = totalIngresos - costoVentaTotal
 
   const sueldoAdmin = sum(exp.filter((t) => t.category === 'salary_admin'))
@@ -1196,7 +1198,7 @@ function computePLMonth(
 
   return {
     sesiones, membresias, giftCards, productos, totalIngresos,
-    cmvTeorico, cmvReal, diferenciaCMV, costoOperativo, costoVentaTotal,
+    cmvTeorico, cmvReal, diferenciaCMV, costoOperativo, aguinaldo, vacaciones, costoVentaTotal,
     utilidadBruta,
     sueldoAdmin, alquiler, servicios, gestion, marketing, mantenimiento, depreciacion, retiroSocios, otros, royalty, totalGastosOp,
     utilidadOp,
@@ -1208,7 +1210,7 @@ function computePLMonth(
 function sumPLFields(months: PLNumericFields[]): PLNumericFields {
   const init: PLNumericFields = {
     sesiones: 0, membresias: 0, giftCards: 0, productos: 0, totalIngresos: 0,
-    cmvTeorico: 0, cmvReal: 0, diferenciaCMV: 0, costoOperativo: 0, costoVentaTotal: 0,
+    cmvTeorico: 0, cmvReal: 0, diferenciaCMV: 0, costoOperativo: 0, aguinaldo: 0, vacaciones: 0, costoVentaTotal: 0,
     utilidadBruta: 0,
     sueldoAdmin: 0, alquiler: 0, servicios: 0, gestion: 0, marketing: 0,
     mantenimiento: 0, depreciacion: 0, retiroSocios: 0, otros: 0, royalty: 0, totalGastosOp: 0,
@@ -1242,6 +1244,8 @@ const PL_ROWS: PLRowDef[] = [
   { type: 'item', label: 'CMV Real (insumos)', key: 'cmvReal' },
   { type: 'info', label: 'Diferencia CMV', key: 'diferenciaCMV', diffHighlight: true },
   { type: 'item', label: 'Costo Operativo (Sueldos + CCSS)', key: 'costoOperativo' },
+  { type: 'item', label: 'Aguinaldo', key: 'aguinaldo' },
+  { type: 'item', label: 'Vacaciones', key: 'vacaciones' },
   { type: 'subtotal', label: 'Costo de venta total', key: 'costoVentaTotal' },
   { type: 'total', label: 'UTILIDAD BRUTA', key: 'utilidadBruta', showPct: true, signHighlight: true },
   { type: 'section', label: 'GASTOS OPERATIVOS' },
