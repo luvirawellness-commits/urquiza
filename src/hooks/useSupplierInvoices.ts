@@ -16,7 +16,7 @@ export function useSupplierInvoices(filters: InvoiceFilters = {}) {
     queryFn: async () => {
       let query = supabase
         .from('supplier_invoices')
-        .select('*')
+        .select('*, supplier_invoice_payments(*)')
         .eq('tenant_id', tenantId)
         .order('due_date', { ascending: true })
 
@@ -105,11 +105,19 @@ export function useCreateSupplierInvoice() {
   })
 }
 
+export interface PaymentSplit {
+  paymentMethod: string
+  amount: number
+}
+
 type MarkPaidInput = {
   invoiceId: string
   transactionId?: string | null
-  paymentMethod: string
+  splits: PaymentSplit[]
   paidDate: string
+  category: string
+  description: string
+  userId: string
 }
 
 export function useMarkInvoicePaid() {
@@ -117,33 +125,86 @@ export function useMarkInvoicePaid() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: async (input: MarkPaidInput) => {
+      const methodStr = input.splits.map(s => s.paymentMethod).join(',')
+
       const { error: invError } = await supabase
         .from('supplier_invoices')
         .update({
           status: 'paid',
           paid_date: input.paidDate,
-          payment_method: input.paymentMethod,
+          payment_method: methodStr,
           updated_at: new Date().toISOString(),
         })
         .eq('id', input.invoiceId)
         .eq('tenant_id', tenantId)
       if (invError) throw invError
 
-      if (!input.transactionId) {
-        console.warn('[useMarkInvoicePaid] invoice has no linked transaction_id — skipping transaction update', input.invoiceId)
-        return
+      const txIds: (string | null)[] = []
+      const firstSplit = input.splits[0]
+
+      if (input.transactionId) {
+        const { error: txError } = await supabase
+          .from('transactions')
+          .update({
+            status: 'paid',
+            payment_method: firstSplit.paymentMethod,
+            amount: firstSplit.amount,
+            date: input.paidDate,
+          })
+          .eq('id', input.transactionId)
+          .eq('tenant_id', tenantId)
+        if (txError) throw txError
+        txIds.push(input.transactionId)
+      } else {
+        const { data: newTx, error: txError } = await supabase
+          .from('transactions')
+          .insert({
+            tenant_id: tenantId,
+            type: 'expense',
+            category: input.category,
+            amount: firstSplit.amount,
+            description: input.description,
+            date: input.paidDate,
+            user_id: input.userId,
+            payment_method: firstSplit.paymentMethod,
+            status: 'paid',
+          })
+          .select('id')
+          .single()
+        if (txError) throw txError
+        txIds.push(newTx.id)
       }
 
-      const { error: txError } = await supabase
-        .from('transactions')
-        .update({
-          status: 'paid',
-          payment_method: input.paymentMethod,
-          date: input.paidDate,
-        })
-        .eq('id', input.transactionId)
-        .eq('tenant_id', tenantId)
-      if (txError) throw txError
+      for (let i = 1; i < input.splits.length; i++) {
+        const split = input.splits[i]
+        const { data: newTx, error: txError } = await supabase
+          .from('transactions')
+          .insert({
+            tenant_id: tenantId,
+            type: 'expense',
+            category: input.category,
+            amount: split.amount,
+            description: `${input.description} (pago dividido ${i + 1}/${input.splits.length})`,
+            date: input.paidDate,
+            user_id: input.userId,
+            payment_method: split.paymentMethod,
+            status: 'paid',
+          })
+          .select('id')
+          .single()
+        if (txError) throw txError
+        txIds.push(newTx.id)
+      }
+
+      const { error: sipError } = await supabase
+        .from('supplier_invoice_payments')
+        .insert(input.splits.map((split, i) => ({
+          invoice_id: input.invoiceId,
+          transaction_id: txIds[i] ?? null,
+          payment_method: split.paymentMethod,
+          amount: split.amount,
+        })))
+      if (sipError) throw sipError
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['supplier-invoices'] })

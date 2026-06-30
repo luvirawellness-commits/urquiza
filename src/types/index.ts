@@ -235,6 +235,15 @@ export interface InventoryCountItem {
   supply?: { id: string; name: string; code: string; unit: string } | null
 }
 
+export interface SupplierInvoicePayment {
+  id: string
+  invoice_id: string
+  transaction_id?: string | null
+  payment_method: string
+  amount: number
+  created_at: string
+}
+
 export interface SupplierInvoice {
   id: string
   tenant_id: string
@@ -251,6 +260,7 @@ export interface SupplierInvoice {
   transaction_id?: string | null
   created_at: string
   updated_at?: string | null
+  supplier_invoice_payments?: SupplierInvoicePayment[] | null
 }
 
 export interface SalaryIncrease {

@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
-  Plus, CheckCircle2, Pencil,
+  Plus, CheckCircle2, Pencil, Trash2,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
@@ -91,7 +91,7 @@ const EXPENSE_CATEGORIES_CAJA = [
 
 const PM_LABELS: Record<string, string> = {
   cash: 'Efectivo', transfer: 'Transferencia', qr: 'QR',
-  mp: 'Mercado Pago', debit: 'Débito', credit: 'Crédito',
+  mp: 'Mercado Pago', debit: 'Débito', credit: 'Crédito', safe: 'Caja fuerte',
 }
 
 const CAT_LABELS: Record<string, string> = {
@@ -1090,7 +1090,7 @@ function PLRow({
   label, amount, bold, highlight, pct, indent, muted = false,
 }: {
   label: string; amount: number; bold?: boolean
-  highlight?: 'green' | 'red'; pct?: number; indent?: boolean; muted?: boolean
+  highlight?: 'green' | 'red'; pct?: number | null; indent?: boolean; muted?: boolean
 }) {
   return (
     <tr className={cn(
@@ -1116,7 +1116,7 @@ function PLRow({
         {formatCurrency(amount)}
       </td>
       <td className="py-2 text-xs text-right text-muted-foreground tabular-nums pl-4 w-14">
-        {pct !== undefined ? `${pct.toFixed(1)}%` : ''}
+        {pct !== undefined ? (pct === null ? '—' : `${pct.toFixed(1)}%`) : ''}
       </td>
     </tr>
   )
@@ -1373,7 +1373,7 @@ function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: st
                         )}>
                           {fmtC(val)}
                         </div>
-                        {(isTotal || isSub) && (
+                        {!isMuted && (
                           <div className="text-[10px] text-muted-foreground">{pct}</div>
                         )}
                       </td>
@@ -1387,7 +1387,7 @@ function PLMultiMonthTable({ months, title }: { months: PLMonthData[]; title: st
                     )}>
                       {fmtC(totalVal)}
                     </div>
-                    {(isTotal || isSub) && (
+                    {!isMuted && (
                       <div className="text-[10px] text-muted-foreground">{totalPct}</div>
                     )}
                   </td>
@@ -1900,8 +1900,8 @@ function TabPL() {
                     {PL_ROWS.map((row, i) => {
                       if (row.type === 'section') return <PLSectionHeader key={i} label={row.label} />
                       const val = pl[row.key]
-                      const pct = row.showPct && pl.totalIngresos > 0
-                        ? (val / pl.totalIngresos) * 100
+                      const pct = row.type !== 'info'
+                        ? (pl.totalIngresos > 0 ? (val / pl.totalIngresos) * 100 : null)
                         : undefined
                       const highlight: 'green' | 'red' | undefined = row.signHighlight
                         ? (val >= 0 ? 'green' : 'red')
@@ -2582,7 +2582,7 @@ function TabCierresCaja() {
 type InvoiceWithOverdue = SupplierInvoice & { isOverdue: boolean }
 
 function TabProveedores() {
-  const { profile } = useAuth()
+  const { profile, user } = useAuth()
   const today = getArgentinaDateString()
   const monthStart = today.slice(0, 7) + '-01'
 
@@ -2612,10 +2612,15 @@ function TabProveedores() {
 
   // Pay modal
   const [payInvoice, setPayInvoice] = useState<InvoiceWithOverdue | null>(null)
-  const [payMethod, setPayMethod] = useState('transfer')
+  const [paySplits, setPaySplits] = useState<{ paymentMethod: string; amount: string }[]>([
+    { paymentMethod: 'transfer', amount: '' },
+  ])
   const [payDate, setPayDate] = useState(today)
   const [payBusy, setPayBusy] = useState(false)
   const [payError, setPayError] = useState<string | null>(null)
+
+  const splitsTotal = paySplits.reduce((s, x) => s + (parseFloat(x.amount) || 0), 0)
+  const splitsMatch = !!payInvoice && Math.abs(splitsTotal - payInvoice.amount) < 0.01
 
   // Edit modal
   const [editInvoice, setEditInvoice] = useState<InvoiceWithOverdue | null>(null)
@@ -2701,15 +2706,24 @@ function TabProveedores() {
   }
 
   async function handleMarkPaid() {
-    if (!payInvoice) return
+    if (!payInvoice || !user) return
+    const splits = paySplits.map(s => ({ paymentMethod: s.paymentMethod, amount: parseFloat(s.amount) || 0 }))
+    if (!splitsMatch) { setPayError('La suma de los pagos debe ser igual al total de la factura.'); return }
+    if (splits.some(s => s.amount <= 0)) { setPayError('Todos los montos deben ser mayores a 0.'); return }
     setPayError(null)
     setPayBusy(true)
+    const desc = payInvoice.invoice_number
+      ? `${payInvoice.supplier_name} · Fac. ${payInvoice.invoice_number}: ${payInvoice.description}`
+      : `${payInvoice.supplier_name}: ${payInvoice.description}`
     try {
       await markPaid.mutateAsync({
         invoiceId: payInvoice.id,
         transactionId: payInvoice.transaction_id,
-        paymentMethod: payMethod,
+        splits,
         paidDate: payDate,
+        category: payInvoice.category,
+        description: desc,
+        userId: user.id,
       })
       setPayInvoice(null)
     } catch (e: unknown) {
@@ -2894,8 +2908,17 @@ function TabProveedores() {
                         {formatDate(inv.due_date)}
                       </td>
                       <td className="px-3 py-2.5"><InvoiceStatusBadge inv={inv} /></td>
-                      <td className="px-3 py-2.5 text-muted-foreground">
-                        {inv.payment_method ? (PM_LABELS[inv.payment_method] ?? inv.payment_method) : '—'}
+                      <td className="px-3 py-2.5 text-muted-foreground text-xs">
+                        {inv.supplier_invoice_payments && inv.supplier_invoice_payments.length > 0
+                          ? inv.supplier_invoice_payments.map((p, i) => (
+                              <span key={p.id}>
+                                {i > 0 && <span className="mx-1 text-gray-300">+</span>}
+                                {PM_LABELS[p.payment_method] ?? p.payment_method} {formatCurrency(p.amount)}
+                              </span>
+                            ))
+                          : inv.payment_method
+                            ? (PM_LABELS[inv.payment_method] ?? inv.payment_method)
+                            : '—'}
                       </td>
                       <td className="px-4 py-2.5">
                         <div className="flex items-center gap-1.5">
@@ -2916,7 +2939,7 @@ function TabProveedores() {
                               className="h-7 text-xs"
                               onClick={() => {
                                 setPayInvoice(inv)
-                                setPayMethod('transfer')
+                                setPaySplits([{ paymentMethod: 'transfer', amount: inv.amount.toString() }])
                                 setPayDate(today)
                                 setPayError(null)
                               }}
@@ -3028,29 +3051,93 @@ function TabProveedores() {
           <DialogHeader>
             <DialogTitle>Marcar como pagada</DialogTitle>
             <DialogDescription>
-              {payInvoice?.supplier_name} — {payInvoice ? formatCurrency(payInvoice.amount) : ''}
+              {payInvoice?.supplier_name}{payInvoice?.invoice_number ? ` · Fac. ${payInvoice.invoice_number}` : ''}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 pt-2">
-            <div className="space-y-1.5">
-              <Label>Método de pago</Label>
-              <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value)}>
-                {EXPENSE_PAYMENT_METHODS.map((pm) => (
-                  <option key={pm.value} value={pm.value}>{pm.label}</option>
-                ))}
-              </select>
+            {/* Invoice total */}
+            <div className="rounded-lg bg-gray-50 px-4 py-2.5 flex justify-between text-sm">
+              <span className="text-muted-foreground">Total factura</span>
+              <span className="font-semibold text-plum-800">
+                {payInvoice ? formatCurrency(payInvoice.amount) : ''}
+              </span>
             </div>
+
+            {/* Dynamic splits */}
+            <div className="space-y-2">
+              <Label>Medios de pago</Label>
+              {paySplits.map((split, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <select
+                    className={cn(selectCls, 'flex-1')}
+                    value={split.paymentMethod}
+                    onChange={(e) => setPaySplits(prev =>
+                      prev.map((s, i) => i === idx ? { ...s, paymentMethod: e.target.value } : s)
+                    )}
+                  >
+                    {EXPENSE_PAYMENT_METHODS.map(pm => (
+                      <option key={pm.value} value={pm.value}>{pm.label}</option>
+                    ))}
+                  </select>
+                  <Input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="Monto"
+                    className="w-28"
+                    value={split.amount}
+                    onChange={(e) => setPaySplits(prev =>
+                      prev.map((s, i) => i === idx ? { ...s, amount: e.target.value } : s)
+                    )}
+                  />
+                  {paySplits.length > 1 && (
+                    <button
+                      type="button"
+                      className="text-muted-foreground hover:text-red-600 transition-colors shrink-0"
+                      onClick={() => setPaySplits(prev => prev.filter((_, i) => i !== idx))}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <button
+                type="button"
+                className="text-sm text-plum-700 hover:underline flex items-center gap-1 pt-0.5"
+                onClick={() => setPaySplits(prev => [...prev, { paymentMethod: 'transfer', amount: '' }])}
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Agregar medio de pago
+              </button>
+            </div>
+
+            {/* Running total */}
+            <div className={cn(
+              'text-sm font-medium tabular-nums',
+              splitsMatch ? 'text-green-600' : 'text-amber-600',
+            )}>
+              Total ingresado: {formatCurrency(splitsTotal)} de {payInvoice ? formatCurrency(payInvoice.amount) : ''}
+              {splitsMatch && ' ✓'}
+            </div>
+
             <div className="space-y-1.5">
               <Label>Fecha de pago</Label>
-              <Input type="date" value={payDate} onChange={(e) => setPayDate(e.target.value)} />
+              <Input type="date" value={payDate} max={today} onChange={(e) => setPayDate(e.target.value)} />
             </div>
+
             {payError && <p className="text-sm text-red-600">{payError}</p>}
             <div className="flex justify-end gap-2 pt-1">
               <Button variant="outline" onClick={() => setPayInvoice(null)} disabled={payBusy}>
                 Cancelar
               </Button>
-              <Button className="bg-green-600 hover:bg-green-700 text-white" onClick={handleMarkPaid} disabled={payBusy}>
-                {payBusy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Procesando...</> : 'Confirmar pago'}
+              <Button
+                className="bg-green-600 hover:bg-green-700 text-white"
+                onClick={handleMarkPaid}
+                disabled={payBusy || !splitsMatch}
+              >
+                {payBusy
+                  ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Procesando...</>
+                  : 'Confirmar pago'}
               </Button>
             </div>
           </div>
