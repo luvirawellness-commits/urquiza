@@ -32,8 +32,10 @@ import {
   useTenantPaymentSettings,
   useHolidays,
   usePendingSettlements,
+  useTreasuryAdjustments,
+  useRedeclareBalances,
 } from '@/hooks/useTreasury'
-import type { PendingSettlement } from '@/hooks/useTreasury'
+import type { PendingSettlement, MonthlyBalance } from '@/hooks/useTreasury'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -52,7 +54,7 @@ import {
 } from '@/hooks/useSupplierInvoices'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
-type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres' | 'proveedores'
+type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres' | 'proveedores' | 'configuracion'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -1450,6 +1452,42 @@ function BolsilloCard({
   )
 }
 
+function computeBolsillos(
+  txs: Transaction[],
+  balance: MonthlyBalance | null | undefined,
+  cajonFondo: number,
+) {
+  const declaredAt = balance?.declared_at ?? null
+  const postTxs = declaredAt ? txs.filter((t) => (t.created_at ?? '') > declaredAt) : []
+
+  const sum = (filter: (t: Transaction) => boolean) =>
+    postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
+
+  const isPaid = (t: Transaction) => !t.status || t.status === 'paid'
+
+  const deposits    = sum((t) => t.type === 'expense' && isPaid(t) && t.category === 'cash_transfer')
+  const cashIn      = sum((t) => t.type === 'income' && t.payment_method === 'cash')
+  const cashOut     = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+  const safeOut     = sum((t) => t.type === 'expense' && isPaid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer')
+  const transferIn  = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
+  const transferOut = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'transfer')
+  const cardIn      = sum((t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''))
+  const cardOut     = sum((t) => t.type === 'expense' && isPaid(t) && CARD_METHODS.includes(t.payment_method ?? ''))
+  const cardIncomeTxs = postTxs.filter((t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''))
+
+  const openingSafe     = balance?.opening_safe ?? 0
+  const openingTransfer = balance?.opening_bank_transfer ?? 0
+  const openingCards    = balance?.opening_bank_cards ?? 0
+
+  return {
+    cajon: cajonFondo, cashIn, cashOut, deposits,
+    openingSafe, safeOut, cajaMayor: openingSafe + deposits - safeOut,
+    openingTransfer, transferIn, transferOut, transferBalance: openingTransfer + transferIn - transferOut,
+    openingCards, cardIn, cardOut, cardBalance: openingCards + cardIn - cardOut,
+    cardIncomeTxs,
+  }
+}
+
 function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: string }) {
   const { currentTenant } = useAuth()
   const [y, m] = month.split('-').map(Number)
@@ -1457,46 +1495,10 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
   const { data: settings = null } = useTenantPaymentSettings()
   const { data: holidays = [] } = useHolidays()
 
-  const bolsillos = useMemo(() => {
-    const cajon = currentTenant?.caja_fondo_fijo ?? 0
-
-    // Only count transactions created AFTER the declaration date
-    const declaredAt = balance?.declared_at ?? null
-    const postTxs = declaredAt
-      ? txs.filter((t) => (t.created_at ?? '') > declaredAt)
-      : []
-
-    const sum = (filter: (t: Transaction) => boolean) =>
-      postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
-
-    // Pending supplier invoice transactions must not affect treasury until paid
-    const isPaid = (t: Transaction) => !t.status || t.status === 'paid'
-
-    const deposits    = sum((t) => t.type === 'expense' && isPaid(t) && t.category === 'cash_transfer')
-    const cashIn      = sum((t) => t.type === 'income' && t.payment_method === 'cash')
-    const cashOut     = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer')
-    const safeOut     = sum((t) => t.type === 'expense' && isPaid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer')
-    const transferIn  = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
-    const transferOut = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'transfer')
-    const cardIn      = sum((t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''))
-    const cardOut     = sum((t) => t.type === 'expense' && isPaid(t) && CARD_METHODS.includes(t.payment_method ?? ''))
-
-    const cardIncomeTxs = postTxs.filter(
-      (t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? ''),
-    )
-
-    const openingSafe     = balance?.opening_safe ?? 0
-    const openingTransfer = balance?.opening_bank_transfer ?? 0
-    const openingCards    = balance?.opening_bank_cards ?? 0
-
-    return {
-      cajon, cashIn, cashOut, deposits,
-      openingSafe, safeOut, cajaMayor: openingSafe + deposits - safeOut,
-      openingTransfer, transferIn, transferOut, transferBalance: openingTransfer + transferIn - transferOut,
-      openingCards, cardIn, cardOut, cardBalance: openingCards + cardIn - cardOut,
-      cardIncomeTxs,
-    }
-  }, [txs, balance, currentTenant])
+  const bolsillos = useMemo(
+    () => computeBolsillos(txs, balance, currentTenant?.caja_fondo_fijo ?? 0),
+    [txs, balance, currentTenant],
+  )
 
   const { settled: cardSettled, pending: cardPending } = usePendingSettlements(
     bolsillos.cardIncomeTxs,
@@ -3237,6 +3239,341 @@ function TabProveedores() {
   )
 }
 
+// ── Configuración ──────────────────────────────────────────────────────────────
+function TabConfiguracion() {
+  const { user, currentTenant } = useAuth()
+  const now = new Date()
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
+
+  const startDate = `${year}-${String(month).padStart(2, '0')}-01`
+  const endDate = getArgentinaMonthEnd(year, month)
+
+  const { data: txs = [], isLoading: txLoading } = useTransactionsRange(startDate, endDate)
+  const { data: balance, isLoading: balLoading } = useMonthlyBalances(year, month)
+  const { data: settings = null } = useTenantPaymentSettings()
+  const { data: holidays = [] } = useHolidays()
+  const { data: adjustments = [], isLoading: adjLoading } = useTreasuryAdjustments(year, month)
+  const redeclare = useRedeclareBalances()
+
+  const bolsillos = useMemo(
+    () => computeBolsillos(txs, balance, currentTenant?.caja_fondo_fijo ?? 0),
+    [txs, balance, currentTenant],
+  )
+
+  const { settled: cardSettled } = usePendingSettlements(bolsillos.cardIncomeTxs, settings, holidays)
+  const cardInSettled = cardSettled.reduce((s, t) => s + t.amount, 0)
+  const cardSettledBalance = bolsillos.openingCards + cardInSettled - bolsillos.cardOut
+
+  const calcBalances = {
+    cash:     bolsillos.cajon,
+    safe:     bolsillos.cajaMayor,
+    transfer: bolsillos.transferBalance,
+    cards:    cardSettledBalance,
+  }
+
+  const [form, setForm] = useState({ cash: '', safe: '', transfer: '', cards: '' })
+  const [notes, setNotes] = useState('')
+  const [showConfirm, setShowConfirm] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  const declared = {
+    cash:     form.cash     !== '' ? (parseFloat(form.cash)     || 0) : calcBalances.cash,
+    safe:     form.safe     !== '' ? (parseFloat(form.safe)     || 0) : calcBalances.safe,
+    transfer: form.transfer !== '' ? (parseFloat(form.transfer) || 0) : calcBalances.transfer,
+    cards:    form.cards    !== '' ? (parseFloat(form.cards)    || 0) : calcBalances.cards,
+  }
+  const diffs = {
+    cash:     declared.cash     - calcBalances.cash,
+    safe:     declared.safe     - calcBalances.safe,
+    transfer: declared.transfer - calcBalances.transfer,
+    cards:    declared.cards    - calcBalances.cards,
+  }
+  const hasAnyEntry = Object.values(form).some((v) => v !== '')
+
+  async function handleSave() {
+    if (!user) return
+    setSaveError('')
+    setSaving(true)
+    try {
+      await redeclare.mutateAsync({
+        year, month,
+        previous_cash: calcBalances.cash,
+        previous_safe: calcBalances.safe,
+        previous_transfer: calcBalances.transfer,
+        previous_cards: calcBalances.cards,
+        new_cash: declared.cash,
+        new_safe: declared.safe,
+        new_transfer: declared.transfer,
+        new_cards: declared.cards,
+        declared_by: user.id,
+        notes: notes || undefined,
+      })
+      setShowConfirm(false)
+      setForm({ cash: '', safe: '', transfer: '', cards: '' })
+      setNotes('')
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : 'Error al guardar')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const BOLSILLOS_CONFIG = [
+    { key: 'cash'     as const, icon: '💵', label: 'Cajón' },
+    { key: 'safe'     as const, icon: '🔒', label: 'Caja fuerte' },
+    { key: 'transfer' as const, icon: '🏦', label: 'Transferencias' },
+    { key: 'cards'    as const, icon: '💳', label: 'QR / Tarjetas' },
+  ]
+
+  const prevMonth = month === 1 ? 12 : month - 1
+  const prevYear  = month === 1 ? year - 1 : year
+  const nextMonth = month === 12 ? 1 : month + 1
+  const nextYear  = month === 12 ? year + 1 : year
+  const monthLabel = new Date(year, month - 1, 1).toLocaleString('es-AR', { month: 'long', year: 'numeric' })
+  const isLoading = txLoading || balLoading
+
+  return (
+    <div className="space-y-6 max-w-4xl">
+      {/* Month navigation */}
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline" size="icon" className="w-8 h-8"
+          onClick={() => { setMonth(prevMonth); setYear(prevYear) }}
+        >
+          <ChevronLeft className="w-4 h-4" />
+        </Button>
+        <span className="text-base font-semibold text-plum-800 min-w-[180px] text-center capitalize">
+          {monthLabel}
+        </span>
+        <Button
+          variant="outline" size="icon" className="w-8 h-8"
+          onClick={() => { setMonth(nextMonth); setYear(nextYear) }}
+        >
+          <ChevronRight className="w-4 h-4" />
+        </Button>
+      </div>
+
+      {/* Section 1: Redeclaration form */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Redeclarar saldos de tesorería</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-3">
+                {BOLSILLOS_CONFIG.map(({ key, icon, label }) => (
+                  <div key={key} className="rounded-lg border p-3 space-y-2.5">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        {icon} {label}
+                      </span>
+                      <span className="text-xs text-muted-foreground tabular-nums">
+                        Calculado:&nbsp;
+                        <span className="font-semibold text-plum-800">{formatCurrency(calcBalances[key])}</span>
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      <Label className="text-xs">Saldo real declarado</Label>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder={formatCurrency(calcBalances[key])}
+                        value={form[key]}
+                        onChange={(e) => setForm((p) => ({ ...p, [key]: e.target.value }))}
+                      />
+                    </div>
+                    {form[key] !== '' && (
+                      <p className={cn(
+                        'text-xs font-medium tabular-nums',
+                        diffs[key] >= 0 ? 'text-green-600' : 'text-red-600',
+                      )}>
+                        Diferencia: {diffs[key] >= 0 ? '+' : ''}{formatCurrency(diffs[key])}
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-1.5">
+                <Label className="text-sm">Notas (opcional)</Label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  placeholder="Motivo del ajuste..."
+                  rows={3}
+                  className="flex w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none"
+                />
+              </div>
+              {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+              <div className="flex justify-end">
+                <Button onClick={() => setShowConfirm(true)} disabled={!hasAnyEntry}>
+                  Recalcular y guardar
+                </Button>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Confirm dialog */}
+      <Dialog open={showConfirm} onOpenChange={(open) => { if (!open) setShowConfirm(false) }}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Confirmar ajuste de tesorería</DialogTitle>
+            <DialogDescription>
+              Esto registrará un ajuste y actualizará los saldos declarados. La acción queda en el historial de auditoría.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 mt-2">
+            {BOLSILLOS_CONFIG.map(({ key, icon, label }) => (
+              <div key={key} className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">{icon} {label}</span>
+                <span className="flex items-center gap-1.5 tabular-nums">
+                  <span className="text-muted-foreground line-through text-xs">
+                    {formatCurrency(calcBalances[key])}
+                  </span>
+                  <span className="font-semibold text-plum-800">
+                    {formatCurrency(declared[key])}
+                  </span>
+                  {diffs[key] !== 0 && (
+                    <span className={cn('text-xs font-medium', diffs[key] > 0 ? 'text-green-600' : 'text-red-600')}>
+                      ({diffs[key] > 0 ? '+' : ''}{formatCurrency(diffs[key])})
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+            {saveError && <p className="text-sm text-red-600 mt-2">{saveError}</p>}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setShowConfirm(false)} disabled={saving}>
+                Cancelar
+              </Button>
+              <Button onClick={handleSave} disabled={saving}>
+                {saving && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+                Confirmar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Section 2: Audit history */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-plum-800">Historial de ajustes</CardTitle>
+            <Button
+              variant="outline" size="sm"
+              disabled={adjustments.length === 0}
+              onClick={() =>
+                exportToExcel(
+                  adjustments.map((a) => ({
+                    Fecha: new Date(a.declared_at).toLocaleString('es-AR'),
+                    'Cajón anterior': a.previous_cash,
+                    'Cajón nuevo': a.new_cash,
+                    'Cajón diferencia': a.diff_cash,
+                    'Caja fuerte anterior': a.previous_safe,
+                    'Caja fuerte nueva': a.new_safe,
+                    'Caja fuerte diferencia': a.diff_safe,
+                    'Transferencias anterior': a.previous_transfer,
+                    'Transferencias nuevo': a.new_transfer,
+                    'Transferencias diferencia': a.diff_transfer,
+                    'QR/Tarjetas anterior': a.previous_cards,
+                    'QR/Tarjetas nuevo': a.new_cards,
+                    'QR/Tarjetas diferencia': a.diff_cards,
+                    Notas: a.notes ?? '',
+                  })),
+                  `ajustes-tesoreria-${year}-${String(month).padStart(2, '0')}.xlsx`,
+                  'Ajustes',
+                )
+              }
+            >
+              <FileDown className="w-4 h-4 mr-1.5" />
+              Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 pb-4">
+          {adjLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : adjustments.length === 0 ? (
+            <p className="text-center py-8 text-sm text-muted-foreground">
+              Sin ajustes registrados para este período
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm min-w-[750px]">
+                <thead className="bg-gray-50 border-b">
+                  <tr>
+                    {['Fecha', '💵 Cajón', '🔒 Caja fuerte', '🏦 Transferencias', '💳 QR/Tarjetas', 'Notas'].map(
+                      (h) => (
+                        <th
+                          key={h}
+                          className="text-left px-4 py-2.5 text-xs font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap"
+                        >
+                          {h}
+                        </th>
+                      ),
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {adjustments.map((adj) => {
+                    const adjRows = {
+                      cash:     [adj.previous_cash,     adj.new_cash,     adj.diff_cash],
+                      safe:     [adj.previous_safe,     adj.new_safe,     adj.diff_safe],
+                      transfer: [adj.previous_transfer, adj.new_transfer, adj.diff_transfer],
+                      cards:    [adj.previous_cards,    adj.new_cards,    adj.diff_cards],
+                    }
+                    return (
+                      <tr key={adj.id} className="border-b last:border-0 hover:bg-gray-50">
+                        <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">
+                          {new Date(adj.declared_at).toLocaleString('es-AR', {
+                            day: '2-digit', month: '2-digit', year: 'numeric',
+                            hour: '2-digit', minute: '2-digit',
+                          })}
+                        </td>
+                        {(['cash', 'safe', 'transfer', 'cards'] as const).map((k) => {
+                          const [prev, next, diff] = adjRows[k]
+                          return (
+                            <td key={k} className="px-4 py-3 text-xs tabular-nums whitespace-nowrap">
+                              <span className="text-muted-foreground line-through mr-1">
+                                {formatCurrency(prev)}
+                              </span>
+                              <span className="font-medium text-plum-800 mr-1">
+                                {formatCurrency(next)}
+                              </span>
+                              <span className={cn('font-medium', diff >= 0 ? 'text-green-600' : 'text-red-600')}>
+                                ({diff >= 0 ? '+' : ''}{formatCurrency(diff)})
+                              </span>
+                            </td>
+                          )
+                        })}
+                        <td className="px-4 py-3 text-xs text-muted-foreground max-w-[150px] truncate">
+                          {adj.notes ?? '—'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Finanzas() {
   const { profile } = useAuth()
@@ -3245,7 +3582,8 @@ export default function Finanzas() {
   const showCaja       = profile ? canAccess(profile.role, 'caja') : false
   const showPL         = profile ? canAccess(profile.role, 'finanzas') : false
   const showCierres    = profile?.role === 'owner' || profile?.role === 'partner_admin'
-  const showProveedores = profile?.role === 'owner'
+  const showProveedores    = profile?.role === 'owner'
+  const showConfiguracion  = profile?.role === 'owner' || profile?.role === 'partner_admin'
 
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
@@ -3258,7 +3596,8 @@ export default function Finanzas() {
     { key: 'movimientos'  as Tab, label: 'Movimientos de Caja', show: showCaja        },
     { key: 'pl'           as Tab, label: 'P&L y Reportes',      show: showPL          },
     { key: 'cierres'      as Tab, label: 'Cierres de Caja',     show: showCierres     },
-    { key: 'proveedores'  as Tab, label: 'Proveedores',         show: showProveedores },
+    { key: 'proveedores'   as Tab, label: 'Proveedores',         show: showProveedores   },
+    { key: 'configuracion' as Tab, label: 'Configuración',       show: showConfiguracion },
   ].filter((t) => t.show)
 
   return (
@@ -3290,7 +3629,8 @@ export default function Finanzas() {
       {activeTab === 'movimientos' && showCaja        && <TabMovimientos />}
       {activeTab === 'pl'          && showPL          && <TabPL />}
       {activeTab === 'cierres'     && showCierres     && <TabCierresCaja />}
-      {activeTab === 'proveedores' && showProveedores && <TabProveedores />}
+      {activeTab === 'proveedores'  && showProveedores  && <TabProveedores />}
+      {activeTab === 'configuracion' && showConfiguracion && <TabConfiguracion />}
     </div>
   )
 }

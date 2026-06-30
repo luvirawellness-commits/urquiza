@@ -253,6 +253,117 @@ export function useHolidays() {
   })
 }
 
+export type TreasuryAdjustment = {
+  id: string
+  tenant_id: string
+  year: number
+  month: number
+  previous_cash: number
+  previous_safe: number
+  previous_transfer: number
+  previous_cards: number
+  new_cash: number
+  new_safe: number
+  new_transfer: number
+  new_cards: number
+  diff_cash: number
+  diff_safe: number
+  diff_transfer: number
+  diff_cards: number
+  declared_by?: string | null
+  notes?: string | null
+  declared_at: string
+}
+
+export function useTreasuryAdjustments(year: number, month: number) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['treasury-adjustments', tenantId, year, month],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('treasury_adjustments')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('year', year)
+        .eq('month', month)
+        .order('declared_at', { ascending: false })
+      if (error) throw error
+      return (data ?? []) as TreasuryAdjustment[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+type RedeclareInput = {
+  year: number
+  month: number
+  previous_cash: number
+  previous_safe: number
+  previous_transfer: number
+  previous_cards: number
+  new_cash: number
+  new_safe: number
+  new_transfer: number
+  new_cards: number
+  declared_by: string
+  notes?: string
+}
+
+export function useRedeclareBalances() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: RedeclareInput) => {
+      const { error: adjError } = await supabase
+        .from('treasury_adjustments')
+        .insert({
+          tenant_id: tenantId,
+          year: input.year,
+          month: input.month,
+          previous_cash: input.previous_cash,
+          previous_safe: input.previous_safe,
+          previous_transfer: input.previous_transfer,
+          previous_cards: input.previous_cards,
+          new_cash: input.new_cash,
+          new_safe: input.new_safe,
+          new_transfer: input.new_transfer,
+          new_cards: input.new_cards,
+          diff_cash: input.new_cash - input.previous_cash,
+          diff_safe: input.new_safe - input.previous_safe,
+          diff_transfer: input.new_transfer - input.previous_transfer,
+          diff_cards: input.new_cards - input.previous_cards,
+          declared_by: input.declared_by,
+          notes: input.notes ?? null,
+          declared_at: new Date().toISOString(),
+        })
+      if (adjError) throw adjError
+
+      const { error: balError } = await supabase
+        .from('monthly_balances')
+        .upsert(
+          {
+            tenant_id: tenantId,
+            year: input.year,
+            month: input.month,
+            opening_cash: input.new_cash,
+            opening_safe: input.new_safe,
+            opening_bank_transfer: input.new_transfer,
+            opening_bank_cards: input.new_cards,
+            declared_by: input.declared_by,
+            declared_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'tenant_id,year,month' },
+        )
+      if (balError) throw balError
+    },
+    onSuccess: (_, vars) => {
+      qc.invalidateQueries({ queryKey: ['monthly-balances', tenantId, vars.year, vars.month] })
+      qc.invalidateQueries({ queryKey: ['treasury-adjustments', tenantId, vars.year, vars.month] })
+    },
+  })
+}
+
 export type PendingSettlement = {
   transaction: Transaction
   settlementDate: Date
