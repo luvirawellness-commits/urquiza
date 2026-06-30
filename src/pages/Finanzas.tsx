@@ -83,6 +83,7 @@ const EXPENSE_CATEGORIES_CAJA = [
   { value: 'bank_fees', label: 'Gastos Bancarios y Comisiones' },
   { value: 'maintenance', label: 'Mantenimiento' },
   { value: 'depreciation', label: 'Depreciación' },
+  { value: 'royalty', label: 'Royalty' },
   { value: 'aguinaldo', label: 'Aguinaldo' },
   { value: 'vacaciones', label: 'Vacaciones' },
   { value: 'withdrawal', label: 'Retiro de Socios' },
@@ -100,7 +101,7 @@ const CAT_LABELS: Record<string, string> = {
   salary_operativo: 'Sueldos Op.', salary_admin: 'Sueldos Admin.', salary: 'Sueldos',
   social_charges: 'Cargas Sociales', marketing: 'Marketing', management: 'Gestión',
   bank_fees: 'Gastos Bancarios', maintenance: 'Mantenimiento', depreciation: 'Depreciación',
-  aguinaldo: 'Aguinaldo', vacaciones: 'Vacaciones',
+  royalty: 'Royalty', aguinaldo: 'Aguinaldo', vacaciones: 'Vacaciones',
   withdrawal: 'Retiro Socios', cash_transfer: 'Depósito Caja', other: 'Otros',
 }
 
@@ -127,6 +128,7 @@ const MOV_CAT_OPTS = [
   { value: 'sueldos',    label: 'Sueldos' },
   { value: 'aguinaldo',  label: 'Aguinaldo' },
   { value: 'vacaciones', label: 'Vacaciones' },
+  { value: 'royalty',    label: 'Royalty' },
   { value: 'marketing',  label: 'Marketing' },
   { value: 'other',      label: 'Otros' },
 ]
@@ -1184,7 +1186,7 @@ function computePLMonth(
   const depreciacion = sum(exp.filter((t) => t.category === 'depreciation'))
   const retiroSocios = sum(exp.filter((t) => t.category === 'withdrawal'))
   const otros = sum(exp.filter((t) => t.category === 'other'))
-  const royalty = totalIngresos * 0.05
+  const royalty = sum(exp.filter((t) => t.category === 'royalty'))
   const totalGastosOp =
     sueldoAdmin + alquiler + servicios + gestion + marketing +
     mantenimiento + depreciacion + retiroSocios + otros + royalty
@@ -1258,7 +1260,7 @@ const PL_ROWS: PLRowDef[] = [
   { type: 'item', label: 'Depreciación', key: 'depreciacion' },
   { type: 'item', label: 'Retiro de Socios', key: 'retiroSocios' },
   { type: 'item', label: 'Otros Gastos', key: 'otros' },
-  { type: 'item', label: 'Royalty (5%)', key: 'royalty' },
+  { type: 'item', label: 'Royalty', key: 'royalty' },
   { type: 'subtotal', label: 'Total Gastos Operativos', key: 'totalGastosOp' },
   { type: 'total', label: 'UTILIDAD DE OPERACIONES', key: 'utilidadOp', showPct: true, signHighlight: true },
   { type: 'section', label: 'GASTOS FINANCIEROS' },
