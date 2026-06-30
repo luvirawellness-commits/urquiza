@@ -2,7 +2,7 @@
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  Loader2, DollarSign, ChevronLeft, ChevronRight, Wallet,
+  Loader2, DollarSign, ChevronLeft, ChevronRight, ChevronDown, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
   Plus, CheckCircle2, Pencil, Trash2,
 } from 'lucide-react'
@@ -3334,6 +3334,87 @@ function TabConfiguracion() {
   const monthLabel = new Date(year, month - 1, 1).toLocaleString('es-AR', { month: 'long', year: 'numeric' })
   const isLoading = txLoading || balLoading
 
+  const postTxs = useMemo(() => {
+    const declaredAt = balance?.declared_at ?? null
+    return declaredAt ? txs.filter((t) => (t.created_at ?? '') > declaredAt) : []
+  }, [txs, balance])
+
+  const detailTxs = useMemo(() => {
+    const paid = (t: Transaction) => !t.status || t.status === 'paid'
+    return {
+      cashIn:      postTxs.filter((t) => t.type === 'income' && t.payment_method === 'cash'),
+      cashOut:     postTxs.filter((t) => t.type === 'expense' && paid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer'),
+      cashDeposit: postTxs.filter((t) => t.type === 'expense' && paid(t) && t.category === 'cash_transfer'),
+      safeOut:     postTxs.filter((t) => t.type === 'expense' && paid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer'),
+      transferIn:  postTxs.filter((t) => t.type === 'income' && t.payment_method === 'transfer'),
+      transferOut: postTxs.filter((t) => t.type === 'expense' && paid(t) && t.payment_method === 'transfer'),
+      cardIn:      postTxs.filter((t) => t.type === 'income' && CARD_METHODS.includes(t.payment_method ?? '')),
+      cardOut:     postTxs.filter((t) => t.type === 'expense' && paid(t) && CARD_METHODS.includes(t.payment_method ?? '')),
+    }
+  }, [postTxs])
+
+  const settledIds = useMemo(() => new Set(cardSettled.map((t) => t.id)), [cardSettled])
+
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    cash: false, safe: false, transfer: false, cards: false,
+  })
+  function toggleSection(key: string) {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }))
+  }
+
+  const sortByDate = (
+    a: { tx: Transaction },
+    b: { tx: Transaction },
+  ) => (b.tx.date > a.tx.date ? 1 : b.tx.date < a.tx.date ? -1 : 0)
+
+  const bolsilloDetails = [
+    {
+      key: 'cash',
+      icon: '💵',
+      label: 'Cajón',
+      balance: calcBalances.cash,
+      rows: [
+        ...detailTxs.cashIn.map((tx) => ({ tx, direction: 'in'  as const, typeLabel: 'Ingreso efectivo' })),
+        ...detailTxs.cashOut.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Gasto efectivo' })),
+        ...detailTxs.cashDeposit.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Depósito a caja fuerte' })),
+      ].sort(sortByDate),
+    },
+    {
+      key: 'safe',
+      icon: '🔒',
+      label: 'Caja fuerte',
+      balance: calcBalances.safe,
+      rows: [
+        ...detailTxs.cashDeposit.map((tx) => ({ tx, direction: 'in'  as const, typeLabel: 'Depósito desde cajón' })),
+        ...detailTxs.safeOut.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Egreso caja fuerte' })),
+      ].sort(sortByDate),
+    },
+    {
+      key: 'transfer',
+      icon: '🏦',
+      label: 'Transferencias',
+      balance: calcBalances.transfer,
+      rows: [
+        ...detailTxs.transferIn.map((tx) => ({ tx, direction: 'in'  as const, typeLabel: 'Ingreso transferencia' })),
+        ...detailTxs.transferOut.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Egreso transferencia' })),
+      ].sort(sortByDate),
+    },
+    {
+      key: 'cards',
+      icon: '💳',
+      label: 'QR / Tarjetas',
+      balance: calcBalances.cards,
+      rows: [
+        ...detailTxs.cardIn.map((tx) => ({
+          tx,
+          direction: 'in' as const,
+          typeLabel: settledIds.has(tx.id) ? 'Ingreso (acreditado)' : 'Ingreso (pendiente acred.)',
+        })),
+        ...detailTxs.cardOut.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Egreso QR/Tarjetas' })),
+      ].sort(sortByDate),
+    },
+  ]
+
   return (
     <div className="space-y-6 max-w-4xl">
       {/* Month navigation */}
@@ -3482,12 +3563,12 @@ function TabConfiguracion() {
                     'Caja fuerte anterior': a.previous_safe,
                     'Caja fuerte nueva': a.new_safe,
                     'Caja fuerte diferencia': a.diff_safe,
-                    'Transferencias anterior': a.previous_transfer,
-                    'Transferencias nuevo': a.new_transfer,
-                    'Transferencias diferencia': a.diff_transfer,
-                    'QR/Tarjetas anterior': a.previous_cards,
-                    'QR/Tarjetas nuevo': a.new_cards,
-                    'QR/Tarjetas diferencia': a.diff_cards,
+                    'Transferencias anterior': a.previous_bank_transfer,
+                    'Transferencias nuevo': a.new_bank_transfer,
+                    'Transferencias diferencia': a.diff_bank_transfer,
+                    'QR/Tarjetas anterior': a.previous_bank_cards,
+                    'QR/Tarjetas nuevo': a.new_bank_cards,
+                    'QR/Tarjetas diferencia': a.diff_bank_cards,
                     Notas: a.notes ?? '',
                   })),
                   `ajustes-tesoreria-${year}-${String(month).padStart(2, '0')}.xlsx`,
@@ -3529,10 +3610,10 @@ function TabConfiguracion() {
                 <tbody>
                   {adjustments.map((adj) => {
                     const adjRows = {
-                      cash:     [adj.previous_cash,     adj.new_cash,     adj.diff_cash],
-                      safe:     [adj.previous_safe,     adj.new_safe,     adj.diff_safe],
-                      transfer: [adj.previous_transfer, adj.new_transfer, adj.diff_transfer],
-                      cards:    [adj.previous_cards,    adj.new_cards,    adj.diff_cards],
+                      cash:     [adj.previous_cash,          adj.new_cash,          adj.diff_cash],
+                      safe:     [adj.previous_safe,          adj.new_safe,          adj.diff_safe],
+                      transfer: [adj.previous_bank_transfer, adj.new_bank_transfer, adj.diff_bank_transfer],
+                      cards:    [adj.previous_bank_cards,    adj.new_bank_cards,    adj.diff_bank_cards],
                     }
                     return (
                       <tr key={adj.id} className="border-b last:border-0 hover:bg-gray-50">
@@ -3567,6 +3648,155 @@ function TabConfiguracion() {
                 </tbody>
               </table>
             </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Section 3: Movement detail by bolsillo */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="text-base text-plum-800">Detalle de movimientos por billetera</CardTitle>
+              {balance ? (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Desde{' '}
+                  {new Date(balance.declared_at).toLocaleString('es-AR', {
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
+                </p>
+              ) : (
+                <p className="text-xs text-amber-600 mt-0.5">
+                  Sin declaración inicial — los movimientos no están filtrados
+                </p>
+              )}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isLoading || bolsilloDetails.every((b) => b.rows.length === 0)}
+              onClick={() =>
+                exportToExcel(
+                  bolsilloDetails.flatMap(({ label, rows }) =>
+                    rows.map(({ tx, direction, typeLabel }) => ({
+                      Billetera: label,
+                      Fecha: tx.date,
+                      Tipo: typeLabel,
+                      Descripción: tx.description,
+                      Categoría: CAT_LABELS[tx.category] ?? tx.category,
+                      'Método de pago': PM_LABELS[tx.payment_method ?? ''] ?? (tx.payment_method ?? ''),
+                      Monto: direction === 'in' ? tx.amount : -tx.amount,
+                    })),
+                  ),
+                  `movimientos-tesoreria-${year}-${String(month).padStart(2, '0')}.xlsx`,
+                  'Movimientos',
+                )
+              }
+            >
+              <FileDown className="w-4 h-4 mr-1.5" />
+              Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-2 pt-0">
+          {isLoading ? (
+            <div className="flex justify-center py-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            bolsilloDetails.map((b) => (
+              <div key={b.key} className="border rounded-lg overflow-hidden">
+                <button
+                  className="w-full flex items-center justify-between px-4 py-3 text-sm hover:bg-gray-50 transition-colors"
+                  onClick={() => toggleSection(b.key)}
+                >
+                  <span className="flex items-center gap-2 font-medium text-plum-800">
+                    <span>{b.icon}</span>
+                    <span>{b.label}</span>
+                    <Badge variant="outline" className="text-xs font-normal">
+                      {b.rows.length} mov.
+                    </Badge>
+                  </span>
+                  <span className="flex items-center gap-3">
+                    <span className="tabular-nums font-semibold text-plum-800">
+                      {formatCurrency(b.balance)}
+                    </span>
+                    <ChevronDown
+                      className={cn(
+                        'w-4 h-4 text-muted-foreground transition-transform duration-200',
+                        openSections[b.key] && 'rotate-180',
+                      )}
+                    />
+                  </span>
+                </button>
+                {openSections[b.key] && (
+                  <div className="border-t">
+                    {b.rows.length === 0 ? (
+                      <p className="text-center py-4 text-xs text-muted-foreground">
+                        Sin movimientos desde la declaración
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs min-w-[500px]">
+                          <thead className="bg-gray-50 border-b">
+                            <tr>
+                              {['Fecha', 'Tipo', 'Descripción', 'Categoría', 'Monto'].map((h) => (
+                                <th
+                                  key={h}
+                                  className={cn(
+                                    'px-3 py-2 text-left font-semibold text-muted-foreground uppercase tracking-wide whitespace-nowrap',
+                                    h === 'Monto' && 'text-right',
+                                  )}
+                                >
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {b.rows.map(({ tx, direction, typeLabel }) => (
+                              <tr
+                                key={`${tx.id}-${direction}`}
+                                className="border-b last:border-0 hover:bg-gray-50"
+                              >
+                                <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                                  {formatDate(tx.date)}
+                                </td>
+                                <td className="px-3 py-2 whitespace-nowrap">
+                                  <span
+                                    className={cn(
+                                      'font-medium',
+                                      direction === 'in' ? 'text-green-700' : 'text-red-600',
+                                    )}
+                                  >
+                                    {typeLabel}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-muted-foreground max-w-[200px] truncate">
+                                  {tx.description}
+                                </td>
+                                <td className="px-3 py-2 text-muted-foreground whitespace-nowrap">
+                                  {CAT_LABELS[tx.category] ?? tx.category}
+                                </td>
+                                <td
+                                  className={cn(
+                                    'px-3 py-2 text-right tabular-nums font-medium whitespace-nowrap',
+                                    direction === 'in' ? 'text-green-700' : 'text-red-600',
+                                  )}
+                                >
+                                  {direction === 'in' ? '+' : '−'}{formatCurrency(tx.amount)}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))
           )}
         </CardContent>
       </Card>

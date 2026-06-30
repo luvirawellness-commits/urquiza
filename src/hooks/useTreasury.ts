@@ -260,16 +260,16 @@ export type TreasuryAdjustment = {
   month: number
   previous_cash: number
   previous_safe: number
-  previous_transfer: number
-  previous_cards: number
+  previous_bank_transfer: number
+  previous_bank_cards: number
   new_cash: number
   new_safe: number
-  new_transfer: number
-  new_cards: number
+  new_bank_transfer: number
+  new_bank_cards: number
   diff_cash: number
   diff_safe: number
-  diff_transfer: number
-  diff_cards: number
+  diff_bank_transfer: number
+  diff_bank_cards: number
   declared_by?: string | null
   notes?: string | null
   declared_at: string
@@ -322,16 +322,16 @@ export function useRedeclareBalances() {
           month: input.month,
           previous_cash: input.previous_cash,
           previous_safe: input.previous_safe,
-          previous_transfer: input.previous_transfer,
-          previous_cards: input.previous_cards,
+          previous_bank_transfer: input.previous_transfer,
+          previous_bank_cards: input.previous_cards,
           new_cash: input.new_cash,
           new_safe: input.new_safe,
-          new_transfer: input.new_transfer,
-          new_cards: input.new_cards,
+          new_bank_transfer: input.new_transfer,
+          new_bank_cards: input.new_cards,
           diff_cash: input.new_cash - input.previous_cash,
           diff_safe: input.new_safe - input.previous_safe,
-          diff_transfer: input.new_transfer - input.previous_transfer,
-          diff_cards: input.new_cards - input.previous_cards,
+          diff_bank_transfer: input.new_transfer - input.previous_transfer,
+          diff_bank_cards: input.new_cards - input.previous_cards,
           declared_by: input.declared_by,
           notes: input.notes ?? null,
           declared_at: new Date().toISOString(),
