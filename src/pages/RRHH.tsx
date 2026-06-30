@@ -1844,8 +1844,8 @@ function AguinaldoTab() {
   const isLoading = empLoading || incLoading || bonusLoading
 
   const PERIODS = [
-    { key: 'june' as const, label: 'Primer semestre (Junio)', months: 'Enero – Junio' },
-    { key: 'december' as const, label: 'Segundo semestre (Diciembre)', months: 'Julio – Diciembre' },
+    { key: 'june'     as const, label: 'Primer semestre (Junio)',      months: 'Enero – Junio',     endDate: `${year}-06-30` },
+    { key: 'december' as const, label: 'Segundo semestre (Diciembre)', months: 'Julio – Diciembre', endDate: `${year}-12-31` },
   ]
 
   return (
@@ -1859,7 +1859,8 @@ function AguinaldoTab() {
       {isLoading ? (
         <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
       ) : (
-        PERIODS.map(({ key, label, months }) => {
+        PERIODS.map(({ key, label, months, endDate }) => {
+          const semesterEnded = today > endDate
           const existingMap = new Map(bonusData.filter(b => b.period === key).map(b => [b.user_id, b]))
           return (
             <Card key={key}>
@@ -1896,23 +1897,36 @@ function AguinaldoTab() {
                                 <span className="font-medium text-plum-800">{emp.user?.full_name}</span>
                               </div>
                             </td>
-                            <td className="px-3 py-2 tabular-nums">{fmtARS(existing?.best_salary ?? bestSalary)}</td>
-                            <td className="px-3 py-2 tabular-nums font-semibold">{fmtARS(existing?.amount ?? amount)}</td>
+                            <td className="px-3 py-2 tabular-nums">
+                              {isPaid || semesterEnded
+                                ? fmtARS(existing?.best_salary ?? bestSalary)
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
+                            <td className="px-3 py-2 tabular-nums font-semibold">
+                              {isPaid || semesterEnded
+                                ? fmtARS(existing?.amount ?? amount)
+                                : <span className="text-muted-foreground">—</span>}
+                            </td>
                             <td className="px-3 py-2">
                               <span className={cn(
                                 'text-xs px-2 py-0.5 rounded-full font-medium',
-                                isPaid ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-600',
+                                isPaid          ? 'bg-green-100 text-green-700'
+                                : semesterEnded ? 'bg-gray-100 text-gray-600'
+                                :                 'bg-amber-100 text-amber-700',
                               )}>
-                                {isPaid ? 'Pagado' : 'Pendiente'}
+                                {isPaid ? 'Pagado' : semesterEnded ? 'Pendiente' : 'Sin datos aún'}
                               </span>
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">{existing?.paid_date ?? '—'}</td>
                             <td className="px-3 py-2">
-                              {!isPaid && (
+                              {!isPaid && semesterEnded && (
                                 <Button size="sm" variant="outline" className="h-7 text-xs"
                                   onClick={() => openPayModal(emp, key)}>
                                   Registrar pago
                                 </Button>
+                              )}
+                              {!isPaid && !semesterEnded && (
+                                <span className="text-xs text-muted-foreground italic">Este período aún no finalizó</span>
                               )}
                             </td>
                           </tr>
