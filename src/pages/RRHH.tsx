@@ -1844,8 +1844,8 @@ function AguinaldoTab() {
   const isLoading = empLoading || incLoading || bonusLoading
 
   const PERIODS = [
-    { key: 'june'     as const, label: 'Primer semestre (Junio)',      months: 'Enero – Junio',     endDate: `${year}-06-30` },
-    { key: 'december' as const, label: 'Segundo semestre (Diciembre)', months: 'Julio – Diciembre', endDate: `${year}-12-31` },
+    { key: 'june'     as const, label: 'Primer semestre (Junio)',      months: 'Enero – Junio',     paymentDate: `${year}-06-15`, availableLabel: '15/06' },
+    { key: 'december' as const, label: 'Segundo semestre (Diciembre)', months: 'Julio – Diciembre', paymentDate: `${year}-12-15`, availableLabel: '15/12' },
   ]
 
   return (
@@ -1859,8 +1859,8 @@ function AguinaldoTab() {
       {isLoading ? (
         <div className="flex justify-center py-16"><Loader2 className="w-8 h-8 animate-spin text-plum-800" /></div>
       ) : (
-        PERIODS.map(({ key, label, months, endDate }) => {
-          const semesterEnded = today > endDate
+        PERIODS.map(({ key, label, months, paymentDate, availableLabel }) => {
+          const canPay = today >= paymentDate
           const existingMap = new Map(bonusData.filter(b => b.period === key).map(b => [b.user_id, b]))
           return (
             <Card key={key}>
@@ -1898,35 +1898,37 @@ function AguinaldoTab() {
                               </div>
                             </td>
                             <td className="px-3 py-2 tabular-nums">
-                              {isPaid || semesterEnded
+                              {isPaid || canPay
                                 ? fmtARS(existing?.best_salary ?? bestSalary)
                                 : <span className="text-muted-foreground">—</span>}
                             </td>
                             <td className="px-3 py-2 tabular-nums font-semibold">
-                              {isPaid || semesterEnded
+                              {isPaid || canPay
                                 ? fmtARS(existing?.amount ?? amount)
                                 : <span className="text-muted-foreground">—</span>}
                             </td>
                             <td className="px-3 py-2">
                               <span className={cn(
                                 'text-xs px-2 py-0.5 rounded-full font-medium',
-                                isPaid          ? 'bg-green-100 text-green-700'
-                                : semesterEnded ? 'bg-gray-100 text-gray-600'
-                                :                 'bg-amber-100 text-amber-700',
+                                isPaid    ? 'bg-green-100 text-green-700'
+                                : canPay  ? 'bg-gray-100 text-gray-600'
+                                :           'bg-amber-100 text-amber-700',
                               )}>
-                                {isPaid ? 'Pagado' : semesterEnded ? 'Pendiente' : 'Sin datos aún'}
+                                {isPaid ? 'Pagado' : canPay ? 'Pendiente' : 'Sin datos aún'}
                               </span>
                             </td>
                             <td className="px-3 py-2 tabular-nums text-muted-foreground">{existing?.paid_date ?? '—'}</td>
                             <td className="px-3 py-2">
-                              {!isPaid && semesterEnded && (
+                              {!isPaid && canPay && (
                                 <Button size="sm" variant="outline" className="h-7 text-xs"
                                   onClick={() => openPayModal(emp, key)}>
                                   Registrar pago
                                 </Button>
                               )}
-                              {!isPaid && !semesterEnded && (
-                                <span className="text-xs text-muted-foreground italic">Este período aún no finalizó</span>
+                              {!isPaid && !canPay && (
+                                <span className="text-xs text-muted-foreground italic">
+                                  Disponible a partir del {availableLabel}
+                                </span>
                               )}
                             </td>
                           </tr>
