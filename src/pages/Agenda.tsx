@@ -12,7 +12,10 @@ import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCard
 import { useClients, useCreateClient, useClient, useUpdateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
-import { useCreateAbsence, useEmployeeSchedules, type WeeklySchedule } from '@/hooks/useRRHH'
+import {
+  useCreateAbsence, useEmployeeSchedules, useEmployeeWeeklySchedulesRange,
+  type WeeklySchedule, type EmployeeWeeklySchedule,
+} from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -111,13 +114,25 @@ const WEEKLY_DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','fri
 function getWeeklyScheduleUnavailableSegs(
   ws: WeeklySchedule | null | undefined,
   date: Date,
+  weekRow?: EmployeeWeeklySchedule | null,
 ): { top: number; height: number }[] {
-  if (!ws) return []
   const GRID_START = START_HOUR * 60
   const GRID_END = END_HOUR * 60
   function toY(mins: number) { return ((mins - GRID_START) * HOUR_PX) / 60 }
   const dayKey = WEEKLY_DAY_KEYS[date.getDay()] as keyof WeeklySchedule
-  const intervals = ws[dayKey] ?? []
+
+  // A specific-week override (employee_weekly_schedules) always wins over the
+  // fixed weekly_schedule (employee_profiles) for that one day, when present.
+  let intervals: { from: string; to: string }[]
+  if (weekRow) {
+    const from = weekRow[`${dayKey}_from`]
+    const to = weekRow[`${dayKey}_to`]
+    intervals = from && to ? [{ from, to }] : []
+  } else if (ws) {
+    intervals = ws[dayKey] ?? []
+  } else {
+    return []
+  }
   if (intervals.length === 0) return [{ top: 0, height: TOTAL_HEIGHT }]
   const sorted = [...intervals]
     .map(iv => ({
@@ -1728,6 +1743,14 @@ function DayView({
 
   const { data: employeeSchedules } = useEmployeeSchedules()
 
+  const weekStartStr = dateKey(getMonday(date))
+  const { data: weekSchedules } = useEmployeeWeeklySchedulesRange(weekStartStr, weekStartStr)
+  const weekScheduleByTherapist = useMemo(() => {
+    const map = new Map<string, EmployeeWeeklySchedule>()
+    for (const row of weekSchedules ?? []) map.set(row.user_id, row)
+    return map
+  }, [weekSchedules])
+
   const dateStr = dateKey(date)
   const dayAppts = appointments.filter(a =>
     dateKey(new Date(a.scheduled_at)) === dateStr &&
@@ -1807,6 +1830,7 @@ function DayView({
               const weeklyUnavailableSegs = getWeeklyScheduleUnavailableSegs(
                 employeeSchedules?.get(t.id),
                 date,
+                weekScheduleByTherapist.get(t.id),
               )
 
               return (

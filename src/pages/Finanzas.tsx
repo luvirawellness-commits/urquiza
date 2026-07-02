@@ -1457,8 +1457,8 @@ function computeBolsillos(
   balance: MonthlyBalance | null | undefined,
   cajonFondo: number,
 ) {
-  const declaredAt = balance?.declared_at ?? null
-  const postTxs = declaredAt ? txs.filter((t) => (t.created_at ?? '') > declaredAt) : []
+  const monthStart = balance ? `${balance.year}-${String(balance.month).padStart(2, '0')}-01` : null
+  const postTxs = monthStart ? txs.filter((t) => t.date >= monthStart) : []
 
   const sum = (filter: (t: Transaction) => boolean) =>
     postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
@@ -1491,13 +1491,43 @@ function computeBolsillos(
 function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: string }) {
   const { currentTenant } = useAuth()
   const [y, m] = month.split('-').map(Number)
-  const { data: balance, isLoading } = useMonthlyBalances(y, m)
+  const { data: balance, isLoading: balanceLoading } = useMonthlyBalances(y, m)
   const { data: settings = null } = useTenantPaymentSettings()
   const { data: holidays = [] } = useHolidays()
 
+  const prevY = m === 1 ? y - 1 : y
+  const prevM = m === 1 ? 12 : m - 1
+  const { data: prevBalance, isLoading: prevBalanceLoading } = useMonthlyBalances(prevY, prevM)
+  const needPrevTxs = !balanceLoading && !balance && !prevBalanceLoading && !!prevBalance
+  const { data: prevTxs = [], isLoading: prevTxsLoading } = useTransactionsRange(
+    `${prevY}-${String(prevM).padStart(2, '0')}-01`,
+    getArgentinaMonthEnd(prevY, prevM),
+    true,
+    needPrevTxs,
+  )
+
+  const autoBalance: MonthlyBalance | null = useMemo(() => {
+    if (!needPrevTxs || !prevBalance || prevTxsLoading) return null
+    const prevBolsillos = computeBolsillos(prevTxs, prevBalance, currentTenant?.caja_fondo_fijo ?? 0)
+    return {
+      ...prevBalance,
+      year: y,
+      month: m,
+      opening_cash: 0,
+      opening_safe: prevBolsillos.cajaMayor,
+      opening_bank_transfer: prevBolsillos.transferBalance,
+      opening_bank_cards: prevBolsillos.cardBalance,
+    }
+  }, [needPrevTxs, prevBalance, prevTxsLoading, prevTxs, currentTenant, y, m])
+
+  const effectiveBalance = balance ?? autoBalance
+  const isAutoCalculated = !balance && !!autoBalance
+  const isLoading =
+    balanceLoading || (!balance && (prevBalanceLoading || (needPrevTxs && prevTxsLoading)))
+
   const bolsillos = useMemo(
-    () => computeBolsillos(txs, balance, currentTenant?.caja_fondo_fijo ?? 0),
-    [txs, balance, currentTenant],
+    () => computeBolsillos(txs, effectiveBalance, currentTenant?.caja_fondo_fijo ?? 0),
+    [txs, effectiveBalance, currentTenant],
   )
 
   const { settled: cardSettled, pending: cardPending } = usePendingSettlements(
@@ -1526,9 +1556,15 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
           </div>
         ) : (
           <>
-            {!balance && (
+            {!balance && !isAutoCalculated && (
               <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
                 Sin saldos iniciales declarados para este mes. Configurá los saldos en Configuración → Tesorería.
+              </div>
+            )}
+            {isAutoCalculated && (
+              <div className="text-xs text-blue-700 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2">
+                Saldos calculados automáticamente desde el cierre de {MONTHS_ES[prevM - 1]} {prevY}.
+                Podés ajustarlos desde el tab Configuración.
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
@@ -3335,9 +3371,8 @@ function TabConfiguracion() {
   const isLoading = txLoading || balLoading
 
   const postTxs = useMemo(() => {
-    const declaredAt = balance?.declared_at ?? null
-    return declaredAt ? txs.filter((t) => (t.created_at ?? '') > declaredAt) : []
-  }, [txs, balance])
+    return balance ? txs.filter((t) => t.date >= startDate) : []
+  }, [txs, balance, startDate])
 
   const detailTxs = useMemo(() => {
     const paid = (t: Transaction) => !t.status || t.status === 'paid'
@@ -3659,12 +3694,8 @@ function TabConfiguracion() {
             <div>
               <CardTitle className="text-base text-plum-800">Detalle de movimientos por billetera</CardTitle>
               {balance ? (
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Desde{' '}
-                  {new Date(balance.declared_at).toLocaleString('es-AR', {
-                    day: '2-digit', month: '2-digit', year: 'numeric',
-                    hour: '2-digit', minute: '2-digit',
-                  })}
+                <p className="text-xs text-muted-foreground mt-0.5 capitalize">
+                  Todos los movimientos de {monthLabel}
                 </p>
               ) : (
                 <p className="text-xs text-amber-600 mt-0.5">

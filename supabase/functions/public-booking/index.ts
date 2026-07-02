@@ -109,6 +109,7 @@ serve(async (req: Request) => {
         const dayName     = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][
           new Date(date + 'T12:00:00Z').getUTCDay()
         ]
+        const weekStart   = getWeekStartOf(date)
 
         console.log('Availability request:', { tenant_id: tenantId, date, duration, therapist_id: therapistId ?? null, dayName, windowFrom, windowTo })
 
@@ -134,13 +135,22 @@ serve(async (req: Request) => {
 
         const therapistIds = (therapists as { id: string }[]).map((t) => t.id)
 
-        // ── Fetch profiles + appointments in parallel ──────────────────────────
-        const [{ data: profiles, error: profilesErr }, { data: allAppts, error: apptErr }] =
-          await Promise.all([
+        // ── Fetch profiles + weekly overrides + appointments in parallel ───────
+        const [
+          { data: profiles, error: profilesErr },
+          { data: weekSchedules, error: weekSchedErr },
+          { data: allAppts, error: apptErr },
+        ] = await Promise.all([
             supabase
               .from('employee_profiles')
               .select('user_id, weekly_schedule')
               .in('user_id', therapistIds),
+            supabase
+              .from('employee_weekly_schedules')
+              .select('user_id, monday_from, monday_to, tuesday_from, tuesday_to, wednesday_from, wednesday_to, thursday_from, thursday_to, friday_from, friday_to, saturday_from, saturday_to, sunday_from, sunday_to')
+              .eq('tenant_id', tenantId)
+              .in('user_id', therapistIds)
+              .eq('week_start', weekStart),
             supabase
               .from('appointments')
               .select('therapist_id, scheduled_at, duration_minutes, status')
@@ -152,23 +162,38 @@ serve(async (req: Request) => {
           ])
 
         if (profilesErr) throw profilesErr
+        if (weekSchedErr) throw weekSchedErr
         if (apptErr) throw apptErr
 
         // deno-lint-ignore no-explicit-any
         const profileMap = new Map<string, any>(
           (profiles ?? []).map((p) => [p.user_id, p.weekly_schedule])
         )
+        // deno-lint-ignore no-explicit-any
+        const weekScheduleMap = new Map<string, any>(
+          (weekSchedules ?? []).map((r) => [r.user_id, r])
+        )
 
         // ── Compute available slots per therapist ──────────────────────────────
         const slotMap = new Map<string, { id: string; name: string; color: string | null }[]>()
 
         for (const t of therapists as { id: string; full_name: string; color_hex: string | null }[]) {
-          // STEP 1 — Does therapist work this day?
-          // deno-lint-ignore no-explicit-any
-          const weeklySchedule = profileMap.get(t.id) as Record<string, { from: string; to: string }[]> | null
-          const dayIntervals   = weeklySchedule?.[dayName] ?? []
+          // STEP 1 — Does therapist work this day? A specific-week override
+          // (employee_weekly_schedules) wins over the fixed weekly_schedule
+          // (employee_profiles) when a row exists for this therapist's week.
+          const weekRow = weekScheduleMap.get(t.id)
+          let dayIntervals: { from: string; to: string }[]
+          if (weekRow) {
+            const from = weekRow[`${dayName}_from`] as string | null
+            const to   = weekRow[`${dayName}_to`] as string | null
+            dayIntervals = from && to ? [{ from, to }] : []
+          } else {
+            // deno-lint-ignore no-explicit-any
+            const weeklySchedule = profileMap.get(t.id) as Record<string, { from: string; to: string }[]> | null
+            dayIntervals = weeklySchedule?.[dayName] ?? []
+          }
 
-          console.log('Therapist:', t.id, t.full_name, '| day:', dayName, '| intervals:', JSON.stringify(dayIntervals))
+          console.log('Therapist:', t.id, t.full_name, '| day:', dayName, '| source:', weekRow ? 'weekly-override' : 'weekly_schedule', '| intervals:', JSON.stringify(dayIntervals))
 
           if (!dayIntervals.length) continue
 
@@ -432,4 +457,14 @@ serve(async (req: Request) => {
 
 function pad(n: number): string {
   return String(n).padStart(2, '0')
+}
+
+// Monday (YYYY-MM-DD) of the week containing `dateStr`. Pure calendar-date arithmetic
+// via UTC getters/setters so it's independent of the server's local timezone.
+function getWeekStartOf(dateStr: string): string {
+  const d = new Date(dateStr + 'T12:00:00Z')
+  const day = d.getUTCDay() // 0 = Sunday .. 6 = Saturday
+  const diff = day === 0 ? 6 : day - 1
+  d.setUTCDate(d.getUTCDate() - diff)
+  return d.toISOString().slice(0, 10)
 }

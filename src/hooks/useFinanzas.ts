@@ -188,7 +188,12 @@ export function useClientMembership(clientId: string | null) {
   })
 }
 
-export function useTransactionsRange(startDate: string, endDate: string, filterByTenant = true) {
+export function useTransactionsRange(
+  startDate: string,
+  endDate: string,
+  filterByTenant = true,
+  enabled = true,
+) {
   const tenantId = useTenantId()
   return useQuery({
     queryKey: ['transactions', 'range', tenantId, startDate, endDate, filterByTenant],
@@ -204,7 +209,7 @@ export function useTransactionsRange(startDate: string, endDate: string, filterB
       if (error) throw error
       return data as Transaction[]
     },
-    enabled: !!tenantId,
+    enabled: !!tenantId && enabled,
   })
 }
 

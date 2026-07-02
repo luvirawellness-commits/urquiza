@@ -71,11 +71,21 @@ export type HolidayDetail = {
 
 const DAY_KEYS_SHORT = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'] as const
 
+type OldSchedule = Record<string, { start: string; end: string }[]>
+
+// Accepts either the legacy `users.schedule` shape (fixed weekly recurring hours) or, when
+// `weeklySchedules` has at least one row for this employee, the new per-week
+// `employee_weekly_schedules` data (already summed into `total_hours` per week).
 export function calcMonthScheduleHours(
-  schedule: Record<string, { start: string; end: string }[]> | null | undefined,
+  schedule: OldSchedule | null | undefined,
   year: number,
   month: number,
+  weeklySchedules?: EmployeeWeeklySchedule[],
 ): number {
+  if (weeklySchedules && weeklySchedules.length > 0) {
+    const total = weeklySchedules.reduce((s, w) => s + (w.total_hours ?? 0), 0)
+    return Math.round(total * 100) / 100
+  }
   if (!schedule) return 0
   const daysInMonth = new Date(year, month, 0).getDate()
   let total = 0
@@ -980,5 +990,243 @@ export function useRegisterVacationPayment() {
       qc.invalidateQueries({ queryKey: ['transactions'] })
       qc.invalidateQueries({ queryKey: ['today-transactions'] })
     },
+  })
+}
+
+// ── Weekly schedules (Horarios tab) ───────────────────────────────────────────
+
+export type WeeklyScheduleDayKey =
+  | 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday'
+
+export const WEEKLY_SCHEDULE_DAY_KEYS: WeeklyScheduleDayKey[] = [
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+]
+
+// Date.getDay() (0 = Sunday) → column prefix in employee_weekly_schedules
+export const JS_DAY_TO_SCHEDULE_KEY: Record<number, WeeklyScheduleDayKey> = {
+  0: 'sunday', 1: 'monday', 2: 'tuesday', 3: 'wednesday', 4: 'thursday', 5: 'friday', 6: 'saturday',
+}
+
+export type EmployeeWeeklySchedule = {
+  id: string
+  tenant_id: string
+  user_id: string
+  week_start: string
+  monday_from?: string | null; monday_to?: string | null
+  tuesday_from?: string | null; tuesday_to?: string | null
+  wednesday_from?: string | null; wednesday_to?: string | null
+  thursday_from?: string | null; thursday_to?: string | null
+  friday_from?: string | null; friday_to?: string | null
+  saturday_from?: string | null; saturday_to?: string | null
+  sunday_from?: string | null; sunday_to?: string | null
+  total_hours: number
+  created_at: string
+  updated_at: string
+}
+
+export function useEmployeeWeeklySchedules(weekStart: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['employee-weekly-schedules', tenantId, weekStart],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('employee_weekly_schedules')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('week_start', weekStart)
+      if (error) throw error
+      return data as EmployeeWeeklySchedule[]
+    },
+    enabled: !!tenantId && !!weekStart,
+  })
+}
+
+export function useEmployeeWeeklySchedulesRange(startDate: string, endDate: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['employee-weekly-schedules-range', tenantId, startDate, endDate],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('employee_weekly_schedules')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .gte('week_start', startDate)
+        .lte('week_start', endDate)
+      if (error) throw error
+      return data as EmployeeWeeklySchedule[]
+    },
+    enabled: !!tenantId && !!startDate && !!endDate,
+  })
+}
+
+function mondayOfWeek(d: Date): Date {
+  const date = new Date(d)
+  const day = date.getDay()
+  date.setDate(date.getDate() - (day === 0 ? 6 : day - 1))
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+// Every Monday (week_start) that has at least one day falling in `year`-`month`.
+// If the month starts mid-week, the first entry is the Monday before the 1st.
+export function getMonthWeekStarts(year: number, month: number): string[] {
+  const firstDay = new Date(year, month - 1, 1)
+  const lastDay = new Date(year, month, 0)
+  const cur = mondayOfWeek(firstDay)
+  const result: string[] = []
+  while (cur.getTime() <= lastDay.getTime()) {
+    result.push(toDateKey(cur))
+    cur.setDate(cur.getDate() + 7)
+  }
+  return result
+}
+
+export type EmployeeWeeklySchedulesMonth = {
+  schedules: EmployeeWeeklySchedule[]
+  weekStarts: string[]
+  // user_id → week_start dates missing for that user (only users with at least one row
+  // this month appear here; a user absent from `schedules` entirely isn't tracked).
+  missingByUser: Map<string, string[]>
+}
+
+export function useEmployeeWeeklySchedulesMonth(year: number, month: number) {
+  const tenantId = useTenantId()
+  const weekStarts = useMemo(() => getMonthWeekStarts(year, month), [year, month])
+  return useQuery({
+    queryKey: ['employee-weekly-schedules-month', tenantId, year, month],
+    queryFn: async (): Promise<EmployeeWeeklySchedulesMonth> => {
+      const { data, error } = await supabase
+        .from('employee_weekly_schedules')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .in('week_start', weekStarts)
+      if (error) throw error
+      const schedules = (data ?? []) as EmployeeWeeklySchedule[]
+
+      const weeksByUser = new Map<string, Set<string>>()
+      for (const row of schedules) {
+        if (!weeksByUser.has(row.user_id)) weeksByUser.set(row.user_id, new Set())
+        weeksByUser.get(row.user_id)!.add(row.week_start)
+      }
+      const missingByUser = new Map<string, string[]>()
+      for (const [userId, weeks] of weeksByUser) {
+        const missing = weekStarts.filter(ws => !weeks.has(ws))
+        if (missing.length > 0) missingByUser.set(userId, missing)
+      }
+      return { schedules, weekStarts, missingByUser }
+    },
+    enabled: !!tenantId && !!year && !!month,
+  })
+}
+
+function scheduleTotalHours(row: Record<string, string | null>): number {
+  let total = 0
+  for (const day of WEEKLY_SCHEDULE_DAY_KEYS) {
+    const from = row[`${day}_from`]
+    const to = row[`${day}_to`]
+    if (from && to) {
+      const [fh, fm] = from.split(':').map(Number)
+      const [th, tm] = to.split(':').map(Number)
+      total += (th * 60 + tm - (fh * 60 + fm)) / 60
+    }
+  }
+  return Math.round(total * 100) / 100
+}
+
+type UpsertWeeklyScheduleInput = {
+  user_id: string
+  week_start: string
+  day: WeeklyScheduleDayKey
+  from: string | null
+  to: string | null
+}
+
+export function useUpsertWeeklySchedule() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: UpsertWeeklyScheduleInput) => {
+      const { data: existing, error: fetchError } = await supabase
+        .from('employee_weekly_schedules')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .eq('user_id', input.user_id)
+        .eq('week_start', input.week_start)
+        .maybeSingle()
+      if (fetchError) throw fetchError
+
+      const row: Record<string, string | null> = {}
+      for (const day of WEEKLY_SCHEDULE_DAY_KEYS) {
+        row[`${day}_from`] = existing?.[`${day}_from`] ?? null
+        row[`${day}_to`] = existing?.[`${day}_to`] ?? null
+      }
+      row[`${input.day}_from`] = input.from
+      row[`${input.day}_to`] = input.to
+
+      const { data, error } = await supabase
+        .from('employee_weekly_schedules')
+        .upsert(
+          {
+            tenant_id: tenantId,
+            user_id: input.user_id,
+            week_start: input.week_start,
+            ...row,
+            total_hours: scheduleTotalHours(row),
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: 'tenant_id,user_id,week_start' },
+        )
+        .select()
+        .single()
+      if (error) throw error
+      return data as EmployeeWeeklySchedule
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['employee-weekly-schedules'] })
+    },
+  })
+}
+
+export type AppointmentHourCount = { hour: number; count: number }
+
+export function useAppointmentsByDay(date: string) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['appointments-by-day', tenantId, date],
+    queryFn: async (): Promise<AppointmentHourCount[]> => {
+      // Argentina has no DST since 2009, so ART is a fixed UTC-3 offset:
+      // ART midnight for `date` is `${date}T03:00:00Z`.
+      const startUTC = `${date}T03:00:00.000Z`
+      const nextDate = new Date(new Date(`${date}T00:00:00Z`).getTime() + 24 * 60 * 60 * 1000)
+        .toISOString().slice(0, 10)
+      const endUTC = `${nextDate}T03:00:00.000Z`
+
+      const { data, error } = await supabase
+        .from('appointments')
+        .select('scheduled_at, duration_minutes')
+        .eq('tenant_id', tenantId)
+        .gte('scheduled_at', startUTC)
+        .lt('scheduled_at', endUTC)
+        .not('status', 'in', '(cancelled,no_show)')
+      if (error) throw error
+
+      const counts = new Array(24).fill(0)
+      for (const row of (data ?? []) as { scheduled_at: string }[]) {
+        const hour = Number(
+          new Date(row.scheduled_at).toLocaleString('en-US', {
+            timeZone: 'America/Argentina/Buenos_Aires',
+            hour: 'numeric',
+            hourCycle: 'h23',
+          }),
+        )
+        counts[hour]++
+      }
+      return counts.map((count, hour) => ({ hour, count }))
+    },
+    enabled: !!tenantId && !!date,
   })
 }

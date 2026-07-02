@@ -17,9 +17,11 @@ import {
   useCreateHoliday, useDeleteHoliday,
   useSalaryIncreases, useBonusPayments, useVacationRecords,
   useCreateSalaryIncrease, useRegisterBonusPayment, useRegisterVacationPayment,
+  useEmployeeWeeklySchedules, useUpsertWeeklySchedule, useAppointmentsByDay, useEmployeeWeeklySchedulesMonth,
   calcMonthScheduleHours, calcHolidayBonus,
+  JS_DAY_TO_SCHEDULE_KEY,
   type JobPosition, type EmployeeProfile, type EmployeeCCSS, type Holiday, type HolidayDetail,
-  type WeeklySchedule, type SalaryIncrease,
+  type WeeklySchedule, type SalaryIncrease, type EmployeeWeeklySchedule,
 } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -660,6 +662,7 @@ type CardData = {
   holidayBonus: number
   subtotal: number
   ccssEntry?: EmployeeCCSS
+  missingWeeks: string[]
 }
 
 function computeCard(
@@ -669,9 +672,11 @@ function computeCard(
   absences: { user_id: string; hours_absent: number; deduct_from_salary: boolean; date: string }[],
   ccssData: EmployeeCCSS[],
   holidays: Holiday[],
+  weeklySchedules: EmployeeWeeklySchedule[],
+  missingWeeks: string[],
 ): CardData {
   const horasEsperadas = emp.expected_monthly_hours
-  const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, year, month) || horasEsperadas
+  const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, year, month, weeklySchedules) || horasEsperadas
 
   const empAppts = appts.filter(a => a.therapist_id === emp.user_id)
   const sessionCount = empAppts.length
@@ -706,7 +711,7 @@ function computeCard(
   const holidayBonus = holidayDetails.reduce((s, h) => s + h.bonus, 0)
   const subtotal = baseSueldo + holidayBonus + bonusTotal
   const ccssEntry = ccssData.find(c => c.user_id === emp.user_id)
-  return { emp, horasEsperadas, horasSchedule, horasAusentes, horasNetas, sessionCount, sessionHours, bonus1Earned, bonus2Earned, bonusTotal, baseSueldo, holidayDetails, holidayHours, holidayBonus, subtotal, ccssEntry }
+  return { emp, horasEsperadas, horasSchedule, horasAusentes, horasNetas, sessionCount, sessionHours, bonus1Earned, bonus2Earned, bonusTotal, baseSueldo, holidayDetails, holidayHours, holidayBonus, subtotal, ccssEntry, missingWeeks }
 }
 
 function CcssSection({ card, yearMonth }: { card: CardData; yearMonth: string }) {
@@ -843,6 +848,18 @@ function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMont
             }
           </Button>
         </div>
+
+        {/* Horarios semanales: estado de carga */}
+        {card.missingWeeks.length > 0 ? (
+          <div className="text-xs font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            ⚠️ Faltan horarios para {card.missingWeeks.length} semana{card.missingWeeks.length > 1 ? 's' : ''}:{' '}
+            {card.missingWeeks.map(ws => ws.slice(5).replace('-', '/')).join(', ')}. El cálculo puede ser inexacto.
+          </div>
+        ) : (
+          <div className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2 inline-block">
+            ✓ Horarios completos
+          </div>
+        )}
 
         {/* Horas */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
@@ -981,14 +998,22 @@ function LiquidacionTab() {
   const { data: absenceData = [], isLoading: absLoading } = useAbsencesByMonth(yearMonth)
   const { data: ccssData = [], isLoading: ccssLoading } = useCCSSByMonth(yearMonth)
   const { data: holidays = [], isLoading: holLoading } = useHolidaysForMonth(yearMonth)
+  const { data: weeklyScheduleMonth, isLoading: wsLoading } = useEmployeeWeeklySchedulesMonth(year, month)
 
-  const isLoading = empLoading || apptLoading || absLoading || ccssLoading || holLoading
+  const isLoading = empLoading || apptLoading || absLoading || ccssLoading || holLoading || wsLoading
 
   const activeEmployees = employees.filter(e => e.active)
+  const schedules = weeklyScheduleMonth?.schedules ?? []
+  const weekStarts = weeklyScheduleMonth?.weekStarts ?? []
+  const missingByUser = weeklyScheduleMonth?.missingByUser ?? new Map<string, string[]>()
 
   const cards = useMemo(() =>
-    activeEmployees.map(emp => computeCard(emp, year, month, appts, absenceData, ccssData, holidays)),
-    [activeEmployees, year, month, appts, absenceData, ccssData, holidays],
+    activeEmployees.map(emp => {
+      const empSchedules = schedules.filter(s => s.user_id === emp.user_id)
+      const missingWeeks = missingByUser.get(emp.user_id) ?? weekStarts
+      return computeCard(emp, year, month, appts, absenceData, ccssData, holidays, empSchedules, missingWeeks)
+    }),
+    [activeEmployees, year, month, appts, absenceData, ccssData, holidays, schedules, weekStarts, missingByUser],
   )
 
   function prevMonth() {
@@ -1475,7 +1500,418 @@ function ProductividadTab() {
   )
 }
 
-// ── Tab 7: Aumentos de sueldo ─────────────────────────────────────────────────
+// ── Tab 7: Horarios ───────────────────────────────────────────────────────────
+
+const HORARIOS_MONTHS_ES = [
+  'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+]
+const HORARIOS_MONTHS_SHORT_ES = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic']
+const HORARIOS_DAY_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
+const HORARIOS_DAY_LONG = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+const HORARIOS_HOUR_COLUMNS = Array.from({ length: 15 }, (_, i) => 8 + i) // 08:00 .. 22:00
+const HORARIOS_RANGE_START = 8 * 60
+const HORARIOS_RANGE_END = 23 * 60
+const HORARIOS_TIME_OPTIONS: string[] = (() => {
+  const opts: string[] = []
+  for (let h = 8; h <= 23; h++) {
+    opts.push(fmtHM(h, 0))
+    if (h < 23) opts.push(fmtHM(h, 30))
+  }
+  return opts
+})()
+
+function fmtHM(h: number, m: number): string {
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
+}
+
+function toDateKey(d: Date): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function getWeekMonday(d: Date): Date {
+  const date = new Date(d)
+  const day = date.getDay()
+  date.setDate(date.getDate() - (day === 0 ? 6 : day - 1))
+  date.setHours(0, 0, 0, 0)
+  return date
+}
+
+function fmtWeekLabel(monday: Date): string {
+  const sunday = new Date(monday)
+  sunday.setDate(sunday.getDate() + 6)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `Semana del ${pad(monday.getDate())} ${HORARIOS_MONTHS_SHORT_ES[monday.getMonth()]} al ${pad(sunday.getDate())} ${HORARIOS_MONTHS_SHORT_ES[sunday.getMonth()]} ${sunday.getFullYear()}`
+}
+
+function fmtDayFull(d: Date): string {
+  return `${HORARIOS_DAY_LONG[d.getDay()]} ${d.getDate()} de ${HORARIOS_MONTHS_ES[d.getMonth()]} ${d.getFullYear()}`
+}
+
+function fmtDayShort(d: Date): string {
+  return `${HORARIOS_DAY_LONG[d.getDay()]} ${d.getDate()} de ${HORARIOS_MONTHS_ES[d.getMonth()]}`
+}
+
+function timeToMinutes(t: string): number {
+  const [h, m] = t.split(':').map(Number)
+  return h * 60 + m
+}
+
+function scheduleBarStyle(from: string, to: string): { left: string; width: string } {
+  const start = Math.min(Math.max(timeToMinutes(from), HORARIOS_RANGE_START), HORARIOS_RANGE_END)
+  const end = Math.min(Math.max(timeToMinutes(to), HORARIOS_RANGE_START), HORARIOS_RANGE_END)
+  const rangeTotal = HORARIOS_RANGE_END - HORARIOS_RANGE_START
+  const left = ((start - HORARIOS_RANGE_START) / rangeTotal) * 100
+  const width = Math.max(0, ((end - start) / rangeTotal) * 100)
+  return { left: `${left}%`, width: `${width}%` }
+}
+
+// Returns week_start (Monday) ISO date strings from `from` to `to`, inclusive, one per week.
+function getWeekStarts(from: Date, to: Date): string[] {
+  const result: string[] = []
+  const cur = new Date(from)
+  cur.setHours(0, 0, 0, 0)
+  const end = new Date(to)
+  end.setHours(0, 0, 0, 0)
+  while (cur.getTime() <= end.getTime()) {
+    result.push(toDateKey(cur))
+    cur.setDate(cur.getDate() + 7)
+  }
+  return result
+}
+
+type RepeatMode = 'none' | 'until' | 'forever'
+
+const REPEAT_FOREVER_WEEKS = 52
+
+function EditHorariosModal({
+  open, onClose, employees, schedules, date, weekStartKey,
+}: {
+  open: boolean; onClose: () => void
+  employees: EmployeeProfile[]; schedules: EmployeeWeeklySchedule[]
+  date: Date; weekStartKey: string
+}) {
+  const dayKey = JS_DAY_TO_SCHEDULE_KEY[date.getDay()]
+  const upsert = useUpsertWeeklySchedule()
+  type EmpForm = { works: boolean; from: string; to: string; repeat: RepeatMode; repeatUntil: string }
+  const [form, setForm] = useState<Record<string, EmpForm>>({})
+  const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (!open) return
+    const initial: Record<string, EmpForm> = {}
+    for (const emp of employees) {
+      const sched = schedules.find(s => s.user_id === emp.user_id)
+      const from = sched?.[`${dayKey}_from`] ?? null
+      const to = sched?.[`${dayKey}_to`] ?? null
+      initial[emp.user_id] = {
+        works: !!(from && to), from: from ?? '09:00', to: to ?? '18:00',
+        repeat: 'none', repeatUntil: '',
+      }
+    }
+    setForm(initial)
+    setError('')
+  }, [open, employees, schedules, dayKey])
+
+  function setEmp(userId: string, patch: Partial<EmpForm>) {
+    setForm(p => ({ ...p, [userId]: { ...p[userId], ...patch } }))
+  }
+
+  async function handleSave() {
+    setError('')
+    for (const emp of employees) {
+      const f = form[emp.user_id]
+      if (f?.works && f.repeat === 'until' && !f.repeatUntil) {
+        setError(`Elegí una fecha límite para ${emp.user?.full_name ?? 'el empleado'}`)
+        return
+      }
+    }
+    setSaving(true)
+    try {
+      const monday = new Date(`${weekStartKey}T00:00:00`)
+      const tasks: Promise<unknown>[] = []
+      for (const emp of employees) {
+        const f = form[emp.user_id]
+        if (!f) continue
+        if (!f.works) {
+          // Unchecked: only clear the current week, future weeks are untouched.
+          tasks.push(upsert.mutateAsync({
+            user_id: emp.user_id, week_start: weekStartKey, day: dayKey, from: null, to: null,
+          }))
+          continue
+        }
+        let weekStarts: string[]
+        if (f.repeat === 'until') {
+          weekStarts = getWeekStarts(monday, new Date(`${f.repeatUntil}T00:00:00`))
+        } else if (f.repeat === 'forever') {
+          const end = new Date(monday)
+          end.setDate(end.getDate() + 7 * (REPEAT_FOREVER_WEEKS - 1))
+          weekStarts = getWeekStarts(monday, end)
+        } else {
+          weekStarts = [weekStartKey]
+        }
+        for (const ws of weekStarts) {
+          tasks.push(upsert.mutateAsync({
+            user_id: emp.user_id, week_start: ws, day: dayKey, from: f.from, to: f.to,
+          }))
+        }
+      }
+      await Promise.all(tasks)
+      onClose()
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al guardar')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="max-w-lg max-h-[85vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>Horarios — {fmtDayShort(date)}</DialogTitle>
+          <DialogDescription>Definí quién trabaja este día y en qué horario.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 mt-2">
+          {employees.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">Sin empleados activos</p>
+          ) : employees.map(emp => {
+            const f = form[emp.user_id] ?? { works: false, from: '09:00', to: '18:00', repeat: 'none' as RepeatMode, repeatUntil: '' }
+            const color = emp.user?.color_hex ?? '#4A1040'
+            return (
+              <div key={emp.id} className="border rounded-lg p-2.5 space-y-2">
+                <div className="flex items-center gap-3">
+                  <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                  <label className="flex items-center gap-2 flex-1 cursor-pointer min-w-0">
+                    <input type="checkbox" checked={f.works}
+                      onChange={e => setEmp(emp.user_id, { works: e.target.checked })}
+                      className="w-4 h-4 rounded flex-shrink-0" />
+                    <span className="text-sm font-medium text-plum-800 truncate">{emp.user?.full_name ?? '—'}</span>
+                  </label>
+                  {f.works && (
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <select value={f.from} onChange={e => setEmp(emp.user_id, { from: e.target.value })}
+                        className={cn(SELECT_CLS, 'w-24 h-8 text-xs')}>
+                        {HORARIOS_TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                      <span className="text-muted-foreground text-xs">–</span>
+                      <select value={f.to} onChange={e => setEmp(emp.user_id, { to: e.target.value })}
+                        className={cn(SELECT_CLS, 'w-24 h-8 text-xs')}>
+                        {HORARIOS_TIME_OPTIONS.map(t => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </div>
+                  )}
+                </div>
+                {f.works && (
+                  <div className="pl-[22px] space-y-1">
+                    <p className="text-[11px] font-medium text-muted-foreground">Repetir horario:</p>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="radio" name={`repeat-${emp.user_id}`} checked={f.repeat === 'none'}
+                        onChange={() => setEmp(emp.user_id, { repeat: 'none' })} className="w-3.5 h-3.5" />
+                      No repetir (solo este día)
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer flex-wrap">
+                      <input type="radio" name={`repeat-${emp.user_id}`} checked={f.repeat === 'until'}
+                        onChange={() => setEmp(emp.user_id, { repeat: 'until' })} className="w-3.5 h-3.5" />
+                      Repetir cada semana hasta:
+                      {f.repeat === 'until' && (
+                        <Input type="date" min={weekStartKey} value={f.repeatUntil}
+                          onChange={e => setEmp(emp.user_id, { repeatUntil: e.target.value })}
+                          className="h-7 text-xs w-auto ml-1" />
+                      )}
+                    </label>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="radio" name={`repeat-${emp.user_id}`} checked={f.repeat === 'forever'}
+                        onChange={() => setEmp(emp.user_id, { repeat: 'forever' })} className="w-3.5 h-3.5" />
+                      Repetir indefinidamente
+                    </label>
+                    {f.repeat === 'forever' && (
+                      <p className="text-[10px] text-amber-600 italic pl-5">
+                        Se repetirá por 1 año. Podés editarlo en cualquier momento.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex gap-2 justify-end pt-2">
+            <Button type="button" variant="outline" onClick={onClose} disabled={saving}>Cancelar</Button>
+            <Button type="button" onClick={handleSave} disabled={saving || employees.length === 0}>
+              {saving && <Loader2 className="w-4 h-4 animate-spin mr-2" />}
+              Guardar horarios
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function HorariosTab() {
+  const [weekStart, setWeekStart] = useState<Date>(() => getWeekMonday(new Date()))
+  const [selectedDayIdx, setSelectedDayIdx] = useState<number>(() => {
+    const dow = new Date().getDay() // 0 = Sun .. 6 = Sat
+    return dow === 0 || dow === 6 ? 0 : dow - 1 // Mon-first index; weekends default to Monday
+  })
+  const [editOpen, setEditOpen] = useState(false)
+
+  const weekDays = useMemo(
+    () => Array.from({ length: 7 }, (_, i) => { const d = new Date(weekStart); d.setDate(d.getDate() + i); return d }),
+    [weekStart],
+  )
+  const selectedDate = weekDays[selectedDayIdx]
+  const weekStartKey = toDateKey(weekStart)
+  const dayKey = JS_DAY_TO_SCHEDULE_KEY[selectedDate.getDay()]
+
+  const prevWeekDate = useMemo(() => { const d = new Date(selectedDate); d.setDate(d.getDate() - 7); return d }, [selectedDate])
+
+  const { data: employees = [], isLoading: employeesLoading } = useEmployeeProfiles()
+  const activeEmployees = useMemo(() => employees.filter(e => e.active), [employees])
+  const { data: schedules = [], isLoading: schedulesLoading } = useEmployeeWeeklySchedules(weekStartKey)
+  const { data: prevWeekHours = [], isLoading: prevLoading } = useAppointmentsByDay(toDateKey(prevWeekDate))
+
+  function scheduleFor(userId: string) {
+    return schedules.find(s => s.user_id === userId)
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-center gap-3 flex-wrap">
+        <Button variant="outline" size="sm" onClick={() => setWeekStart(d => { const nd = new Date(d); nd.setDate(nd.getDate() - 7); return nd })}>
+          <ChevronLeft className="w-4 h-4 mr-1" />Semana anterior
+        </Button>
+        <span className="text-sm font-semibold text-plum-800 min-w-[260px] text-center">{fmtWeekLabel(weekStart)}</span>
+        <Button variant="outline" size="sm" onClick={() => setWeekStart(d => { const nd = new Date(d); nd.setDate(nd.getDate() + 7); return nd })}>
+          Semana siguiente<ChevronRight className="w-4 h-4 ml-1" />
+        </Button>
+      </div>
+
+      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+        {weekDays.map((d, i) => (
+          <button
+            key={i}
+            onClick={() => setSelectedDayIdx(i)}
+            className={cn(
+              'px-3 py-1.5 rounded-lg text-sm font-medium border transition-colors',
+              selectedDayIdx === i
+                ? 'bg-plum-800 text-white border-plum-800'
+                : 'bg-white text-plum-800 border-gray-200 hover:bg-plum-50',
+            )}
+          >
+            {HORARIOS_DAY_SHORT[d.getDay()]} {d.getDate()}
+          </button>
+        ))}
+      </div>
+
+      <Card>
+        <CardContent className="p-4 space-y-4">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <h3 className="text-base font-semibold text-plum-800 capitalize">{fmtDayFull(selectedDate)}</h3>
+            <Button size="sm" onClick={() => setEditOpen(true)}>
+              <Pencil className="w-4 h-4 mr-1.5" />Editar horarios del día
+            </Button>
+          </div>
+
+          {/* Hour axis */}
+          <div className="flex items-center">
+            <div className="w-40 flex-shrink-0" />
+            <div className="flex-1 grid" style={{ gridTemplateColumns: 'repeat(15, minmax(0,1fr))' }}>
+              {HORARIOS_HOUR_COLUMNS.map(h => (
+                <div key={h} className="text-[10px] text-muted-foreground text-center">{fmtHM(h, 0)}</div>
+              ))}
+            </div>
+          </div>
+
+          {/* Row 1: previous week sessions by hour */}
+          <div className="flex items-center">
+            <div className="w-40 flex-shrink-0 text-xs text-muted-foreground pr-2">
+              Semana anterior ({fmtDayShort(prevWeekDate)}):
+            </div>
+            {prevLoading ? (
+              <div className="flex-1 flex justify-center py-1">
+                <Loader2 className="w-4 h-4 animate-spin text-plum-800" />
+              </div>
+            ) : (
+              <div className="flex-1 grid" style={{ gridTemplateColumns: 'repeat(15, minmax(0,1fr))' }}>
+                {HORARIOS_HOUR_COLUMNS.map(h => {
+                  const count = prevWeekHours.find(c => c.hour === h)?.count ?? 0
+                  return (
+                    <div key={h} className="flex justify-center py-1">
+                      <span className={cn(
+                        'text-[11px] font-semibold w-6 h-6 flex items-center justify-center rounded-full',
+                        count > 0 ? 'bg-gold-100 text-plum-800 border border-gold-400' : 'text-gray-300 bg-gray-50',
+                      )}>
+                        ({count})
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Row 2+: employee schedule bars */}
+          <div className="space-y-2 border-t pt-3">
+            {employeesLoading || schedulesLoading ? (
+              <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-plum-800" /></div>
+            ) : activeEmployees.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-4">Sin empleados activos</p>
+            ) : activeEmployees.map(emp => {
+              const sched = scheduleFor(emp.user_id)
+              const from = sched?.[`${dayKey}_from`] ?? null
+              const to = sched?.[`${dayKey}_to`] ?? null
+              const color = emp.user?.color_hex ?? '#4A1040'
+              const hasSchedule = !!(from && to)
+              return (
+                <div key={emp.id} className="flex items-center">
+                  <div className="w-40 flex-shrink-0 flex items-center gap-2 pr-2">
+                    <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+                    <span className="text-sm font-medium text-plum-800 truncate">{emp.user?.full_name ?? '—'}</span>
+                  </div>
+                  <div className="flex-1 relative h-7 bg-gray-50 rounded-md">
+                    {hasSchedule ? (
+                      <div
+                        className="absolute inset-y-0 rounded-md flex items-center justify-center text-[10px] font-medium text-white whitespace-nowrap overflow-hidden"
+                        style={{ ...scheduleBarStyle(from!, to!), backgroundColor: color, opacity: 0.7 }}
+                      >
+                        {from}–{to}
+                      </div>
+                    ) : (
+                      <span className="absolute inset-0 flex items-center pl-2 text-xs text-gray-400 italic">— Sin horario</span>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          {/* Total hours summary */}
+          {!employeesLoading && !schedulesLoading && activeEmployees.length > 0 && (
+            <p className="text-sm text-muted-foreground border-t pt-3">
+              {activeEmployees
+                .map(emp => `${(emp.user?.full_name ?? '—').split(' ')[0]}: ${scheduleFor(emp.user_id)?.total_hours ?? 0}hs`)
+                .join(' | ')}
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <EditHorariosModal
+        open={editOpen}
+        onClose={() => setEditOpen(false)}
+        employees={activeEmployees}
+        schedules={schedules}
+        date={selectedDate}
+        weekStartKey={weekStartKey}
+      />
+    </div>
+  )
+}
+
+// ── Tab 8: Aumentos de sueldo ─────────────────────────────────────────────────
 
 function getEmpRate(emp: EmployeeProfile): { rate: number; isHourly: boolean } {
   const isHourly = emp.position?.contract_type === 'hourly'
@@ -1772,7 +2208,7 @@ function AumentosTab() {
   )
 }
 
-// ── Tab 8: Aguinaldo ──────────────────────────────────────────────────────────
+// ── Tab 9: Aguinaldo ──────────────────────────────────────────────────────────
 
 type BonusPayFormState = {
   monto: string
@@ -1987,7 +2423,7 @@ function AguinaldoTab() {
   )
 }
 
-// ── Tab 9: Vacaciones ─────────────────────────────────────────────────────────
+// ── Tab 10: Vacaciones ────────────────────────────────────────────────────────
 
 function calcEntitledDays(hireDate: string | null | undefined): { days: number; seniority: number; hasHireDate: boolean } {
   if (!hireDate) return { days: 14, seniority: 0, hasHireDate: false }
@@ -2247,9 +2683,9 @@ function VacacionesTab() {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados' | 'productividad' | 'aumentos' | 'aguinaldo' | 'vacaciones'
+type RRHHTab = 'puestos' | 'empleados' | 'liquidacion' | 'ausencias' | 'feriados' | 'productividad' | 'horarios' | 'aumentos' | 'aguinaldo' | 'vacaciones'
 
-type RRHHTabDef = { key: RRHHTab; label: string; ownerOnly?: boolean }
+type RRHHTabDef = { key: RRHHTab; label: string; ownerOnly?: boolean; adminOnly?: boolean }
 
 const ALL_TABS: RRHHTabDef[] = [
   { key: 'puestos', label: 'Puestos' },
@@ -2258,6 +2694,7 @@ const ALL_TABS: RRHHTabDef[] = [
   { key: 'ausencias', label: 'Ausencias' },
   { key: 'feriados', label: 'Feriados' },
   { key: 'productividad', label: 'Productividad' },
+  { key: 'horarios', label: 'Horarios', adminOnly: true },
   { key: 'aumentos', label: 'Aumentos', ownerOnly: true },
   { key: 'aguinaldo', label: 'Aguinaldo', ownerOnly: true },
   { key: 'vacaciones', label: 'Vacaciones', ownerOnly: true },
@@ -2266,8 +2703,9 @@ const ALL_TABS: RRHHTabDef[] = [
 export default function RRHH() {
   const { profile } = useAuth()
   const isOwner = profile?.role === 'owner'
+  const isAdmin = isOwner || profile?.role === 'partner_admin'
   const [tab, setTab] = useState<RRHHTab>('puestos')
-  const tabs = ALL_TABS.filter(t => !t.ownerOnly || isOwner)
+  const tabs = ALL_TABS.filter(t => (!t.ownerOnly || isOwner) && (!t.adminOnly || isAdmin))
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
@@ -2301,6 +2739,7 @@ export default function RRHH() {
       {tab === 'ausencias' && <AusenciasTab />}
       {tab === 'feriados' && <FeriadosTab />}
       {tab === 'productividad' && <ProductividadTab />}
+      {tab === 'horarios' && isAdmin && <HorariosTab />}
       {tab === 'aumentos' && isOwner && <AumentosTab />}
       {tab === 'aguinaldo' && isOwner && <AguinaldoTab />}
       {tab === 'vacaciones' && isOwner && <VacacionesTab />}
