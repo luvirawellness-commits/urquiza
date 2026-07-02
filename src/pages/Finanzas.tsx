@@ -54,7 +54,7 @@ import {
 } from '@/hooks/useSupplierInvoices'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
-type Tab = 'caja' | 'movimientos' | 'pl' | 'cierres' | 'proveedores' | 'configuracion'
+type Tab = 'caja' | 'movimientos' | 'pl' | 'cashflow' | 'cierres' | 'proveedores' | 'configuracion'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -1972,124 +1972,43 @@ function TabPL() {
               </CardContent>
             </Card>
 
-            {/* Panels (monthly only) */}
+            {/* Rentabilidad por servicio (monthly only) */}
             {panels && (
-              <>
-                <Card>
-                  <CardHeader>
-                    <CardTitle className="text-base text-plum-800">Cash Flow del mes</CardTitle>
-                  </CardHeader>
-                  <CardContent className="overflow-x-auto">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base text-plum-800">Rentabilidad por servicio</CardTitle>
+                </CardHeader>
+                <CardContent className="overflow-x-auto">
+                  {panels.serviceRanking.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">Sin datos</p>
+                  ) : (
                     <table className="w-full">
                       <thead>
                         <tr className="border-b">
-                          <th className="text-left text-xs text-muted-foreground font-medium pb-2 w-24"></th>
-                          {panels.cashFlow.map((w) => (
-                            <th key={w.label} className="text-right text-xs text-muted-foreground font-medium pb-2">
-                              {w.label}
-                            </th>
-                          ))}
+                          <th className="text-left text-xs text-muted-foreground font-medium pb-2">Servicio</th>
+                          <th className="text-right text-xs text-muted-foreground font-medium pb-2">Ses.</th>
+                          <th className="text-right text-xs text-muted-foreground font-medium pb-2">Facturación</th>
+                          <th className="text-right text-xs text-muted-foreground font-medium pb-2">Ticket</th>
                         </tr>
                       </thead>
                       <tbody>
-                        <tr className="border-b">
-                          <td className="py-2 text-sm text-plum-800">Ingresos</td>
-                          {panels.cashFlow.map((w) => (
-                            <td key={w.label} className="py-2 text-sm text-right tabular-nums text-green-600">
-                              {formatCurrency(w.ingresos)}
+                        {panels.serviceRanking.map((s) => (
+                          <tr key={s.name} className="border-b last:border-0">
+                            <td className="py-2 text-sm text-plum-800 max-w-[120px] truncate">{s.name}</td>
+                            <td className="py-2 text-sm text-right text-gray-600">{s.count}</td>
+                            <td className="py-2 text-sm text-right tabular-nums font-medium text-plum-800">
+                              {formatCurrency(s.total)}
                             </td>
-                          ))}
-                        </tr>
-                        <tr className="border-b">
-                          <td className="py-2 text-sm text-plum-800">Egresos</td>
-                          {panels.cashFlow.map((w) => (
-                            <td key={w.label} className="py-2 text-sm text-right tabular-nums text-red-600">
-                              {formatCurrency(w.egresos)}
+                            <td className="py-2 text-sm text-right tabular-nums text-gray-600">
+                              {formatCurrency(s.avg)}
                             </td>
-                          ))}
-                        </tr>
-                        <tr>
-                          <td className="py-2 text-sm font-semibold text-plum-800">Saldo neto</td>
-                          {panels.cashFlow.map((w) => (
-                            <td key={w.label} className={cn(
-                              'py-2 text-sm text-right font-semibold tabular-nums',
-                              w.saldo >= 0 ? 'text-green-700' : 'text-red-700',
-                            )}>
-                              {formatCurrency(w.saldo)}
-                            </td>
-                          ))}
-                        </tr>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
-                  </CardContent>
-                </Card>
-
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base text-plum-800">Breakdown por medio de pago</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      {Object.keys(panels.pmBreakdown).length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Sin datos</p>
-                      ) : (
-                        <div className="space-y-2.5">
-                          {PAYMENT_METHODS.map((pm) => {
-                            const amt = panels.pmBreakdown[pm.value] ?? 0
-                            if (!amt) return null
-                            return (
-                              <div key={pm.value} className="flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                  <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
-                                  <span className="text-sm">{pm.label}</span>
-                                </div>
-                                <span className="text-sm font-medium text-plum-800 tabular-nums">
-                                  {formatCurrency(amt)}
-                                </span>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                  <Card>
-                    <CardHeader>
-                      <CardTitle className="text-base text-plum-800">Rentabilidad por servicio</CardTitle>
-                    </CardHeader>
-                    <CardContent className="overflow-x-auto">
-                      {panels.serviceRanking.length === 0 ? (
-                        <p className="text-sm text-muted-foreground">Sin datos</p>
-                      ) : (
-                        <table className="w-full">
-                          <thead>
-                            <tr className="border-b">
-                              <th className="text-left text-xs text-muted-foreground font-medium pb-2">Servicio</th>
-                              <th className="text-right text-xs text-muted-foreground font-medium pb-2">Ses.</th>
-                              <th className="text-right text-xs text-muted-foreground font-medium pb-2">Facturación</th>
-                              <th className="text-right text-xs text-muted-foreground font-medium pb-2">Ticket</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {panels.serviceRanking.map((s) => (
-                              <tr key={s.name} className="border-b last:border-0">
-                                <td className="py-2 text-sm text-plum-800 max-w-[120px] truncate">{s.name}</td>
-                                <td className="py-2 text-sm text-right text-gray-600">{s.count}</td>
-                                <td className="py-2 text-sm text-right tabular-nums font-medium text-plum-800">
-                                  {formatCurrency(s.total)}
-                                </td>
-                                <td className="py-2 text-sm text-right tabular-nums text-gray-600">
-                                  {formatCurrency(s.avg)}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </CardContent>
-                  </Card>
-                </div>
-              </>
+                  )}
+                </CardContent>
+              </Card>
             )}
           </>
         )}
@@ -2101,6 +2020,246 @@ function TabPL() {
           endDate={endDate}
         />
       )}
+    </div>
+  )
+}
+
+// ── Tab Cash Flow ────────────────────────────────────────────────────────────
+
+function TabCashFlow() {
+  const now = new Date()
+  const [periodType, setPeriodType] = useState<PeriodType>('monthly')
+  const [year, setYear] = useState(now.getFullYear())
+  const [month, setMonth] = useState(now.getMonth() + 1)
+  const [quarter, setQuarter] = useState<1 | 2 | 3 | 4>(
+    Math.ceil((now.getMonth() + 1) / 3) as 1 | 2 | 3 | 4,
+  )
+  const [half, setHalf] = useState<1 | 2>(now.getMonth() < 6 ? 1 : 2)
+  const [allTenants, setAllTenants] = useState(false)
+
+  const months = useMemo(() => {
+    const pad = (n: number) => String(n).padStart(2, '0')
+    if (periodType === 'monthly') return [`${year}-${pad(month)}`]
+    if (periodType === 'quarterly') {
+      const start = (quarter - 1) * 3 + 1
+      return Array.from({ length: 3 }, (_, i) => `${year}-${pad(start + i)}`)
+    }
+    if (periodType === 'semi-annual') {
+      const start = half === 1 ? 1 : 7
+      return Array.from({ length: 6 }, (_, i) => `${year}-${pad(start + i)}`)
+    }
+    return Array.from({ length: 12 }, (_, i) => `${year}-${pad(i + 1)}`)
+  }, [periodType, year, month, quarter, half])
+
+  const startDate = `${months[0]}-01`
+  const endDate = useMemo(() => {
+    const [y, m] = months[months.length - 1].split('-').map(Number)
+    return getArgentinaMonthEnd(y, m)
+  }, [months])
+
+  const { data: txs, isLoading } = useTransactionsRange(startDate, endDate, !allTenants)
+
+  const panels = useMemo(() => {
+    if (periodType !== 'monthly' || !txs || txs.length === 0) return null
+    const inc = txs.filter((t) => t.type === 'income')
+    const sum = (arr: typeof txs) => arr.reduce((s, t) => s + t.amount, 0)
+    const weeks = [
+      { label: 'Semana 1', from: 1, to: 7 },
+      { label: 'Semana 2', from: 8, to: 14 },
+      { label: 'Semana 3', from: 15, to: 21 },
+      { label: 'Semana 4', from: 22, to: 31 },
+    ]
+    const cashFlow = weeks.map((w) => {
+      const inW = sum(txs.filter((t) => {
+        const d = parseInt(t.date.split('-')[2])
+        return t.type === 'income' && d >= w.from && d <= w.to
+      }))
+      const exW = sum(txs.filter((t) => {
+        const d = parseInt(t.date.split('-')[2])
+        // Direct gastos (no status) hit cash immediately; supplier-invoice paid
+        // splits are flagged is_cashflow_only. A 'pending' invoice's own P&L
+        // transaction has neither, so it's correctly excluded from cash flow.
+        const cashImpacting = t.status == null || t.is_cashflow_only === true
+        return t.type === 'expense' && d >= w.from && d <= w.to && cashImpacting
+      }))
+      return { label: w.label, ingresos: inW, egresos: exW, saldo: inW - exW }
+    })
+    const pmBreakdown: Record<string, number> = {}
+    inc.forEach((t) => {
+      const pm = t.payment_method ?? 'other'
+      pmBreakdown[pm] = (pmBreakdown[pm] ?? 0) + t.amount
+    })
+    return { cashFlow, pmBreakdown }
+  }, [periodType, txs])
+
+  function prevPeriod() {
+    if (periodType === 'monthly') {
+      if (month === 1) { setMonth(12); setYear((y) => y - 1) } else setMonth((m) => m - 1)
+    } else if (periodType === 'quarterly') {
+      if (quarter === 1) { setQuarter(4); setYear((y) => y - 1) } else setQuarter((q) => (q - 1) as 1 | 2 | 3 | 4)
+    } else if (periodType === 'semi-annual') {
+      if (half === 1) { setHalf(2); setYear((y) => y - 1) } else setHalf(1)
+    } else { setYear((y) => y - 1) }
+  }
+  function nextPeriod() {
+    if (periodType === 'monthly') {
+      if (month === 12) { setMonth(1); setYear((y) => y + 1) } else setMonth((m) => m + 1)
+    } else if (periodType === 'quarterly') {
+      if (quarter === 4) { setQuarter(1); setYear((y) => y + 1) } else setQuarter((q) => (q + 1) as 1 | 2 | 3 | 4)
+    } else if (periodType === 'semi-annual') {
+      if (half === 2) { setHalf(1); setYear((y) => y + 1) } else setHalf(2)
+    } else { setYear((y) => y + 1) }
+  }
+
+  const periodLabel =
+    periodType === 'monthly' ? `${MONTHS_ES[month - 1]} ${year}`
+    : periodType === 'quarterly' ? `Q${quarter} ${year}`
+    : periodType === 'semi-annual' ? `H${half} — ${year}`
+    : `Año ${year}`
+
+  return (
+    <div className="space-y-6">
+      {/* ── Controls ── */}
+      <div className="flex flex-wrap items-center gap-3">
+        <div className="flex bg-gray-100 rounded-lg p-1 gap-0.5">
+          {(['monthly', 'quarterly', 'semi-annual', 'annual'] as PeriodType[]).map((t) => (
+            <button
+              key={t}
+              onClick={() => setPeriodType(t)}
+              className={cn(
+                'px-2.5 py-1 text-xs font-medium rounded-md transition-colors',
+                periodType === t
+                  ? 'bg-white text-plum-800 shadow-sm'
+                  : 'text-muted-foreground hover:text-plum-700',
+              )}
+            >
+              {t === 'monthly' ? 'Mensual' : t === 'quarterly' ? 'Trimestral' : t === 'semi-annual' ? 'Semestral' : 'Anual'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1">
+          <Button variant="outline" size="icon" className="w-7 h-7" onClick={prevPeriod}>
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </Button>
+          <span className="text-sm font-medium text-plum-800 min-w-[144px] text-center">
+            {periodLabel}
+          </span>
+          <Button variant="outline" size="icon" className="w-7 h-7" onClick={nextPeriod}>
+            <ChevronRight className="w-3.5 h-3.5" />
+          </Button>
+        </div>
+        <div className="flex bg-gray-100 rounded-lg p-1 gap-0.5 ml-auto">
+          <button
+            onClick={() => setAllTenants(false)}
+            className={cn(
+              'px-2.5 py-1 text-xs font-medium rounded-md transition-colors',
+              !allTenants ? 'bg-white text-plum-800 shadow-sm' : 'text-muted-foreground hover:text-plum-700',
+            )}
+          >
+            Urquiza
+          </button>
+          <button
+            onClick={() => setAllTenants(true)}
+            className={cn(
+              'px-2.5 py-1 text-xs font-medium rounded-md transition-colors',
+              allTenants ? 'bg-white text-plum-800 shadow-sm' : 'text-muted-foreground hover:text-plum-700',
+            )}
+          >
+            Marca
+          </button>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-plum-800" />
+        </div>
+      ) : (
+        panels && (
+          <>
+            {/* Cash Flow semanal */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base text-plum-800">Cash Flow del mes</CardTitle>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                <table className="w-full">
+                  <thead>
+                    <tr className="border-b">
+                      <th className="text-left text-xs text-muted-foreground font-medium pb-2 w-24"></th>
+                      {panels.cashFlow.map((w) => (
+                        <th key={w.label} className="text-right text-xs text-muted-foreground font-medium pb-2">
+                          {w.label}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr className="border-b">
+                      <td className="py-2 text-sm text-plum-800">Ingresos</td>
+                      {panels.cashFlow.map((w) => (
+                        <td key={w.label} className="py-2 text-sm text-right tabular-nums text-green-600">
+                          {formatCurrency(w.ingresos)}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr className="border-b">
+                      <td className="py-2 text-sm text-plum-800">Egresos</td>
+                      {panels.cashFlow.map((w) => (
+                        <td key={w.label} className="py-2 text-sm text-right tabular-nums text-red-600">
+                          {formatCurrency(w.egresos)}
+                        </td>
+                      ))}
+                    </tr>
+                    <tr>
+                      <td className="py-2 text-sm font-semibold text-plum-800">Saldo neto</td>
+                      {panels.cashFlow.map((w) => (
+                        <td key={w.label} className={cn(
+                          'py-2 text-sm text-right font-semibold tabular-nums',
+                          w.saldo >= 0 ? 'text-green-700' : 'text-red-700',
+                        )}>
+                          {formatCurrency(w.saldo)}
+                        </td>
+                      ))}
+                    </tr>
+                  </tbody>
+                </table>
+              </CardContent>
+            </Card>
+
+            {/* Breakdown por medio de pago */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base text-plum-800">Breakdown por medio de pago</CardTitle>
+              </CardHeader>
+              <CardContent>
+                {Object.keys(panels.pmBreakdown).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Sin datos</p>
+                ) : (
+                  <div className="space-y-2.5">
+                    {PAYMENT_METHODS.map((pm) => {
+                      const amt = panels.pmBreakdown[pm.value] ?? 0
+                      if (!amt) return null
+                      return (
+                        <div key={pm.value} className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <CreditCard className="w-3.5 h-3.5 text-muted-foreground" />
+                            <span className="text-sm">{pm.label}</span>
+                          </div>
+                          <span className="text-sm font-medium text-plum-800 tabular-nums">
+                            {formatCurrency(amt)}
+                          </span>
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </>
+        )
+      )}
+
       {!isLoading && periodType === 'monthly' && (
         <SectionBalanceTesoreria txs={txs ?? []} month={months[0]} />
       )}
@@ -3848,13 +4007,14 @@ export default function Finanzas() {
 
   const showCaja       = profile ? canAccess(profile.role, 'caja') : false
   const showPL         = profile ? canAccess(profile.role, 'finanzas') : false
+  const showCashFlow   = profile?.role === 'owner' || profile?.role === 'partner_admin'
   const showCierres    = profile?.role === 'owner' || profile?.role === 'partner_admin'
   const showProveedores    = profile?.role === 'owner'
   const showConfiguracion  = profile?.role === 'owner' || profile?.role === 'partner_admin'
 
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
-    if (t === 'pl' || t === 'movimientos' || t === 'proveedores') return t as Tab
+    if (t === 'pl' || t === 'cashflow' || t === 'movimientos' || t === 'proveedores') return t as Tab
     return 'caja'
   })
 
@@ -3862,6 +4022,7 @@ export default function Finanzas() {
     { key: 'caja'         as Tab, label: 'Caja',                show: showCaja        },
     { key: 'movimientos'  as Tab, label: 'Movimientos de Caja', show: showCaja        },
     { key: 'pl'           as Tab, label: 'P&L y Reportes',      show: showPL          },
+    { key: 'cashflow'     as Tab, label: 'Cash Flow',           show: showCashFlow    },
     { key: 'cierres'      as Tab, label: 'Cierres de Caja',     show: showCierres     },
     { key: 'proveedores'   as Tab, label: 'Proveedores',         show: showProveedores   },
     { key: 'configuracion' as Tab, label: 'Configuración',       show: showConfiguracion },
@@ -3895,6 +4056,7 @@ export default function Finanzas() {
       {activeTab === 'caja'        && showCaja        && <TabCaja />}
       {activeTab === 'movimientos' && showCaja        && <TabMovimientos />}
       {activeTab === 'pl'          && showPL          && <TabPL />}
+      {activeTab === 'cashflow'    && showCashFlow    && <TabCashFlow />}
       {activeTab === 'cierres'     && showCierres     && <TabCierresCaja />}
       {activeTab === 'proveedores'  && showProveedores  && <TabProveedores />}
       {activeTab === 'configuracion' && showConfiguracion && <TabConfiguracion />}
