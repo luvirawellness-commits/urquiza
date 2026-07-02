@@ -29,9 +29,9 @@ import { getArgentinaDateString } from '../utils/dateUtils'
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const START_HOUR = 7
-const END_HOUR = 21
+const END_HOUR = 23
 const HOUR_PX = 80
-const TOTAL_HEIGHT = (END_HOUR - START_HOUR) * HOUR_PX // 1120px
+const TOTAL_HEIGHT = (END_HOUR - START_HOUR) * HOUR_PX // 1280px
 const DEFAULT_COLORS = ['#7c3aed', '#0891b2', '#16a34a', '#dc2626', '#d97706']
 const DAY_NAMES_LONG = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
 const DAY_NAMES_SHORT = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb']
@@ -121,13 +121,16 @@ function getWeeklyScheduleUnavailableSegs(
   function toY(mins: number) { return ((mins - GRID_START) * HOUR_PX) / 60 }
   const dayKey = WEEKLY_DAY_KEYS[date.getDay()] as keyof WeeklySchedule
 
-  // A specific-week override (employee_weekly_schedules) always wins over the
-  // fixed weekly_schedule (employee_profiles) for that one day, when present.
+  // A specific-week override (employee_weekly_schedules) wins over the fixed
+  // weekly_schedule (employee_profiles) for that one day, when present. But the
+  // override row is written one day at a time, so most days in it are null simply
+  // because they were never touched — not because the employee is off that day.
+  // Only fall through to "no schedule" when neither source has data for this day.
   let intervals: { from: string; to: string }[]
-  if (weekRow) {
-    const from = weekRow[`${dayKey}_from`]
-    const to = weekRow[`${dayKey}_to`]
-    intervals = from && to ? [{ from, to }] : []
+  const overrideFrom = weekRow?.[`${dayKey}_from`]?.slice(0, 5)
+  const overrideTo = weekRow?.[`${dayKey}_to`]?.slice(0, 5)
+  if (overrideFrom && overrideTo) {
+    intervals = [{ from: overrideFrom, to: overrideTo }]
   } else if (ws) {
     intervals = ws[dayKey] ?? []
   } else {
@@ -136,10 +139,12 @@ function getWeeklyScheduleUnavailableSegs(
   if (intervals.length === 0) return [{ top: 0, height: TOTAL_HEIGHT }]
   const sorted = [...intervals]
     .map(iv => ({
-      s: iv.from.split(':').map(Number).reduce((h, m) => h * 60 + m),
-      e: iv.to.split(':').map(Number).reduce((h, m) => h * 60 + m),
+      s: Math.max(GRID_START, iv.from.split(':').map(Number).reduce((h, m) => h * 60 + m)),
+      e: Math.min(GRID_END, iv.to.split(':').map(Number).reduce((h, m) => h * 60 + m)),
     }))
+    .filter(iv => iv.e > iv.s) // drop intervals entirely outside the visible grid
     .sort((a, b) => a.s - b.s)
+  if (sorted.length === 0) return [{ top: 0, height: TOTAL_HEIGHT }]
   const segs: { top: number; height: number }[] = []
   if (sorted[0].s > GRID_START) segs.push({ top: 0, height: toY(sorted[0].s) })
   for (let i = 0; i < sorted.length - 1; i++) {
@@ -1794,7 +1799,7 @@ function DayView({
 
       {/* Scrollable time grid */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="flex" style={{ height: TOTAL_HEIGHT }}>
+        <div className="flex overflow-hidden" style={{ height: TOTAL_HEIGHT }}>
 
           {/* Time axis */}
           <div className="w-14 flex-shrink-0 relative border-r bg-gray-50">
@@ -1835,7 +1840,7 @@ function DayView({
 
               return (
                 <div key={t.id}
-                  className="flex-1 relative border-l cursor-crosshair"
+                  className="flex-1 relative border-l cursor-crosshair overflow-hidden"
                   style={{ height: TOTAL_HEIGHT }}
                   onClick={(e) => handleColumnClick(e, t.id)}>
 

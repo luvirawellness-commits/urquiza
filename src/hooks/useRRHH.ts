@@ -83,7 +83,28 @@ export function calcMonthScheduleHours(
   weeklySchedules?: EmployeeWeeklySchedule[],
 ): number {
   if (weeklySchedules && weeklySchedules.length > 0) {
-    const total = weeklySchedules.reduce((s, w) => s + (w.total_hours ?? 0), 0)
+    // A week's total_hours covers all 7 days, but a week can straddle two months
+    // (e.g. week_start 2026-07-27 runs into August 1-2) — only count the days
+    // that actually fall in the target month/year, not the week's full total.
+    let total = 0
+    for (const row of weeklySchedules) {
+      const [wy, wm, wd] = row.week_start.split('-').map(Number)
+      const weekStartDate = new Date(wy, wm - 1, wd) // week_start is always a Monday
+      for (let i = 0; i < 7; i++) {
+        const dayDate = new Date(weekStartDate)
+        dayDate.setDate(dayDate.getDate() + i)
+        if (dayDate.getFullYear() !== year || dayDate.getMonth() + 1 !== month) continue
+
+        const dayKey = WEEKLY_SCHEDULE_DAY_KEYS[i] // index 0 = Monday, matching week_start
+        const fromStr = row[`${dayKey}_from`]
+        const toStr = row[`${dayKey}_to`]
+        if (!fromStr || !toStr) continue
+
+        const [fh, fm] = fromStr.split(':').map(Number)
+        const [th, tm] = toStr.split(':').map(Number)
+        total += (th * 60 + tm - fh * 60 - fm) / 60
+      }
+    }
     return Math.round(total * 100) / 100
   }
   if (!schedule) return 0
@@ -101,25 +122,60 @@ export function calcMonthScheduleHours(
   return Math.round(total * 100) / 100
 }
 
+const HOLIDAY_DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const
+
+// Accepts either the legacy `users.schedule` shape or, when `weeklySchedules` has a row
+// for the holiday's week, the new per-week `employee_weekly_schedules` data — same
+// precedence as calcMonthScheduleHours, so the two stay consistent for a given employee.
 export function calcHolidayBonus(
   schedule: Record<string, { start: string; end: string }[]> | null | undefined,
   hourlyRate: number,
   holidays: Holiday[],
   absences: { date: string; deduct_from_salary: boolean }[],
+  weeklySchedules?: EmployeeWeeklySchedule[],
 ): HolidayDetail[] {
-  if (!schedule || !hourlyRate) return []
+  if (!hourlyRate) return []
   const result: HolidayDetail[] = []
   for (const h of holidays) {
     const hasAbsence = absences.some(a => a.date === h.date)
     if (hasAbsence) continue
-    const dayKey = DAY_KEYS_SHORT[new Date(h.date + 'T12:00:00').getDay()]
-    const ranges = (schedule[dayKey] ?? []) as { start: string; end: string }[]
+
+    const holidayDate = new Date(h.date + 'T12:00:00')
+    const dayOfWeek = holidayDate.getDay() // 0 = Sunday .. 6 = Saturday
+
     let hours = 0
-    for (const r of ranges) {
-      const [sh, sm] = r.start.split(':').map(Number)
-      const [eh, em] = r.end.split(':').map(Number)
-      hours += (eh * 60 + em - (sh * 60 + sm)) / 60
+    let matched = false
+
+    if (weeklySchedules && weeklySchedules.length > 0) {
+      const diff = dayOfWeek === 0 ? -6 : 1 - dayOfWeek
+      const monday = new Date(holidayDate)
+      monday.setDate(monday.getDate() + diff)
+      const weekStart = monday.toISOString().split('T')[0]
+      const row = weeklySchedules.find(s => s.week_start === weekStart)
+      if (row) {
+        matched = true
+        const dayKey = HOLIDAY_DAY_KEYS[dayOfWeek]
+        const fromStr = row[`${dayKey}_from`]
+        const toStr = row[`${dayKey}_to`]
+        if (fromStr && toStr) {
+          const [fh, fm] = fromStr.split(':').map(Number)
+          const [th, tm] = toStr.split(':').map(Number)
+          hours = (th * 60 + tm - fh * 60 - fm) / 60
+        }
+      }
     }
+
+    if (!matched) {
+      if (!schedule) continue
+      const dayKey = DAY_KEYS_SHORT[dayOfWeek]
+      const ranges = (schedule[dayKey] ?? []) as { start: string; end: string }[]
+      for (const r of ranges) {
+        const [sh, sm] = r.start.split(':').map(Number)
+        const [eh, em] = r.end.split(':').map(Number)
+        hours += (eh * 60 + em - (sh * 60 + sm)) / 60
+      }
+    }
+
     if (hours > 0) {
       result.push({
         date: h.date, name: h.name,
@@ -1187,6 +1243,7 @@ export function useUpsertWeeklySchedule() {
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['employee-weekly-schedules'] })
+      qc.invalidateQueries({ queryKey: ['employee-weekly-schedules-month'] })
     },
   })
 }

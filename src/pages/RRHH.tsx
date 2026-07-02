@@ -705,7 +705,7 @@ function computeCard(
     .filter(a => a.user_id === emp.user_id)
     .map(a => ({ date: a.date, deduct_from_salary: a.deduct_from_salary }))
   const holidayDetails = emp.position?.contract_type === 'hourly'
-    ? calcHolidayBonus(emp.user?.schedule, emp.position.hourly_rate ?? 0, holidays, employeeAbsences)
+    ? calcHolidayBonus(emp.user?.schedule, emp.position.hourly_rate ?? 0, holidays, employeeAbsences, weeklySchedules)
     : []
   const holidayHours = Math.round(holidayDetails.reduce((s, h) => s + h.hours, 0) * 100) / 100
   const holidayBonus = holidayDetails.reduce((s, h) => s + h.bonus, 0)
