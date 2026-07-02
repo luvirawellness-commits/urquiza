@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId } from '@/contexts/AuthContext'
+import { getArgentinaDateString } from '../utils/dateUtils'
 import type { Supply, ServiceCostItem } from '@/types'
 
 export function useSupplies() {
@@ -162,5 +163,63 @@ export function useRemoveCostItem() {
       if (error) throw error
     },
     onSuccess: () => qc.invalidateQueries({ queryKey: ['service-cost-items'] }),
+  })
+}
+
+// ── Cart checkout (Productos page) ────────────────────────────────────────────
+
+export type CartSaleItem = { supply: Supply; quantity: number }
+export type CartPaymentSplit = { paymentMethod: string; amount: number }
+
+type SellCartInput = {
+  items: CartSaleItem[]
+  splits: CartPaymentSplit[]
+  clientId: string
+  userId: string
+}
+
+export function useSellCart() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: SellCartInput) => {
+      const { error: movErr } = await supabase
+        .from('inventory_movements')
+        .insert(input.items.map((item) => ({
+          tenant_id: tenantId,
+          supply_id: item.supply.id,
+          type: 'sale',
+          quantity: -item.quantity,
+          notes: 'Venta directa',
+          counted_by: input.userId,
+        })))
+      if (movErr) throw movErr
+
+      const description = `Venta: ${input.items.map((i) => i.supply.name).join(', ')}`
+      const date = getArgentinaDateString()
+      const { error: txErr } = await supabase
+        .from('transactions')
+        .insert(input.splits.map((split) => ({
+          tenant_id: tenantId,
+          type: 'income',
+          category: 'product',
+          amount: split.amount,
+          payment_method: split.paymentMethod,
+          description,
+          client_id: input.clientId,
+          date,
+          user_id: input.userId,
+          status: 'paid',
+        })))
+      if (txErr) throw txErr
+    },
+    onSuccess: () => {
+      // ['supplies'] prefix-matches useSellableSupplies's key (['supplies', tenantId, 'sellable']) too.
+      qc.invalidateQueries({ queryKey: ['supplies'] })
+      qc.invalidateQueries({ queryKey: ['inventory-movements'] })
+      qc.invalidateQueries({ queryKey: ['today-transactions'] })
+      qc.invalidateQueries({ queryKey: ['today-metrics'] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+    },
   })
 }
