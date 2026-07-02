@@ -111,31 +111,63 @@ function getMonday(d: Date): Date {
 
 const WEEKLY_DAY_KEYS = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'] as const
 
+// Resolves the available work intervals for one employee/day.
+// Returns null when there's no schedule data anywhere for this employee (fully
+// unrestricted — no shading, any hour clickable). Returns [] when there IS data
+// but it says nothing is available that day (fully unavailable that day).
+//
+// `weekDataActive` = true means employee_weekly_schedules has at least one row
+// for the visible week (i.e. the Horarios tab has been used for it) — once that's
+// true, the fixed weekly_schedule (employee_profiles) is never consulted again,
+// even for employees/days with no override row: missing override = day off.
+// Only when NO employee has any employee_weekly_schedules row for the week does
+// the fixed weekly_schedule act as the fallback for everyone.
+function getDayIntervals(
+  ws: WeeklySchedule | null | undefined,
+  date: Date,
+  weekRow: EmployeeWeeklySchedule | null | undefined,
+  weekDataActive: boolean,
+): { from: string; to: string }[] | null {
+  const dayKey = WEEKLY_DAY_KEYS[date.getDay()] as keyof WeeklySchedule
+  if (weekDataActive) {
+    const overrideFrom = weekRow?.[`${dayKey}_from`]?.slice(0, 5)
+    const overrideTo = weekRow?.[`${dayKey}_to`]?.slice(0, 5)
+    return overrideFrom && overrideTo ? [{ from: overrideFrom, to: overrideTo }] : []
+  }
+  if (ws) return ws[dayKey] ?? []
+  return null
+}
+
+function isTimeAvailable(
+  ws: WeeklySchedule | null | undefined,
+  date: Date,
+  weekRow: EmployeeWeeklySchedule | null | undefined,
+  weekDataActive: boolean,
+  hour: number,
+  minute: number,
+): boolean {
+  const intervals = getDayIntervals(ws, date, weekRow, weekDataActive)
+  if (intervals === null) return true
+  const mins = hour * 60 + minute
+  return intervals.some(iv => {
+    const [fh, fm] = iv.from.split(':').map(Number)
+    const [th, tm] = iv.to.split(':').map(Number)
+    return mins >= fh * 60 + fm && mins < th * 60 + tm
+  })
+}
+
 function getWeeklyScheduleUnavailableSegs(
   ws: WeeklySchedule | null | undefined,
   date: Date,
-  weekRow?: EmployeeWeeklySchedule | null,
+  weekRow: EmployeeWeeklySchedule | null | undefined,
+  weekDataActive: boolean,
 ): { top: number; height: number }[] {
   const GRID_START = START_HOUR * 60
   const GRID_END = END_HOUR * 60
   function toY(mins: number) { return ((mins - GRID_START) * HOUR_PX) / 60 }
-  const dayKey = WEEKLY_DAY_KEYS[date.getDay()] as keyof WeeklySchedule
 
-  // A specific-week override (employee_weekly_schedules) wins over the fixed
-  // weekly_schedule (employee_profiles) for that one day, when present. But the
-  // override row is written one day at a time, so most days in it are null simply
-  // because they were never touched — not because the employee is off that day.
-  // Only fall through to "no schedule" when neither source has data for this day.
-  let intervals: { from: string; to: string }[]
-  const overrideFrom = weekRow?.[`${dayKey}_from`]?.slice(0, 5)
-  const overrideTo = weekRow?.[`${dayKey}_to`]?.slice(0, 5)
-  if (overrideFrom && overrideTo) {
-    intervals = [{ from: overrideFrom, to: overrideTo }]
-  } else if (ws) {
-    intervals = ws[dayKey] ?? []
-  } else {
-    return []
-  }
+  const intervals = getDayIntervals(ws, date, weekRow, weekDataActive)
+  if (intervals === null) return []
   if (intervals.length === 0) return [{ top: 0, height: TOTAL_HEIGHT }]
   const sorted = [...intervals]
     .map(iv => ({
@@ -1654,10 +1686,27 @@ function SlotMenu({ target, therapists, onNewTurno, onBloqueo, onSobreTurno, onC
     return () => document.removeEventListener('mousedown', handle)
   }, [onClose])
 
+  const targetDate = new Date(`${target.date}T12:00:00`)
+  const { data: employeeSchedules } = useEmployeeSchedules()
+  const weekStartStr = dateKey(getMonday(targetDate))
+  const { data: weekSchedules } = useEmployeeWeeklySchedulesRange(weekStartStr, weekStartStr)
+  const weekDataActive = (weekSchedules?.length ?? 0) > 0
+  const weekRow = weekSchedules?.find(r => r.user_id === target.therapistId)
+  const available = isTimeAvailable(
+    employeeSchedules?.get(target.therapistId),
+    targetDate,
+    weekRow,
+    weekDataActive,
+    target.hour,
+    target.minute,
+  )
+
   const therapist = therapists.find(t => t.id === target.therapistId)
   const past = isPast(target.date, target.hour, target.minute)
-  const canNew = !past
-  const disabledReason = past ? 'El horario ya pasó' : ''
+  // Sobre turno (below) always bypasses this — it exists specifically to book
+  // outside an employee's declared hours, so it's never gated on availability.
+  const canNew = !past && available
+  const disabledReason = past ? 'El horario ya pasó' : !available ? 'Fuera de horario' : ''
 
   const menuX = Math.min(target.x + 8, (typeof window !== 'undefined' ? window.innerWidth : 1000) - 210)
   const menuY = Math.min(target.y, (typeof window !== 'undefined' ? window.innerHeight : 800) - 160)
@@ -1750,6 +1799,7 @@ function DayView({
 
   const weekStartStr = dateKey(getMonday(date))
   const { data: weekSchedules } = useEmployeeWeeklySchedulesRange(weekStartStr, weekStartStr)
+  const weekDataActive = (weekSchedules?.length ?? 0) > 0
   const weekScheduleByTherapist = useMemo(() => {
     const map = new Map<string, EmployeeWeeklySchedule>()
     for (const row of weekSchedules ?? []) map.set(row.user_id, row)
@@ -1836,6 +1886,7 @@ function DayView({
                 employeeSchedules?.get(t.id),
                 date,
                 weekScheduleByTherapist.get(t.id),
+                weekDataActive,
               )
 
               return (
@@ -1854,9 +1905,13 @@ function DayView({
                       style={{ top: timeToY(h, 30) }} />
                   ))}
 
-                  {/* Weekly schedule shading (employee_profiles.weekly_schedule) */}
+                  {/* Weekly schedule shading — employee_weekly_schedules when in use for this
+                      week, else the fixed employee_profiles.weekly_schedule. pointer-events-auto
+                      + cursor-default here only changes the hover affordance; clicks still bubble
+                      up to the column's onClick (SlotMenu), which gates "Nuevo turno" but keeps
+                      "Sobre turno" reachable for booking outside declared hours. */}
                   {weeklyUnavailableSegs.map((seg, idx) => (
-                    <div key={`ws-${idx}`} className="absolute left-0 right-0 pointer-events-none"
+                    <div key={`ws-${idx}`} className="absolute left-0 right-0 pointer-events-auto cursor-default"
                       style={{ top: seg.top, height: seg.height, backgroundColor: '#F3F4F6' }} />
                   ))}
 
