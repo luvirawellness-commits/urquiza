@@ -25,7 +25,9 @@ import { useAllServiceCostItems } from '@/hooks/useSupplies'
 import {
   useEmployeeProfiles,
   useAbsencesRange,
+  useEmployeeWeeklySchedulesRange,
   calcMonthScheduleHours,
+  getMonthWeekStarts,
 } from '@/hooks/useRRHH'
 import {
   useMonthlyBalances,
@@ -2015,7 +2017,7 @@ function TabPL() {
       {!isLoading && monthlyPL && (
         <SectionProductividadOperativa
           months={months}
-          txs={txs ?? []}
+          monthlyPL={monthlyPL}
           startDate={startDate}
           endDate={endDate}
         />
@@ -2296,19 +2298,30 @@ type ProdMonthData = {
 
 function SectionProductividadOperativa({
   months,
-  txs,
+  monthlyPL,
   startDate,
   endDate,
 }: {
   months: string[]
-  txs: Transaction[]
+  monthlyPL: PLMonthData[] | null
   startDate: string
   endDate: string
 }) {
   const [showDetail, setShowDetail] = useState(false)
   const { data: employees, isLoading: empLoading } = useEmployeeProfiles()
   const { data: allAbsences, isLoading: absLoading } = useAbsencesRange(startDate, endDate)
-  const isLoading = empLoading || absLoading
+
+  // A week_start can fall up to 6 days before the 1st of the first month in
+  // `months`, so widen the range query to still catch that leading week —
+  // matching what useEmployeeWeeklySchedulesMonth would fetch per month.
+  const weekRangeStart = useMemo(() => {
+    const d = new Date(`${startDate}T00:00:00`)
+    d.setDate(d.getDate() - 6)
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+  }, [startDate])
+  const { data: weekSchedules, isLoading: weekSchedulesLoading } = useEmployeeWeeklySchedulesRange(weekRangeStart, endDate)
+
+  const isLoading = empLoading || absLoading || weekSchedulesLoading
 
   const monthlyData = useMemo((): ProdMonthData[] | null => {
     if (!employees || !allAbsences) return null
@@ -2318,8 +2331,13 @@ function SectionProductividadOperativa({
       const monthEnd = getArgentinaMonthEnd(y, m)
       const monthAbsences = allAbsences.filter((a) => a.date >= monthStart && a.date <= monthEnd)
       const hourlyEmps = employees.filter((e) => e.active && e.position?.contract_type === 'hourly')
+      // Same per-month week_start set useEmployeeWeeklySchedulesMonth(y, m) would use.
+      const monthWeekStarts = new Set(getMonthWeekStarts(y, m))
       const employeeDetails: EmpMonthDetail[] = hourlyEmps.map((emp) => {
-        const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, y, m)
+        const empSchedules = (weekSchedules ?? []).filter(
+          (s) => s.user_id === emp.user_id && monthWeekStarts.has(s.week_start),
+        )
+        const horasSchedule = calcMonthScheduleHours(emp.user?.schedule, y, m, empSchedules)
         const horasAusentes = monthAbsences
           .filter((a) => a.user_id === emp.user_id && a.deduct_from_salary)
           .reduce((s, a) => s + a.hours_absent, 0)
@@ -2328,9 +2346,12 @@ function SectionProductividadOperativa({
         return { name: emp.user?.full_name ?? '—', horasNetas, tarifa, costoTeorico: horasNetas * tarifa }
       })
       const costoTeorico = employeeDetails.reduce((s, e) => s + e.costoTeorico, 0)
-      const costoReal = txs
-        .filter((t) => t.date.startsWith(yearMonth) && t.type === 'expense' && ['salary_operativo', 'salary', 'social_charges'].includes(t.category ?? ''))
-        .reduce((s, t) => s + t.amount, 0)
+      // Same accrual-based cost as the P&L table's "Costo Operativo (Sueldos + CCSS)"
+      // row, plus Aguinaldo/Vacaciones — sourced from computePLMonth so it already
+      // excludes is_cashflow_only transactions (cash-flow-only payment splits) and
+      // isn't skewed by a prior month's invoice happening to get paid this month.
+      const plMonth = monthlyPL?.find((p) => p.month === yearMonth)
+      const costoReal = plMonth ? plMonth.costoOperativo + plMonth.aguinaldo + plMonth.vacaciones : 0
       return {
         yearMonth, costoTeorico, costoReal,
         gap: costoReal - costoTeorico,
@@ -2339,7 +2360,7 @@ function SectionProductividadOperativa({
         employeeDetails,
       }
     })
-  }, [employees, allAbsences, txs, months])
+  }, [employees, allAbsences, weekSchedules, monthlyPL, months])
 
   const totals = useMemo(() => {
     if (!monthlyData) return null
