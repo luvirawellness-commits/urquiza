@@ -139,68 +139,34 @@ export function useMarkInvoicePaid() {
         .eq('tenant_id', tenantId)
       if (invError) throw invError
 
-      const txIds: (string | null)[] = []
-      const firstSplit = input.splits[0]
-
-      if (input.transactionId) {
-        const { error: txError } = await supabase
-          .from('transactions')
-          .update({
-            status: 'paid',
-            payment_method: firstSplit.paymentMethod,
-            amount: firstSplit.amount,
-            date: input.paidDate,
-          })
-          .eq('id', input.transactionId)
-          .eq('tenant_id', tenantId)
-        if (txError) throw txError
-        txIds.push(input.transactionId)
-      } else {
-        const { data: newTx, error: txError } = await supabase
-          .from('transactions')
-          .insert({
-            tenant_id: tenantId,
-            type: 'expense',
-            category: input.category,
-            amount: firstSplit.amount,
-            description: input.description,
-            date: input.paidDate,
-            user_id: input.userId,
-            payment_method: firstSplit.paymentMethod,
-            status: 'paid',
-          })
-          .select('id')
-          .single()
-        if (txError) throw txError
-        txIds.push(newTx.id)
-      }
-
-      for (let i = 1; i < input.splits.length; i++) {
-        const split = input.splits[i]
-        const { data: newTx, error: txError } = await supabase
-          .from('transactions')
-          .insert({
-            tenant_id: tenantId,
-            type: 'expense',
-            category: input.category,
-            amount: split.amount,
-            description: `${input.description} (pago dividido ${i + 1}/${input.splits.length})`,
-            date: input.paidDate,
-            user_id: input.userId,
-            payment_method: split.paymentMethod,
-            status: 'paid',
-          })
-          .select('id')
-          .single()
-        if (txError) throw txError
-        txIds.push(newTx.id)
-      }
+      // The original transaction (input.transactionId) is intentionally left
+      // untouched: it stays status 'pending', dated at issue_date, amount the
+      // full invoice — that's what drives P&L for the month the invoice was
+      // issued. Cash flow gets its own brand-new, is_cashflow_only transactions
+      // dated at the actual paid_date, one per payment split.
+      const description = `${input.description} (pago)`
+      const { data: newTxs, error: txError } = await supabase
+        .from('transactions')
+        .insert(input.splits.map((split) => ({
+          tenant_id: tenantId,
+          type: 'expense',
+          category: input.category,
+          amount: split.amount,
+          description,
+          date: input.paidDate,
+          user_id: input.userId,
+          payment_method: split.paymentMethod,
+          status: 'paid',
+          is_cashflow_only: true,
+        })))
+        .select('id')
+      if (txError) throw txError
 
       const { error: sipError } = await supabase
         .from('supplier_invoice_payments')
         .insert(input.splits.map((split, i) => ({
           invoice_id: input.invoiceId,
-          transaction_id: txIds[i] ?? null,
+          transaction_id: newTxs?.[i]?.id ?? null,
           payment_method: split.paymentMethod,
           amount: split.amount,
         })))

@@ -1151,7 +1151,9 @@ function computePLMonth(
 ): PLNumericFields {
   const inc = txs.filter((t) => t.type === 'income')
   const exp = txs.filter(
-    (t) => t.type === 'expense' && !['cash_transfer', 'withdrawal'].includes(t.category ?? ''),
+    (t) => t.type === 'expense'
+      && !['cash_transfer', 'withdrawal'].includes(t.category ?? '')
+      && !t.is_cashflow_only, // exclude paid-split transactions; the P&L impact is the original invoice transaction
   )
   const sum = (arr: Transaction[]) => arr.reduce((s, t) => s + t.amount, 0)
 
@@ -1782,7 +1784,11 @@ function TabPL() {
       }))
       const exW = sum(txs.filter((t) => {
         const d = parseInt(t.date.split('-')[2])
-        return t.type === 'expense' && d >= w.from && d <= w.to
+        // Direct gastos (no status) hit cash immediately; supplier-invoice paid
+        // splits are flagged is_cashflow_only. A 'pending' invoice's own P&L
+        // transaction has neither, so it's correctly excluded from cash flow.
+        const cashImpacting = t.status == null || t.is_cashflow_only === true
+        return t.type === 'expense' && d >= w.from && d <= w.to && cashImpacting
       }))
       return { label: w.label, ingresos: inW, egresos: exW, saldo: inW - exW }
     })
