@@ -604,32 +604,38 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
     setBusy(true)
     setError(null)
     try {
-      let description = depositarNum > 0
-        ? `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`
-        : `Cierre de caja sin depósito${notas ? ` · ${notas}` : ''}`
-      if (contadoNum !== null) {
-        const difLabel = diferencia! > 0 ? 'sobrante' : 'faltante'
-        description += ` · Conteo físico: ${formatCurrency(contadoNum)}, Esperado: ${formatCurrency(totalEsperado)}, Diferencia: ${formatCurrency(Math.abs(diferencia!))} (${difLabel})`
+      if (depositarNum > 0) {
+        let description = `Depósito a caja mayor: ${formatCurrency(depositarNum)}${notas ? ` · ${notas}` : ''}`
+        if (contadoNum !== null) {
+          const difLabel = diferencia! > 0 ? 'sobrante' : 'faltante'
+          description += ` · Conteo físico: ${formatCurrency(contadoNum)}, Esperado: ${formatCurrency(totalEsperado)}, Diferencia: ${formatCurrency(Math.abs(diferencia!))} (${difLabel})`
+        }
+        const depositPayload = {
+          type: 'expense' as const,
+          category: 'cash_transfer',
+          amount: depositarNum,
+          payment_method: 'cash',
+          description,
+          date: today,
+          user_id: user!.id,
+          status: 'paid',
+          is_recurring: false,
+        }
+        await insertTx.mutateAsync(depositPayload)
+        qc.invalidateQueries({ queryKey: ['last-caja-close'] })
+      } else {
+        // No cash to deposit — just update the fondo, but still invalidate so the UI refreshes
+        qc.invalidateQueries({ queryKey: ['last-caja-close'] })
       }
-      const depositPayload = {
-        type: 'expense' as const,
-        category: 'cash_transfer',
-        amount: depositarNum,
-        payment_method: 'cash',
-        description,
-        date: today,
-        user_id: user!.id,
-        status: 'paid',
-        is_recurring: false,
-      }
-      console.log('[CierreCaja] INSERT - Cierre de caja:', depositPayload)
-      await insertTx.mutateAsync(depositPayload)
-      qc.invalidateQueries({ queryKey: ['last-caja-close'] })
 
       // Always recalculate fondo: what's left after deposit (based on system records)
       const nuevoFondo = Math.max(0, totalEsperado - depositarNum)
       if (currentTenantId) {
-        await supabase.from('tenants').update({ caja_fondo_fijo: nuevoFondo }).eq('id', currentTenantId)
+        const { error: updateError } = await supabase
+          .from('tenants')
+          .update({ caja_fondo_fijo: nuevoFondo })
+          .eq('id', currentTenantId)
+        if (updateError) throw updateError
         await refreshTenants()
       }
 
@@ -1557,13 +1563,18 @@ function computeBolsillos(
   balance: MonthlyBalance | null | undefined,
   cajonFondo: number,
 ) {
-  // The declared amounts already represent everything up to and including the
-  // declaration date (e.g. after a mid-month redeclaration), so movements are
-  // counted from that date onward, not from the start of the month — otherwise
-  // a redeclaration would double-count everything before it. declared_at is a
-  // timestamptz; compare only its date portion against t.date (a plain date).
-  const cutoffDate = balance?.declared_at ? balance.declared_at.split('T')[0] : null
-  const postTxs = cutoffDate ? txs.filter((t) => t.date >= cutoffDate) : []
+  // The declared amount already reflects everything that happened up to the
+  // exact moment it was counted/declared, so only transactions created strictly
+  // AFTER declared_at are new movements. Using t.created_at (a timestamp) rather
+  // than t.date (a plain date) avoids double-counting same-day transactions that
+  // occurred before the declaration was made.
+  const declaredAt = balance?.declared_at ?? null
+  const postTxs = declaredAt
+    ? txs.filter((t) => {
+        const txTime = t.created_at ?? t.date
+        return txTime > declaredAt
+      })
+    : []
 
   const sum = (filter: (t: Transaction) => boolean) =>
     postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
@@ -3658,8 +3669,13 @@ function TabConfiguracion() {
   const isLoading = txLoading || balLoading
 
   const postTxs = useMemo(() => {
-    const cutoffDate = balance?.declared_at ? balance.declared_at.split('T')[0] : null
-    return cutoffDate ? txs.filter((t) => t.date >= cutoffDate) : []
+    const declaredAt = balance?.declared_at ?? null
+    return declaredAt
+      ? txs.filter((t) => {
+          const txTime = t.created_at ?? t.date
+          return txTime > declaredAt
+        })
+      : []
   }, [txs, balance])
 
   const detailTxs = useMemo(() => {

@@ -276,7 +276,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function refreshTenants() {
     if (!user) return
-    const { data: userTenants } = await supabase
+    const { data: userTenants, error } = await supabase
       .from('user_tenants')
       .select(`
         tenant_id,
@@ -289,12 +289,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .eq('user_id', user.id)
       .eq('active', true)
 
+    if (error) {
+      console.error('[refreshTenants] fetch failed, keeping previous availableTenants:', error)
+      return
+    }
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const fresh: Tenant[] = ((userTenants ?? []) as any[])
       .map((ut) => ut.tenant)
       .filter(Boolean) as Tenant[]
 
-    if (fresh.length > 0) setAvailableTenants(fresh)
+    console.log('[refreshTenants] fresh tenant data:', fresh.map((t) => ({ id: t.id, caja_fondo_fijo: t.caja_fondo_fijo })))
+
+    if (fresh.length > 0) {
+      setAvailableTenants(fresh)
+    } else {
+      console.warn('[refreshTenants] fetch returned no tenants, keeping previous availableTenants')
+    }
+
+    // Other screens (Configuración → Admin, Super Admin) cache tenant rows via
+    // React Query; invalidate those too so they don't show a stale value if the
+    // user navigates there without a full page reload.
+    queryClient.invalidateQueries({ queryKey: ['tenants'] })
+    queryClient.invalidateQueries({ queryKey: ['sa-tenants'] })
   }
 
   async function signIn(email: string, password: string) {
