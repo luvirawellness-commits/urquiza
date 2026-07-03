@@ -468,3 +468,82 @@ export function useDashboardAlerts() {
     enabled: !!tenantId,
   })
 }
+
+// ── Transaction detail (Movimientos row expansion) ────────────────────────────
+
+export type TransactionDetailAppointment = {
+  scheduled_at: string
+  duration_minutes: number
+  service_name: string | null
+  emoji: string | null
+  therapist_name: string | null
+  first_name: string
+  last_name: string | null
+}
+
+export type TransactionDetailClient = {
+  first_name: string
+  last_name: string | null
+}
+
+export type TransactionDetail = {
+  appointment: TransactionDetailAppointment | null
+  client: TransactionDetailClient | null
+}
+
+export function useTransactionDetail(
+  appointmentId?: string | null,
+  clientId?: string | null,
+) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['transaction-detail', tenantId, appointmentId, clientId],
+    queryFn: async (): Promise<TransactionDetail> => {
+      if (appointmentId) {
+        const { data, error } = await supabase
+          .from('appointments')
+          .select(`
+            scheduled_at, duration_minutes,
+            service:services!fk_apt_service ( name, emoji ),
+            therapist:users!fk_apt_therapist ( full_name ),
+            client:clients!fk_apt_client ( first_name, last_name )
+          `)
+          .eq('id', appointmentId)
+          .eq('tenant_id', tenantId)
+          .single()
+        if (error) throw error
+        const row = data as unknown as {
+          scheduled_at: string
+          duration_minutes: number
+          service: { name: string; emoji: string | null } | null
+          therapist: { full_name: string } | null
+          client: { first_name: string; last_name: string | null } | null
+        }
+        return {
+          appointment: {
+            scheduled_at: row.scheduled_at,
+            duration_minutes: row.duration_minutes,
+            service_name: row.service?.name ?? null,
+            emoji: row.service?.emoji ?? null,
+            therapist_name: row.therapist?.full_name ?? null,
+            first_name: row.client?.first_name ?? '',
+            last_name: row.client?.last_name ?? null,
+          },
+          client: null,
+        }
+      }
+      if (clientId) {
+        const { data, error } = await supabase
+          .from('clients')
+          .select('first_name, last_name')
+          .eq('id', clientId)
+          .eq('tenant_id', tenantId)
+          .single()
+        if (error) throw error
+        return { appointment: null, client: data }
+      }
+      return { appointment: null, client: null }
+    },
+    enabled: !!tenantId && (!!appointmentId || !!clientId),
+  })
+}

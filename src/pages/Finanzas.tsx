@@ -1,4 +1,4 @@
-﻿import { useState, useMemo } from 'react'
+﻿import { useState, useMemo, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -20,12 +20,14 @@ import {
   useClientMembership,
   useMovimientosCaja,
   useLastCajaClose,
+  useTransactionDetail,
 } from '@/hooks/useFinanzas'
 import { useAllServiceCostItems } from '@/hooks/useSupplies'
 import {
   useEmployeeProfiles,
   useAbsencesRange,
   useEmployeeWeeklySchedulesRange,
+  useAllTenantUsers,
   calcMonthScheduleHours,
   getMonthWeekStarts,
 } from '@/hooks/useRRHH'
@@ -825,6 +827,71 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   )
 }
 
+// ── Transaction detail panel (expandable row) ─────────────────────────────────
+function fmtHora(iso: string): string {
+  return new Date(iso).toLocaleTimeString('es-AR', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'America/Argentina/Buenos_Aires',
+  })
+}
+
+function DetailField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className="font-medium text-plum-800">{children}</p>
+    </div>
+  )
+}
+
+function TransactionDetailPanel({ tx, usersMap }: { tx: Transaction; usersMap: Map<string, string> }) {
+  const { data: detail, isLoading } = useTransactionDetail(tx.appointment_id, tx.client_id)
+
+  // Best-effort extraction for supplier-invoice expenses, whose description is
+  // built as "Proveedor: descripción" or "Proveedor · Fac. N: descripción"
+  // (see useCreateSupplierInvoice) — there's no dedicated flag for this on the
+  // transaction itself.
+  const supplierName =
+    tx.type === 'expense' && !tx.appointment_id && !tx.client_id
+      ? tx.description?.match(/^([^:·]+?)(?:\s*·[^:]*)?:\s/)?.[1]?.trim()
+      : undefined
+
+  return (
+    <div className="bg-gray-50 border border-gray-100 rounded-lg p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <DetailField label="Hora">{tx.created_at ? fmtHora(tx.created_at) : '—'}</DetailField>
+        <DetailField label="Registrado por">{usersMap.get(tx.user_id) ?? '—'}</DetailField>
+
+        {isLoading ? (
+          <div className="col-span-full flex justify-center py-2">
+            <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />
+          </div>
+        ) : detail?.appointment ? (
+          <>
+            <DetailField label="Cliente">
+              {[detail.appointment.first_name, detail.appointment.last_name].filter(Boolean).join(' ') || '—'}
+            </DetailField>
+            <DetailField label="Servicio">
+              {detail.appointment.emoji ? `${detail.appointment.emoji} ` : ''}{detail.appointment.service_name ?? '—'}
+            </DetailField>
+            <DetailField label="Terapeuta">{detail.appointment.therapist_name ?? '—'}</DetailField>
+            <DetailField label="Hora del turno">{fmtHora(detail.appointment.scheduled_at)}</DetailField>
+          </>
+        ) : detail?.client ? (
+          <DetailField label="Cliente">
+            {[detail.client.first_name, detail.client.last_name].filter(Boolean).join(' ') || '—'}
+          </DetailField>
+        ) : tx.type === 'expense' ? (
+          <>
+            <DetailField label="Categoría">{CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '—'}</DetailField>
+            <DetailField label="Descripción">{tx.description ?? '—'}</DetailField>
+            {supplierName && <DetailField label="Proveedor">{supplierName}</DetailField>}
+          </>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 // ── Tab Movimientos de Caja ───────────────────────────────────────────────────
 function TabMovimientos() {
   const now = new Date()
@@ -836,8 +903,15 @@ function TabMovimientos() {
   const [tipoFilter, setTipoFilter] = useState('all')
   const [medioFilter, setMedioFilter] = useState('all')
   const [catFilter,  setCatFilter]  = useState('all')
+  const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const { data: rawTxs, isLoading } = useMovimientosCaja(dateFrom, dateTo)
+  const { data: tenantUsers } = useAllTenantUsers()
+  const usersMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const u of tenantUsers ?? []) map.set(u.id, u.full_name)
+    return map
+  }, [tenantUsers])
 
   const txs = useMemo(() => {
     if (!rawTxs) return []
@@ -976,6 +1050,7 @@ function TabMovimientos() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b bg-gray-50">
+                    <th className="w-8 px-2 py-2.5"></th>
                     <th className="text-left px-4 py-2.5 text-xs font-medium text-muted-foreground">Fecha</th>
                     <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Tipo</th>
                     <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Categoría</th>
@@ -985,41 +1060,62 @@ function TabMovimientos() {
                   </tr>
                 </thead>
                 <tbody>
-                  {txs.map((tx) => (
-                    <tr key={tx.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
-                      <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(tx.date + 'T12:00:00').toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
-                      </td>
-                      <td className="px-3 py-2.5">
-                        <span className={cn(
-                          'inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-medium',
-                          tx.type === 'income'
-                            ? 'bg-green-50 text-green-700'
-                            : 'bg-red-50 text-red-700',
-                        )}>
-                          {tx.type === 'income'
-                            ? <TrendingUp className="w-3 h-3" />
-                            : <TrendingDown className="w-3 h-3" />}
-                          {tx.type === 'income' ? 'Ingreso' : 'Egreso'}
-                        </span>
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                        {CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-sm text-plum-800 max-w-[220px] truncate">
-                        {tx.description ?? '—'}
-                      </td>
-                      <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                        {PM_LABELS[tx.payment_method ?? ''] ?? tx.payment_method ?? '—'}
-                      </td>
-                      <td className={cn(
-                        'px-4 py-2.5 text-right font-semibold tabular-nums whitespace-nowrap',
-                        tx.type === 'income' ? 'text-green-600' : 'text-red-600',
-                      )}>
-                        {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
-                      </td>
-                    </tr>
-                  ))}
+                  {txs.map((tx) => {
+                    const isExpanded = expandedId === tx.id
+                    return (
+                      <Fragment key={tx.id}>
+                        <tr
+                          className="border-b last:border-0 hover:bg-gray-50/50 transition-colors cursor-pointer"
+                          onClick={() => setExpandedId((prev) => (prev === tx.id ? null : tx.id))}
+                        >
+                          <td className="px-2 py-2.5 text-center">
+                            <ChevronRight className={cn(
+                              'w-3.5 h-3.5 text-muted-foreground transition-transform duration-200 inline-block',
+                              isExpanded && 'rotate-90',
+                            )} />
+                          </td>
+                          <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                            {new Date(tx.date + 'T12:00:00').toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={cn(
+                              'inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded font-medium',
+                              tx.type === 'income'
+                                ? 'bg-green-50 text-green-700'
+                                : 'bg-red-50 text-red-700',
+                            )}>
+                              {tx.type === 'income'
+                                ? <TrendingUp className="w-3 h-3" />
+                                : <TrendingDown className="w-3 h-3" />}
+                              {tx.type === 'income' ? 'Ingreso' : 'Egreso'}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                            {CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-sm text-plum-800 max-w-[220px] truncate">
+                            {tx.description ?? '—'}
+                          </td>
+                          <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                            {PM_LABELS[tx.payment_method ?? ''] ?? tx.payment_method ?? '—'}
+                          </td>
+                          <td className={cn(
+                            'px-4 py-2.5 text-right font-semibold tabular-nums whitespace-nowrap',
+                            tx.type === 'income' ? 'text-green-600' : 'text-red-600',
+                          )}>
+                            {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
+                          </td>
+                        </tr>
+                        {isExpanded && (
+                          <tr className="border-b last:border-0 bg-gray-50/40">
+                            <td colSpan={7} className="px-4 py-3">
+                              <TransactionDetailPanel tx={tx} usersMap={usersMap} />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
 
@@ -1461,8 +1557,13 @@ function computeBolsillos(
   balance: MonthlyBalance | null | undefined,
   cajonFondo: number,
 ) {
-  const monthStart = balance ? `${balance.year}-${String(balance.month).padStart(2, '0')}-01` : null
-  const postTxs = monthStart ? txs.filter((t) => t.date >= monthStart) : []
+  // The declared amounts already represent everything up to and including the
+  // declaration date (e.g. after a mid-month redeclaration), so movements are
+  // counted from that date onward, not from the start of the month — otherwise
+  // a redeclaration would double-count everything before it. declared_at is a
+  // timestamptz; compare only its date portion against t.date (a plain date).
+  const cutoffDate = balance?.declared_at ? balance.declared_at.split('T')[0] : null
+  const postTxs = cutoffDate ? txs.filter((t) => t.date >= cutoffDate) : []
 
   const sum = (filter: (t: Transaction) => boolean) =>
     postTxs.filter(filter).reduce((s, t) => s + t.amount, 0)
@@ -3557,8 +3658,9 @@ function TabConfiguracion() {
   const isLoading = txLoading || balLoading
 
   const postTxs = useMemo(() => {
-    return balance ? txs.filter((t) => t.date >= startDate) : []
-  }, [txs, balance, startDate])
+    const cutoffDate = balance?.declared_at ? balance.declared_at.split('T')[0] : null
+    return cutoffDate ? txs.filter((t) => t.date >= cutoffDate) : []
+  }, [txs, balance])
 
   const detailTxs = useMemo(() => {
     const paid = (t: Transaction) => !t.status || t.status === 'paid'
@@ -3880,8 +3982,12 @@ function TabConfiguracion() {
             <div>
               <CardTitle className="text-base text-plum-800">Detalle de movimientos por billetera</CardTitle>
               {balance ? (
-                <p className="text-xs text-muted-foreground mt-0.5 capitalize">
-                  Todos los movimientos de {monthLabel}
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Desde{' '}
+                  {new Date(balance.declared_at).toLocaleString('es-AR', {
+                    day: '2-digit', month: '2-digit', year: 'numeric',
+                    hour: '2-digit', minute: '2-digit',
+                  })}
                 </p>
               ) : (
                 <p className="text-xs text-amber-600 mt-0.5">

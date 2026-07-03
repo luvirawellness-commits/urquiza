@@ -111,6 +111,7 @@ export interface Transaction {
   status?: string
   created_at?: string
   appointment_id?: string
+  client_id?: string
   is_cashflow_only?: boolean
 }
 
