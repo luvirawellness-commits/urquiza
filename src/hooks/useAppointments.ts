@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useTenantId, useAuth } from '@/contexts/AuthContext'
 import { useAuditLog } from '@/hooks/useAuditLog'
+import { getArgentinaDateString } from '@/utils/dateUtils'
 import { Appointment, AppointmentStatus, Service } from '@/types'
 
 export function useAppointments(startDate?: string, endDate?: string) {
@@ -129,6 +130,59 @@ export function useCreateAppointment() {
         entityName: clientName ? `${clientName} - ${data.scheduled_at}` : data.scheduled_at,
       })
     },
+  })
+}
+
+type RegisterDepositInput = {
+  appointmentId: string
+  amount: number
+  paymentMethod: string
+  clientName: string
+  serviceName: string
+}
+
+export function useRegisterDeposit() {
+  const tenantId = useTenantId()
+  const { user } = useAuth()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async ({ appointmentId, amount, paymentMethod, clientName, serviceName }: RegisterDepositInput) => {
+      const { error } = await supabase.from('transactions').insert({
+        tenant_id: tenantId,
+        type: 'income',
+        category: 'session',
+        amount,
+        payment_method: paymentMethod,
+        description: `Seña: ${clientName} - ${serviceName}`,
+        date: getArgentinaDateString(),
+        user_id: user?.id,
+        status: 'paid',
+        appointment_id: appointmentId,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+    },
+  })
+}
+
+export function useDepositTransaction(appointmentId: string | null) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['deposit-transaction', tenantId, appointmentId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('payment_method')
+        .eq('tenant_id', tenantId)
+        .eq('appointment_id', appointmentId as string)
+        .ilike('description', 'Seña:%')
+        .maybeSingle()
+      if (error) throw error
+      return data as { payment_method: string | null } | null
+    },
+    enabled: !!tenantId && !!appointmentId,
   })
 }
 

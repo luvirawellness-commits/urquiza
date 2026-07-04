@@ -3363,6 +3363,7 @@ function TabProveedores() {
                     <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Emisión</th>
                     <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Vencimiento</th>
                     <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Estado</th>
+                    <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Fecha de pago</th>
                     <th className="text-left px-3 py-2.5 font-medium text-muted-foreground">Pago</th>
                     <th className="px-4 py-2.5"></th>
                   </tr>
@@ -3380,6 +3381,9 @@ function TabProveedores() {
                         {formatDate(inv.due_date)}
                       </td>
                       <td className="px-3 py-2.5"><InvoiceStatusBadge inv={inv} /></td>
+                      <td className="px-3 py-2.5 text-muted-foreground">
+                        {inv.status === 'paid' && inv.paid_date ? formatDate(inv.paid_date) : '—'}
+                      </td>
                       <td className="px-3 py-2.5 text-muted-foreground text-xs">
                         {inv.supplier_invoice_payments && inv.supplier_invoice_payments.length > 0
                           ? inv.supplier_invoice_payments.map((p, i) => (

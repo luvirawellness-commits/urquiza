@@ -4,7 +4,7 @@ import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, User
 import InvoiceModal from '@/components/InvoiceModal'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
-  useUpdateAppointment, useServices, useTherapists, type Therapist,
+  useUpdateAppointment, useServices, useTherapists, useRegisterDeposit, useDepositTransaction, type Therapist,
 } from '@/hooks/useAppointments'
 import { useClientActiveMemberships, useTenantActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
@@ -423,17 +423,21 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
     ?? 0
+  const depositoPagado = appt.deposit_paid && (appt.deposit_amount ?? 0) > 0
+    ? appt.deposit_amount ?? 0
+    : 0
   const [monto, setMonto] = useState(String(basePrice))
   const [descAmt, setDescAmt] = useState('0')
   const [descPct, setDescPct] = useState('0')
-  const [splitRows, setSplitRows] = useState<SplitRow[]>([{ method: 'cash', amount: String(basePrice) }])
+  const [splitRows, setSplitRows] = useState<SplitRow[]>([{ method: 'cash', amount: String(Math.max(0, basePrice - depositoPagado)) }])
 
   const montoNum = Number(monto) || 0
   const descAmtNum = Number(descAmt) || 0
   const descPctNum = Number(descPct) || 0
   const montoFinal = Math.max(0, montoNum - descAmtNum - (montoNum * descPctNum / 100))
+  const totalConDescuento = Math.max(0, montoFinal - depositoPagado)
   const splitTotal = splitRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0)
-  const splitBalanced = Math.abs(splitTotal - montoFinal) < 0.01
+  const splitBalanced = Math.abs(splitTotal - totalConDescuento) < 0.01
 
   const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
   const [membershipSubOpt, setMembershipSubOpt] = useState<'use_existing' | 'sell_new'>('use_existing')
@@ -447,8 +451,8 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }, [activeMemberships])
 
   useEffect(() => {
-    setSplitRows(prev => prev.length === 1 ? [{ ...prev[0], amount: String(montoFinal) }] : prev)
-  }, [montoFinal])
+    setSplitRows(prev => prev.length === 1 ? [{ ...prev[0], amount: String(totalConDescuento) }] : prev)
+  }, [totalConDescuento])
 
   const selectedMembership = activeMemberships?.find((m) => m.id === selectedMembershipId) ?? null
   const allowedServiceIds = selectedMembership?.plan?.allowed_service_ids ?? null
@@ -540,7 +544,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
       if (giftCardId) qc.invalidateQueries({ queryKey: ['gift_cards'] })
 
       if (isOwnerOrAdmin && currentTenantId) {
-        setPaidAmount(paymentType === 'efectivo_digital' ? montoFinal : 0)
+        setPaidAmount(paymentType === 'efectivo_digital' ? totalConDescuento : 0)
         setStep('prompt')
       } else {
         onClose()
@@ -628,9 +632,21 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
             <div className="space-y-1"><Label className="text-xs">Descuento $</Label><Input type="number" min="0" step="1" value={descAmt} onChange={(e) => setDescAmt(e.target.value)} /></div>
             <div className="space-y-1"><Label className="text-xs">Descuento %</Label><Input type="number" min="0" max="100" step="1" value={descPct} onChange={(e) => setDescPct(e.target.value)} /></div>
           </div>
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-medium text-plum-800">A cobrar:</span>
-            <span className="text-lg font-bold text-plum-800">{formatCurrency(montoFinal)}</span>
+          <div className="space-y-1 text-sm">
+            <div className="flex items-center justify-between">
+              <span className="text-muted-foreground">Precio del servicio:</span>
+              <span className="font-medium text-plum-800">{formatCurrency(montoFinal)}</span>
+            </div>
+            {depositoPagado > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-green-700">Seña ya cobrada:</span>
+                <span className="font-medium text-green-700">-{formatCurrency(depositoPagado)}</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="font-medium text-plum-800">Total a cobrar:</span>
+              <span className="text-lg font-bold text-plum-800">{formatCurrency(totalConDescuento)}</span>
+            </div>
           </div>
           <div className="space-y-2">
             <Label className="text-xs">Métodos de pago</Label>
@@ -975,6 +991,10 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
 
   const { data: clientData } = useClient(appt.client_id ?? '')
   const updateClientMutation = useUpdateClient()
+  const { data: depositTx } = useDepositTransaction(
+    appt.deposit_paid && (appt.deposit_amount ?? 0) > 0 ? appt.id : null
+  )
+  const depositMethodLabel = PAYMENT_METHODS.find(pm => pm.value === depositTx?.payment_method)?.label
 
   useEffect(() => {
     if (clientData) setNotesValue(clientData.notes ?? '')
@@ -1057,7 +1077,11 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
               {appt.box_number != null && <Field label="Box" value={`Box ${appt.box_number}`} />}
               {appt.price_charged != null && <Field label="Precio" value={formatCurrency(appt.price_charged)} />}
               {appt.deposit_amount != null && appt.deposit_amount > 0 && (
-                <Field label="Seña" value={`${formatCurrency(appt.deposit_amount)} · ${appt.deposit_paid ? 'Cobrada' : 'Pendiente'}`} />
+                <Field label="Seña" value={[
+                  formatCurrency(appt.deposit_amount),
+                  ...(appt.deposit_paid && depositMethodLabel ? [depositMethodLabel] : []),
+                  appt.deposit_paid ? 'Cobrada' : 'Pendiente',
+                ].join(' · ')} />
               )}
               <div className="col-span-2">
                 <p className="text-xs text-muted-foreground mb-1">Estado</p>
@@ -1175,7 +1199,7 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
 
 // ── ClientSearch ──────────────────────────────────────────────────────────────
 
-function ClientSearch({ selectedId, onSelect }: { selectedId: string; onSelect: (id: string) => void }) {
+function ClientSearch({ selectedId, onSelect, onSelectClient }: { selectedId: string; onSelect: (id: string) => void; onSelectClient?: (client: Client) => void }) {
   const [inputValue, setInputValue] = useState('')
   const [open, setOpen] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -1195,6 +1219,7 @@ function ClientSearch({ selectedId, onSelect }: { selectedId: string; onSelect: 
     setInputValue([c.first_name, c.last_name].filter(Boolean).join(' '))
     setOpen(false)
     onSelect(c.id)
+    onSelectClient?.(c)
   }
 
   return (
@@ -1225,7 +1250,8 @@ function ClientSearch({ selectedId, onSelect }: { selectedId: string; onSelect: 
 type TurnoForm = {
   client_id: string; service_id: string; therapist_id: string
   duration_minutes: 60 | 90; box_number: 1 | 2 | 3
-  date: string; time: string; deposit_amount: string; deposit_paid: boolean; notes: string
+  date: string; time: string; deposit_amount: string; deposit_paid: boolean
+  deposit_payment_method: string; notes: string
 }
 
 function NuevoTurnoModal({
@@ -1240,10 +1266,12 @@ function NuevoTurnoModal({
     duration_minutes: 60, box_number: 1,
     date: prefill?.date ?? getArgentinaDateString(),
     time: prefill?.time ?? '10:00',
-    deposit_amount: '', deposit_paid: false, notes: '',
+    deposit_amount: '', deposit_paid: false, deposit_payment_method: '', notes: '',
   })
+  const [selectedClientName, setSelectedClientName] = useState('')
   const [formError, setFormError] = useState<string | null>(null)
   const createAppt = useCreateAppointment()
+  const registerDeposit = useRegisterDeposit()
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
   const { data: employeeSchedules } = useEmployeeSchedules()
@@ -1271,6 +1299,7 @@ function NuevoTurnoModal({
         source: qcSource,
       })
       set('client_id', newClient.id)
+      setSelectedClientName([newClient.first_name, newClient.last_name].filter(Boolean).join(' '))
       setShowQuickCreate(false)
       setQcFirst(''); setQcLast(''); setQcPhone(''); setQcSource('whatsapp')
     } catch (err) {
@@ -1282,6 +1311,10 @@ function NuevoTurnoModal({
     e.preventDefault()
     setFormError(null)
     if (!form.client_id) { setFormError('Por favor seleccioná un cliente.'); return }
+    if (form.deposit_paid && !form.deposit_payment_method) {
+      setFormError('Por favor seleccioná el método de pago de la seña.')
+      return
+    }
 
     if (!isSobreTurno && form.therapist_id && form.date && form.time) {
       const ws = employeeSchedules?.get(form.therapist_id)
@@ -1309,7 +1342,7 @@ function NuevoTurnoModal({
     const service = services?.find(s => s.id === form.service_id)
     try {
       const scheduledAtValue = new Date(`${form.date}T${form.time}:00`).toISOString()
-      await createAppt.mutateAsync({
+      const newAppointment = await createAppt.mutateAsync({
         client_id: form.client_id,
         service_id: form.service_id,
         therapist_id: form.therapist_id,
@@ -1324,6 +1357,17 @@ function NuevoTurnoModal({
         deposit_paid: form.deposit_paid,
         notes: form.notes || undefined,
       })
+
+      if (form.deposit_paid && Number(form.deposit_amount) > 0) {
+        await registerDeposit.mutateAsync({
+          appointmentId: newAppointment.id,
+          amount: Number(form.deposit_amount),
+          paymentMethod: form.deposit_payment_method,
+          clientName: selectedClientName || 'Cliente',
+          serviceName: service?.name ?? 'Servicio',
+        })
+      }
+
       onClose()
     } catch (err) {
       const msg = err instanceof Error ? err.message.toLowerCase() : ''
@@ -1359,7 +1403,8 @@ function NuevoTurnoModal({
               <div className="flex-1">
                 <ClientSearch
                   selectedId={form.client_id}
-                  onSelect={id => { set('client_id', id); if (id) setShowQuickCreate(false) }}
+                  onSelect={id => { set('client_id', id); if (id) setShowQuickCreate(false); if (!id) setSelectedClientName('') }}
+                  onSelectClient={c => setSelectedClientName([c.first_name, c.last_name].filter(Boolean).join(' '))}
                 />
               </div>
               <Button type="button" variant="outline" size="icon" className="h-9 w-9 flex-shrink-0"
@@ -1468,6 +1513,15 @@ function NuevoTurnoModal({
               </label>
             </div>
           </div>
+          {form.deposit_paid && (
+            <div className="space-y-1.5">
+              <Label>Método de pago de la seña *</Label>
+              <select value={form.deposit_payment_method} onChange={e => set('deposit_payment_method', e.target.value)} required className={SELECT_CLS}>
+                <option value="">Seleccionar método...</option>
+                {PAYMENT_METHODS.map(pm => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+              </select>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label>Notas</Label>
             <Input value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Observaciones opcionales" />
