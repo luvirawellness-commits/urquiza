@@ -1,9 +1,9 @@
 import { useState, useEffect, ElementType } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
-import { Card, CardContent } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -16,8 +16,9 @@ import {
   serviceRowToForm, EMPTY_SERVICE_FORM,
   type ServiceRow, type ServiceForm,
 } from '@/hooks/useServices'
+import { DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
 
-type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios'
+type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios' | 'whatsapp'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -1675,6 +1676,153 @@ function TabServicios() {
   )
 }
 
+// ── TabWhatsApp ───────────────────────────────────────────────────────────────
+
+const WHATSAPP_VARIABLES = ['{nombre}', '{fecha}', '{hora}', '{servicio}', '{profesional}', '{direccion}', '{maps_url}']
+
+function TabWhatsApp() {
+  const { currentTenant, currentTenantId, refreshTenants } = useAuth()
+
+  const [reminderMsg, setReminderMsg] = useState('')
+  const [reminderSaving, setReminderSaving] = useState(false)
+  const [reminderSaved, setReminderSaved] = useState(false)
+  const [reminderError, setReminderError] = useState<string | null>(null)
+
+  const [reviewMsg, setReviewMsg] = useState('')
+  const [reviewSaving, setReviewSaving] = useState(false)
+  const [reviewSaved, setReviewSaved] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setReminderMsg(currentTenant?.whatsapp_reminder_message ?? DEFAULT_REMINDER_MESSAGE)
+    setReviewMsg(currentTenant?.whatsapp_review_message ?? DEFAULT_REVIEW_MESSAGE)
+  }, [currentTenant?.id, currentTenant?.whatsapp_reminder_message, currentTenant?.whatsapp_review_message])
+
+  async function handleSaveReminder() {
+    setReminderError(null)
+    setReminderSaved(false)
+    setReminderSaving(true)
+    try {
+      const { error } = await supabase
+        .from('tenants')
+        .update({ whatsapp_reminder_message: reminderMsg })
+        .eq('id', currentTenantId)
+      if (error) throw error
+      await refreshTenants()
+      setReminderSaved(true)
+      setTimeout(() => setReminderSaved(false), 3000)
+    } catch (e: unknown) {
+      setReminderError(e instanceof Error ? e.message : 'Error al guardar.')
+    } finally {
+      setReminderSaving(false)
+    }
+  }
+
+  async function handleSaveReview() {
+    setReviewError(null)
+    setReviewSaved(false)
+    setReviewSaving(true)
+    try {
+      const { error } = await supabase
+        .from('tenants')
+        .update({ whatsapp_review_message: reviewMsg })
+        .eq('id', currentTenantId)
+      if (error) throw error
+      await refreshTenants()
+      setReviewSaved(true)
+      setTimeout(() => setReviewSaved(false), 3000)
+    } catch (e: unknown) {
+      setReviewError(e instanceof Error ? e.message : 'Error al guardar.')
+    } finally {
+      setReviewSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {/* Card 1: Recordatorio */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Recordatorio de turno</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Este mensaje se envía automáticamente 24hs y 2hs antes del turno.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            {WHATSAPP_VARIABLES.map((v) => (
+              <Badge key={v} variant="outline" className="font-mono text-xs">{v}</Badge>
+            ))}
+          </div>
+          <textarea
+            value={reminderMsg}
+            onChange={(e) => setReminderMsg(e.target.value)}
+            rows={8}
+            className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <p className="text-xs text-muted-foreground">
+            Nota: el recordatorio automático usa una plantilla aprobada por Meta. Este mensaje se usa para el botón manual de recordatorio en cada turno.
+          </p>
+          {reminderError && <p className="text-sm text-red-600">{reminderError}</p>}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-plum-700 hover:bg-plum-800 text-white"
+              onClick={handleSaveReminder}
+              disabled={reminderSaving}
+            >
+              {reminderSaving
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                : 'Guardar'}
+            </Button>
+            {reminderSaved && (
+              <span className="flex items-center gap-1 text-sm text-green-700">
+                <Check className="w-4 h-4" /> Guardado
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Card 2: Reseña */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Solicitud de reseña</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Este mensaje se envía manualmente desde el botón Reseña en cada turno completado.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <textarea
+            value={reviewMsg}
+            onChange={(e) => setReviewMsg(e.target.value)}
+            rows={8}
+            className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {reviewError && <p className="text-sm text-red-600">{reviewError}</p>}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-plum-700 hover:bg-plum-800 text-white"
+              onClick={handleSaveReview}
+              disabled={reviewSaving}
+            >
+              {reviewSaving
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                : 'Guardar'}
+            </Button>
+            {reviewSaved && (
+              <span className="flex items-center gap-1 text-sm text-green-700">
+                <Check className="w-4 h-4" /> Guardado
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ConfiguracionAdmin({
@@ -1712,10 +1860,11 @@ export default function ConfiguracionAdmin({
   const canSeeRoles = isOwner || profile?.role === 'partner_admin'
 
   const allTabs: { key: AdminTab; label: string; icon: ElementType; show: boolean }[] = [
-    { key: 'locales',   label: 'Locales',          icon: Building2, show: isOwner },
-    { key: 'usuarios',  label: 'Usuarios',          icon: Users,     show: true },
-    { key: 'servicios', label: 'Servicios',         icon: Layers,    show: true },
-    { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,    show: canSeeRoles },
+    { key: 'locales',   label: 'Locales',          icon: Building2,    show: isOwner },
+    { key: 'usuarios',  label: 'Usuarios',          icon: Users,        show: true },
+    { key: 'servicios', label: 'Servicios',         icon: Layers,       show: true },
+    { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,       show: canSeeRoles },
+    { key: 'whatsapp',  label: 'WhatsApp',          icon: MessageCircle, show: isOwner },
   ]
 
   const tabs = allTabs.filter((t) => t.show)
@@ -1754,6 +1903,7 @@ export default function ConfiguracionAdmin({
       {activeTab === 'usuarios'  && <TabUsuarios />}
       {activeTab === 'servicios' && <TabServicios />}
       {activeTab === 'roles'     && <TabRoles canEdit={isOwner} />}
+      {activeTab === 'whatsapp'  && isOwner && <TabWhatsApp />}
     </div>
   )
 }
