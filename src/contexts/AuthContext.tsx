@@ -121,7 +121,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           phone,
           active,
           trial_ends_at,
-          caja_fondo_fijo
+          caja_fondo_fijo,
+          whatsapp_reminder_message,
+          whatsapp_review_message
         )
       `)
       .eq('user_id', userId)
@@ -283,7 +285,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         role,
         active,
         tenant:tenants (
-          id, name, slug, address, phone, active, trial_ends_at, caja_fondo_fijo
+          id, name, slug, address, phone, active, trial_ends_at, caja_fondo_fijo,
+          whatsapp_reminder_message, whatsapp_review_message
         )
       `)
       .eq('user_id', user.id)

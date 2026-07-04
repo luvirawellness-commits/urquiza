@@ -36,6 +36,8 @@ import {
   useCreateCount,
 } from '@/hooks/useInventario'
 import { cn, formatCurrency, exportToExcel, MONTHS_ES } from '@/lib/utils'
+import { supabase } from '@/lib/supabase'
+import { DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
 import type { Supply, InventoryCount } from '@/types'
 import {
   useTenantPaymentSettings,
@@ -2110,8 +2112,155 @@ function TabTesoreria() {
   )
 }
 
+// ── TabWhatsApp ───────────────────────────────────────────────────────────────
+
+const WHATSAPP_VARIABLES = ['{nombre}', '{fecha}', '{hora}', '{servicio}', '{profesional}', '{direccion}', '{maps_url}']
+
+function TabWhatsApp() {
+  const { currentTenant, currentTenantId, refreshTenants } = useAuth()
+
+  const [reminderMsg, setReminderMsg] = useState('')
+  const [reminderSaving, setReminderSaving] = useState(false)
+  const [reminderSaved, setReminderSaved] = useState(false)
+  const [reminderError, setReminderError] = useState<string | null>(null)
+
+  const [reviewMsg, setReviewMsg] = useState('')
+  const [reviewSaving, setReviewSaving] = useState(false)
+  const [reviewSaved, setReviewSaved] = useState(false)
+  const [reviewError, setReviewError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setReminderMsg(currentTenant?.whatsapp_reminder_message ?? DEFAULT_REMINDER_MESSAGE)
+    setReviewMsg(currentTenant?.whatsapp_review_message ?? DEFAULT_REVIEW_MESSAGE)
+  }, [currentTenant?.id, currentTenant?.whatsapp_reminder_message, currentTenant?.whatsapp_review_message])
+
+  async function handleSaveReminder() {
+    setReminderError(null)
+    setReminderSaved(false)
+    setReminderSaving(true)
+    try {
+      const { error } = await supabase
+        .from('tenants')
+        .update({ whatsapp_reminder_message: reminderMsg })
+        .eq('id', currentTenantId)
+      if (error) throw error
+      await refreshTenants()
+      setReminderSaved(true)
+      setTimeout(() => setReminderSaved(false), 3000)
+    } catch (e: unknown) {
+      setReminderError(e instanceof Error ? e.message : 'Error al guardar.')
+    } finally {
+      setReminderSaving(false)
+    }
+  }
+
+  async function handleSaveReview() {
+    setReviewError(null)
+    setReviewSaved(false)
+    setReviewSaving(true)
+    try {
+      const { error } = await supabase
+        .from('tenants')
+        .update({ whatsapp_review_message: reviewMsg })
+        .eq('id', currentTenantId)
+      if (error) throw error
+      await refreshTenants()
+      setReviewSaved(true)
+      setTimeout(() => setReviewSaved(false), 3000)
+    } catch (e: unknown) {
+      setReviewError(e instanceof Error ? e.message : 'Error al guardar.')
+    } finally {
+      setReviewSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {/* Card 1: Recordatorio */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Recordatorio de turno</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Este mensaje se envía automáticamente 24hs y 2hs antes del turno.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-1.5">
+            {WHATSAPP_VARIABLES.map((v) => (
+              <Badge key={v} variant="outline" className="font-mono text-xs">{v}</Badge>
+            ))}
+          </div>
+          <textarea
+            value={reminderMsg}
+            onChange={(e) => setReminderMsg(e.target.value)}
+            rows={8}
+            className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <p className="text-xs text-muted-foreground">
+            Nota: el recordatorio automático usa una plantilla aprobada por Meta. Este mensaje se usa para el botón manual de recordatorio en cada turno.
+          </p>
+          {reminderError && <p className="text-sm text-red-600">{reminderError}</p>}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-plum-700 hover:bg-plum-800 text-white"
+              onClick={handleSaveReminder}
+              disabled={reminderSaving}
+            >
+              {reminderSaving
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                : 'Guardar'}
+            </Button>
+            {reminderSaved && (
+              <span className="flex items-center gap-1 text-sm text-green-700">
+                <Check className="w-4 h-4" /> Guardado
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Card 2: Reseña */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Solicitud de reseña</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Este mensaje se envía manualmente desde el botón Reseña en cada turno completado.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <textarea
+            value={reviewMsg}
+            onChange={(e) => setReviewMsg(e.target.value)}
+            rows={8}
+            className="w-full border border-input rounded-md px-3 py-2 text-sm bg-background resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {reviewError && <p className="text-sm text-red-600">{reviewError}</p>}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-plum-700 hover:bg-plum-800 text-white"
+              onClick={handleSaveReview}
+              disabled={reviewSaving}
+            >
+              {reviewSaving
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                : 'Guardar'}
+            </Button>
+            {reviewSaved && (
+              <span className="flex items-center gap-1 text-sm text-green-700">
+                <Check className="w-4 h-4" /> Guardado
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
-type ConfigTab = 'insumos' | 'costos' | 'inventario' | 'precios' | 'general' | 'tesoreria'
+type ConfigTab = 'insumos' | 'costos' | 'inventario' | 'precios' | 'general' | 'tesoreria' | 'whatsapp'
 
 export default function Configuracion() {
   const { profile } = useAuth()
@@ -2132,6 +2281,7 @@ export default function Configuracion() {
     { key: 'precios',    label: 'Análisis de Precios' },
     { key: 'general',    label: 'General' },
     ...(profile?.role === 'owner' ? [{ key: 'tesoreria' as ConfigTab, label: 'Tesorería' }] : []),
+    ...(profile?.role === 'owner' ? [{ key: 'whatsapp' as ConfigTab, label: 'WhatsApp' }] : []),
   ]
 
   return (
@@ -2166,6 +2316,7 @@ export default function Configuracion() {
       {tab === 'inventario' && <TabInventario />}
       {tab === 'precios'    && <TabAnalisisPrecios />}
       {tab === 'tesoreria'  && profile?.role === 'owner' && <TabTesoreria />}
+      {tab === 'whatsapp'   && profile?.role === 'owner' && <TabWhatsApp />}
       {tab === 'general' && (
         <div className="text-center py-16 text-muted-foreground bg-gray-50 rounded-xl">
           <p className="text-sm font-medium">Próximamente</p>

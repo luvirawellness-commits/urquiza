@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw, Star } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
@@ -12,6 +12,7 @@ import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCard
 import { useClients, useCreateClient, useClient, useUpdateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
 import { supabase } from '@/lib/supabase'
+import { applyWhatsAppTemplate, DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
 import {
   useCreateAbsence, useEmployeeSchedules, useEmployeeWeeklySchedulesRange,
   type WeeklySchedule, type EmployeeWeeklySchedule,
@@ -949,7 +950,7 @@ function EditarTurnoForm({ appt, onCancel, onSaved }: { appt: Appointment; onCan
 
 const LUVIRA_ADDRESS = 'Bauness 2325, Villa Urquiza, Ciudad Autónoma de Buenos Aires, Argentina'
 
-function buildWhatsAppUrl(appt: Appointment): string {
+function buildWhatsAppUrl(appt: Appointment, template: string): string {
   const dt = new Date(appt.scheduled_at)
   const dd = String(dt.getDate()).padStart(2, '0')
   const mm = String(dt.getMonth() + 1).padStart(2, '0')
@@ -958,18 +959,26 @@ function buildWhatsAppUrl(appt: Appointment): string {
   const min = String(dt.getMinutes()).padStart(2, '0')
 
   const nombre = [appt.client?.first_name, appt.client?.last_name].filter(Boolean).join(' ') || 'cliente'
-  const text =
-    `Hola ${nombre}, recordá que tenés una cita en MASAJES LUVIRA WELLNESS el día ${dd}/${mm}/${yyyy} a las ${hh}:${min}.\n\n` +
-    `Servicio: ${appt.service?.name ?? '—'} ${appt.duration_minutes} Min\n` +
-    `Profesional: ${appt.therapist?.full_name ?? '—'}\n` +
-    `Dirección: ${LUVIRA_ADDRESS}\n` +
-    `Cómo llegar: https://maps.app.goo.gl/S8ngyx1fioo7xHv3A`
+  const text = applyWhatsAppTemplate(template, {
+    nombre,
+    fecha: `${dd}/${mm}/${yyyy}`,
+    hora: `${hh}:${min}`,
+    servicio: appt.service?.name ?? '—',
+    profesional: appt.therapist?.full_name ?? '—',
+    direccion: LUVIRA_ADDRESS,
+    maps_url: 'https://maps.app.goo.gl/S8ngyx1fioo7xHv3A',
+  })
 
   const encoded = encodeURIComponent(text)
   const phone = appt.client?.phone?.replace(/\D/g, '')
   return phone
-    ? `https://web.whatsapp.com/send?phone=54${phone}&text=${encoded}`
-    : `https://web.whatsapp.com/send?text=${encoded}`
+    ? `https://wa.me/54${phone}?text=${encoded}`
+    : `https://wa.me/?text=${encoded}`
+}
+
+function buildResenaWhatsAppUrl(phoneDigits: string, message: string): string {
+  const encoded = encodeURIComponent(message)
+  return `https://wa.me/54${phoneDigits}?text=${encoded}`
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -982,6 +991,9 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: Appointment; onClose: () => void; readOnly?: boolean }) {
+  const { currentTenant } = useAuth()
+  const reminderTemplate = currentTenant?.whatsapp_reminder_message ?? DEFAULT_REMINDER_MESSAGE
+  const reviewMessage = currentTenant?.whatsapp_review_message ?? DEFAULT_REVIEW_MESSAGE
   const updateStatus = useUpdateAppointmentStatus()
   const [showPayment, setShowPayment] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
@@ -1174,16 +1186,32 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
             )}
 
             <div className="border-t pt-4 space-y-1.5">
-              <a
-                href={buildWhatsAppUrl(appt)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white transition-opacity hover:opacity-90"
-                style={{ backgroundColor: '#25D366' }}
-              >
-                <MessageCircle className="w-4 h-4" />
-                Enviar recordatorio
-              </a>
+              <div className="flex flex-wrap gap-2">
+                <a
+                  href={buildWhatsAppUrl(appt, reminderTemplate)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white transition-opacity hover:opacity-90"
+                  style={{ backgroundColor: '#25D366' }}
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Enviar recordatorio
+                </a>
+                {appt.status === 'completed' && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const phoneDigits = appt.client?.phone?.replace(/\D/g, '')
+                      if (!phoneDigits) return
+                      window.open(buildResenaWhatsAppUrl(phoneDigits, reviewMessage), '_blank', 'noopener,noreferrer')
+                    }}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm font-medium text-white transition-opacity hover:opacity-90 bg-gold-500 hover:bg-gold-600"
+                  >
+                    <Star className="w-4 h-4" />
+                    Reseña
+                  </button>
+                )}
+              </div>
               {!appt.client?.phone && (
                 <p className="text-xs text-muted-foreground">
                   Este cliente no tiene teléfono registrado

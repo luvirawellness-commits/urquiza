@@ -15,6 +15,8 @@ export interface Tenant {
   last_plan?: string | null
   show_billing_banner?: boolean | null
   caja_fondo_fijo?: number | null
+  whatsapp_reminder_message?: string | null
+  whatsapp_review_message?: string | null
 }
 
 export interface UserTenant {
