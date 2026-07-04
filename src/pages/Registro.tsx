@@ -62,6 +62,29 @@ function isValidEmail(s: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)
 }
 
+// Maps the register-tenant Edge Function's (often English, Supabase-Auth-sourced)
+// error text to a Spanish message the user can act on, and flags whether the
+// email field specifically should be highlighted.
+function mapRegistrationError(raw: string): { message: string; isEmailError: boolean } {
+  const lower = raw.toLowerCase()
+  if (lower.includes('unable to validate email') || lower.includes('invalid format')) {
+    return {
+      message: 'El email ingresado no es válido. Verificá que tenga el formato correcto (ej: nombre@dominio.com)',
+      isEmailError: true,
+    }
+  }
+  if (lower.includes('already registered') || lower.includes('already exists') || lower.includes('duplicate')) {
+    return {
+      message: 'Este email ya está registrado. Intentá iniciar sesión.',
+      isEmailError: true,
+    }
+  }
+  return {
+    message: 'Ocurrió un error al registrar tu cuenta. Verificá los datos e intentá nuevamente.',
+    isEmailError: false,
+  }
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function Registro() {
@@ -89,8 +112,9 @@ export default function Registro() {
   const [services, setServices] = useState<ServiceItem[]>(DEFAULT_SERVICES)
 
   // UI
-  const [error,   setError]   = useState('')
-  const [loading, setLoading] = useState(false)
+  const [error,      setError]      = useState('')
+  const [emailError, setEmailError] = useState(false)
+  const [loading,    setLoading]    = useState(false)
 
   // ── Slug sync from tenant name ──────────────────────────────────────────────
   function handleTenantNameChange(value: string) {
@@ -119,10 +143,20 @@ export default function Registro() {
   }
 
   // ── Submit ──────────────────────────────────────────────────────────────────
+  function applyRegistrationError(rawMessage: string) {
+    const { message, isEmailError } = mapRegistrationError(rawMessage)
+    setError(message)
+    setEmailError(isEmailError)
+    // The email field lives on step 1 — jump back there so the highlighted
+    // field is actually visible when the error is about the email.
+    if (isEmailError) setStep(1)
+  }
+
   async function handleSubmit() {
     if (services.length === 0)               return setError('Agregá al menos un servicio.')
     if (services.some((s) => !s.name.trim())) return setError('Todos los servicios deben tener nombre.')
     setError('')
+    setEmailError(false)
     setLoading(true)
 
     try {
@@ -153,12 +187,20 @@ export default function Registro() {
       console.log('[DEBUG] register-tenant response:', responseText)
 
       if (!res.ok) {
-        throw new Error(responseText)
+        let rawMessage = responseText
+        try {
+          const parsed = JSON.parse(responseText)
+          if (parsed?.error) rawMessage = parsed.error
+        } catch {
+          // Response wasn't JSON — fall back to the raw text as-is.
+        }
+        applyRegistrationError(rawMessage)
+        return
       }
 
       const result = JSON.parse(responseText)
       if (!result.success) {
-        setError(result.error || 'Error al crear la cuenta. Intentá de nuevo.')
+        applyRegistrationError(result.error || 'Error al crear la cuenta.')
         return
       }
 
@@ -166,7 +208,7 @@ export default function Registro() {
       await supabase.auth.signInWithPassword({ email: email.trim(), password })
       setStep(4)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Error al crear la cuenta. Intentá de nuevo.')
+      applyRegistrationError(e instanceof Error ? e.message : 'Error al crear la cuenta.')
     } finally {
       setLoading(false)
     }
@@ -262,9 +304,10 @@ export default function Registro() {
                 <Input
                   type="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  onChange={(e) => { setEmail(e.target.value); setEmailError(false) }}
                   placeholder="tu@email.com"
                   autoComplete="email"
+                  className={cn(emailError && 'border-red-500 focus-visible:ring-red-500')}
                 />
               </div>
 
