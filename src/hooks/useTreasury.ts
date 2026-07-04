@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { useTenantId, useAuth } from '@/contexts/AuthContext'
+import { useTenantId } from '@/contexts/AuthContext'
 import { getArgentinaDateString } from '../utils/dateUtils'
 import { getSettlementDate } from '../utils/settlementUtils'
 import type { Transaction } from '@/types'
@@ -312,7 +312,6 @@ type RedeclareInput = {
 export function useRedeclareBalances() {
   const tenantId = useTenantId()
   const qc = useQueryClient()
-  const { refreshTenants } = useAuth()
   return useMutation({
     mutationFn: async (input: RedeclareInput) => {
       const { error: adjError } = await supabase
@@ -357,22 +356,10 @@ export function useRedeclareBalances() {
           { onConflict: 'tenant_id,year,month' },
         )
       if (balError) throw balError
-
-      // Redeclaring the Cajón balance is the source of truth for the tenant's
-      // fixed cash fund too — keep tenants.caja_fondo_fijo in sync so Caja/Cierres
-      // reflect the corrected amount immediately, not just monthly_balances.
-      const { error: fondoError } = await supabase
-        .from('tenants')
-        .update({ caja_fondo_fijo: input.new_cash })
-        .eq('id', tenantId)
-      if (fondoError) throw fondoError
-      await refreshTenants()
     },
     onSuccess: (_, vars) => {
       qc.invalidateQueries({ queryKey: ['monthly-balances', tenantId, vars.year, vars.month] })
       qc.invalidateQueries({ queryKey: ['treasury-adjustments', tenantId, vars.year, vars.month] })
-      qc.invalidateQueries({ queryKey: ['today-transactions'] })
-      qc.invalidateQueries({ queryKey: ['today-metrics'] })
     },
   })
 }

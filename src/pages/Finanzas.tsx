@@ -58,7 +58,7 @@ import {
 } from '@/hooks/useSupplierInvoices'
 import { getArgentinaDateString, getArgentinaMonthEnd } from '../utils/dateUtils'
 
-type Tab = 'caja' | 'movimientos' | 'pl' | 'cashflow' | 'cierres' | 'proveedores' | 'configuracion'
+type Tab = 'caja' | 'movimientos' | 'pl' | 'cashflow' | 'cierres' | 'depositos' | 'proveedores' | 'configuracion'
 
 const PAYMENT_METHODS = [
   { value: 'cash', label: 'Efectivo' },
@@ -568,7 +568,12 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const today = getArgentinaDateString()
 
   const totals = useMemo(() => {
-    if (!txs) return { ingresos: 0, egresos: 0, cashIncome: 0, gastosEfectivo: 0, efectivo: 0, pmBreakdown: {} as Record<string, number> }
+    if (!txs) {
+      return {
+        ingresos: 0, egresos: 0, cashIncome: 0, gastosEfectivo: 0, efectivo: 0,
+        credito: 0, debito: 0, qrTransferencia: 0, pmBreakdown: {} as Record<string, number>,
+      }
+    }
     const ingresos = txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)
     const egresos = txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
     const cashIncome = txs
@@ -583,7 +588,10 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
       const pm = t.payment_method ?? 'other'
       pmBreakdown[pm] = (pmBreakdown[pm] ?? 0) + t.amount
     })
-    return { ingresos, egresos, cashIncome, gastosEfectivo, efectivo, pmBreakdown }
+    const credito = pmBreakdown['credit'] ?? 0
+    const debito = pmBreakdown['debit'] ?? 0
+    const qrTransferencia = (pmBreakdown['qr'] ?? 0) + (pmBreakdown['transfer'] ?? 0) + (pmBreakdown['mp'] ?? 0)
+    return { ingresos, egresos, cashIncome, gastosEfectivo, efectivo, credito, debito, qrTransferencia, pmBreakdown }
   }, [txs])
 
   const fondoFijo = currentTenant?.caja_fondo_fijo ?? 0
@@ -593,11 +601,12 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
   const hayDiferencia = diferencia !== null && diferencia !== 0
 
   const depositarNum = Number(depositar) || 0
-  const ajusteAmtNum = Number(ajusteAmt) || 0
-  const ajustePctNum = Number(ajustePct) || 0
+  // Prefer the physically counted amount over the system-expected one, so the
+  // cajón reflects reality; same formula nuevoFondo uses on confirm, so this
+  // preview always matches what actually gets saved.
   const efectivoQueda = Math.max(
     0,
-    totals.efectivo - depositarNum - ajusteAmtNum - (totals.efectivo * ajustePctNum / 100),
+    contadoNum !== null ? contadoNum - depositarNum : totalEsperado - depositarNum,
   )
 
   async function handleConfirm() {
@@ -628,8 +637,12 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
         qc.invalidateQueries({ queryKey: ['last-caja-close'] })
       }
 
-      // Always recalculate fondo: what's left after deposit (based on system records)
-      const nuevoFondo = Math.max(0, totalEsperado - depositarNum)
+      // Always recalculate fondo: prefer the physically counted amount over the
+      // system-expected one, so caja_fondo_fijo reflects reality.
+      const nuevoFondo = Math.max(
+        0,
+        contadoNum !== null ? contadoNum - depositarNum : totalEsperado - depositarNum,
+      )
       if (currentTenantId) {
         const { error: updateError } = await supabase
           .from('tenants')
@@ -637,12 +650,31 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
           .eq('id', currentTenantId)
         if (updateError) throw updateError
         await refreshTenants()
+
+        const { error: closingError } = await supabase.from('caja_closings').insert({
+          tenant_id: currentTenantId,
+          fecha: today,
+          fondo_inicial: fondoFijo,
+          efectivo_del_dia: totals.efectivo,
+          gastos_efectivo: totals.gastosEfectivo,
+          total_esperado: totalEsperado,
+          contado_fisico: contadoNum,
+          depositado: depositarNum,
+          fondo_resultante: nuevoFondo,
+          credito: totals.credito,
+          debito: totals.debito,
+          qr_transferencia: totals.qrTransferencia,
+          notas: notas || null,
+          created_by: user?.id,
+        })
+        if (closingError) throw closingError
+        qc.invalidateQueries({ queryKey: ['caja-closings'] })
       }
 
       setSuccess(
         depositarNum > 0
           ? `Caja cerrada. Depositado a caja mayor: ${formatCurrency(depositarNum)}. Saldo para mañana: ${formatCurrency(efectivoQueda)}`
-          : `Caja cerrada. Sin efectivo depositado. Fondo para mañana: ${formatCurrency(efectivoQueda)}`,
+          : `Caja cerrada. Sin depósito. Fondo para mañana: ${formatCurrency(efectivoQueda)}`,
       )
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la caja')
@@ -1646,6 +1678,25 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
     [txs, effectiveBalance, currentTenant],
   )
 
+  // Cajón is real-time, not tied to the month's declaration: it's whatever the
+  // last close-of-day left in the drawer (caja_fondo_fijo), plus/minus today's
+  // own cash movements — independent of which month is selected above.
+  const { data: todayTxs = [] } = useTodayTransactions()
+  const cajonHoy = useMemo(() => {
+    const isPaid = (t: Transaction) => !t.status || t.status === 'paid'
+    const cashIn = todayTxs
+      .filter((t) => t.type === 'income' && t.payment_method === 'cash')
+      .reduce((s, t) => s + t.amount, 0)
+    const cashOut = todayTxs
+      .filter((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+      .reduce((s, t) => s + t.amount, 0)
+    const depositado = todayTxs
+      .filter((t) => t.type === 'expense' && isPaid(t) && t.category === 'cash_transfer')
+      .reduce((s, t) => s + t.amount, 0)
+    const fondoActual = currentTenant?.caja_fondo_fijo ?? 0
+    return { fondoActual, cashIn, cashOut, depositado, saldoActual: fondoActual + cashIn - cashOut - depositado }
+  }, [todayTxs, currentTenant])
+
   const { settled: cardSettled, pending: cardPending } = usePendingSettlements(
     bolsillos.cardIncomeTxs,
     settings,
@@ -1656,7 +1707,7 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
   const cardInPending = cardPending.reduce((s, p) => s + p.transaction.amount, 0)
   const cardSettledBalance = bolsillos.openingCards + cardInSettled - bolsillos.cardOut
 
-  const total = bolsillos.cajon + bolsillos.cajaMayor + bolsillos.transferBalance + cardSettledBalance
+  const total = cajonHoy.saldoActual + bolsillos.cajaMayor + bolsillos.transferBalance + cardSettledBalance
 
   return (
     <Card>
@@ -1684,40 +1735,40 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
               </div>
             )}
             <div className="grid grid-cols-2 gap-3">
-              {/* Cajón: fondo fijo + period cash movements (informational) */}
+              {/* Cajón: dynamic, real-time drawer balance (today's movements over the last close) */}
               <div className="rounded-lg border bg-gray-50/50 p-3 space-y-2">
                 <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
                   <span>💵</span><span>Cajón</span>
                 </div>
                 <div className="text-[11px] text-muted-foreground space-y-0.5">
                   <div className="flex justify-between">
-                    <span>Fondo de caja</span>
-                    <span className="tabular-nums">{formatCurrency(bolsillos.cajon)}</span>
+                    <span>Fondo actual</span>
+                    <span className="tabular-nums">{formatCurrency(cajonHoy.fondoActual)}</span>
                   </div>
-                  {bolsillos.cashIn > 0 && (
+                  {cajonHoy.cashIn > 0 && (
                     <div className="flex justify-between text-green-700">
-                      <span>+ Efectivo cobrado</span>
-                      <span className="tabular-nums">+{formatCurrency(bolsillos.cashIn)}</span>
+                      <span>+ Efectivo cobrado hoy</span>
+                      <span className="tabular-nums">+{formatCurrency(cajonHoy.cashIn)}</span>
                     </div>
                   )}
-                  {bolsillos.cashOut > 0 && (
+                  {cajonHoy.cashOut > 0 && (
                     <div className="flex justify-between text-red-600">
-                      <span>− Gastos efectivo</span>
-                      <span className="tabular-nums">−{formatCurrency(bolsillos.cashOut)}</span>
+                      <span>− Gastos en efectivo hoy</span>
+                      <span className="tabular-nums">−{formatCurrency(cajonHoy.cashOut)}</span>
                     </div>
                   )}
-                  {bolsillos.deposits > 0 && (
+                  {cajonHoy.depositado > 0 && (
                     <div className="flex justify-between text-blue-600">
-                      <span>→ Depósito a caja fuerte</span>
-                      <span className="tabular-nums">−{formatCurrency(bolsillos.deposits)}</span>
+                      <span>− Depositado hoy</span>
+                      <span className="tabular-nums">−{formatCurrency(cajonHoy.depositado)}</span>
                     </div>
                   )}
-                  {bolsillos.cashIn === 0 && bolsillos.cashOut === 0 && bolsillos.deposits === 0 && (
-                    <p className="text-[10px] italic">Sin movimientos desde la declaración</p>
+                  {cajonHoy.cashIn === 0 && cajonHoy.cashOut === 0 && cajonHoy.depositado === 0 && (
+                    <p className="text-[10px] italic">Sin movimientos hoy</p>
                   )}
                 </div>
                 <div className="text-base font-bold text-plum-800 tabular-nums border-t pt-1.5">
-                  {formatCurrency(bolsillos.cajon)}
+                  {formatCurrency(cajonHoy.saldoActual)}
                 </div>
               </div>
               <BolsilloCard
@@ -2698,131 +2749,83 @@ function EmpDetailTable({ employees }: { employees: EmpMonthDetail[] }) {
 }
 
 // ── Tab Cierres de Caja ───────────────────────────────────────────────────────
+type CajaClosing = {
+  id: string
+  tenant_id: string
+  fecha: string
+  fondo_inicial: number
+  efectivo_del_dia: number
+  gastos_efectivo: number
+  total_esperado: number
+  contado_fisico: number | null
+  depositado: number
+  fondo_resultante: number
+  credito: number
+  debito: number
+  qr_transferencia: number
+  notas: string | null
+  created_by: string | null
+  created_at: string
+}
+
 function TabCierresCaja() {
   const tenantId = useTenantId()
-  const { currentTenant } = useAuth()
-  const currentFondo = currentTenant?.caja_fondo_fijo ?? 0
 
-  // Last 50 cash_transfer transactions = the cierres
-  const { data: cierres, isLoading: cierresLoading } = useQuery({
-    queryKey: ['cierres-caja', tenantId],
+  const { data: closings, isLoading } = useQuery({
+    queryKey: ['caja-closings', tenantId],
     queryFn: async () => {
       const { data, error } = await supabase
-        .from('transactions')
-        .select('id, date, amount, description, created_at')
+        .from('caja_closings')
+        .select('*')
         .eq('tenant_id', tenantId)
-        .eq('category', 'cash_transfer')
         .order('created_at', { ascending: false })
         .limit(50)
       if (error) throw error
-      return data ?? []
+      return (data ?? []) as CajaClosing[]
     },
     enabled: !!tenantId,
   })
 
-  const oldestDate = cierres && cierres.length > 0
-    ? cierres[cierres.length - 1].date
-    : null
-
-  // All income + cash-expense transactions in the covered range (for breakdown)
-  const { data: periodTxs, isLoading: txsLoading } = useQuery({
-    queryKey: ['cierres-caja-txs', tenantId, oldestDate],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('id, type, amount, payment_method, category, created_at')
-        .eq('tenant_id', tenantId)
-        .gte('date', oldestDate!)
-        .order('created_at', { ascending: true })
-      if (error) throw error
-      return data ?? []
-    },
-    enabled: !!tenantId && !!oldestDate,
-  })
-
-  const isLoading = cierresLoading || txsLoading
-
-  // Per-cierre breakdown computed once (array aligned with cierres)
-  const breakdowns = useMemo(() => {
-    if (!cierres || !periodTxs) return null
-    return cierres.map((cierre, idx) => {
-      const prevCierre = cierres[idx + 1]
-      const period = periodTxs.filter((tx) => {
-        if (!tx.created_at || !cierre.created_at) return false
-        if (tx.created_at > cierre.created_at) return false
-        if (prevCierre?.created_at && tx.created_at <= prevCierre.created_at) return false
-        return true
-      })
-      const incSum = (methods: string[]) =>
-        period.filter((t) => t.type === 'income' && methods.includes(t.payment_method ?? '')).reduce((s, t) => s + t.amount, 0)
-      const efectivoDelDia = incSum(['cash'])
-      const gastosEfectivo = period
-        .filter((t) => t.type === 'expense' && t.payment_method === 'cash' && t.category !== 'cash_transfer')
-        .reduce((s, t) => s + t.amount, 0)
-      const credito  = incSum(['credit'])
-      const debito   = incSum(['debit'])
-      const qrTransf = incSum(['qr', 'transfer', 'mp'])
-      const totalIngresado = efectivoDelDia + credito + debito + qrTransf - gastosEfectivo
-      return { efectivoDelDia, gastosEfectivo, credito, debito, qrTransf, totalIngresado }
-    })
-  }, [cierres, periodTxs])
-
-  // Reconstruct fondo inicial for each cierre by working backwards from the current fondo.
-  // Formula: nuevoFondo = fondoInicial + efectivoNeto - depositado
-  // → fondoInicial = fondoResultante + depositado - efectivoNeto
-  const fondos = useMemo(() => {
-    if (!cierres || !breakdowns) return null
-    const result: { fondoInicial: number; fondoResultante: number }[] = []
-    let fondoResultante = currentFondo
-    for (let i = 0; i < cierres.length; i++) {
-      const bd = breakdowns[i]
-      const efectivoNeto = bd.efectivoDelDia - bd.gastosEfectivo
-      const fondoInicial = fondoResultante + cierres[i].amount - efectivoNeto
-      result.push({ fondoInicial, fondoResultante })
-      fondoResultante = fondoInicial
-    }
-    return result
-  }, [cierres, breakdowns, currentFondo])
-
   function handleExport() {
-    if (!cierres || !breakdowns || !fondos) return
-    const rows = cierres.map((c, i) => {
-      const bd = breakdowns[i]
-      const fo = fondos[i]
-      return {
-        'Fecha y hora del cierre': new Date(c.created_at ?? '').toLocaleString('es-AR', { timeZone: 'America/Argentina/Buenos_Aires' }),
-        'Fondo inicial': fo.fondoInicial,
-        'Efectivo del día': bd.efectivoDelDia,
-        'Gastos en efectivo': bd.gastosEfectivo,
-        'Total esperado': fo.fondoInicial + bd.efectivoDelDia - bd.gastosEfectivo,
-        'Tarjeta Crédito': bd.credito,
-        'Tarjeta Débito': bd.debito,
-        'QR/Transferencia': bd.qrTransf,
-        'Total ingresado': bd.totalIngresado,
-        'Depositado': c.amount,
-        'Fondo resultante': fo.fondoResultante,
-        'Notas': c.description ?? '',
-      }
-    })
+    if (!closings) return
+    const rows = closings.map((c) => ({
+      'Fecha': new Date(c.fecha + 'T12:00:00').toLocaleDateString('es-AR'),
+      'Fondo inicial': c.fondo_inicial,
+      'Efectivo del día': c.efectivo_del_dia,
+      'Gastos en efectivo': c.gastos_efectivo,
+      'Total esperado': c.total_esperado,
+      'Contado físico': c.contado_fisico ?? '',
+      'Diferencia': c.contado_fisico !== null ? c.contado_fisico - c.total_esperado : '',
+      'Tarjeta Crédito': c.credito,
+      'Tarjeta Débito': c.debito,
+      'QR/Transferencia': c.qr_transferencia,
+      'Total': c.efectivo_del_dia + c.credito + c.debito + c.qr_transferencia,
+      'Depositado': c.depositado,
+      'Fondo resultante': c.fondo_resultante,
+      'Notas': c.notas ?? '',
+    }))
     exportToExcel(rows, 'cierres-de-caja.xlsx', 'Cierres de Caja')
   }
 
   return (
     <div className="space-y-5">
+      <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        Los cierres anteriores a esta fecha se registraron con el sistema anterior y pueden mostrar datos aproximados.
+      </div>
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base text-plum-800 flex items-center gap-2">
               <Lock className="w-4 h-4" /> Cierres de Caja
               {!isLoading && (
-                <span className="text-muted-foreground font-normal text-sm">({cierres?.length ?? 0})</span>
+                <span className="text-muted-foreground font-normal text-sm">({closings?.length ?? 0})</span>
               )}
             </CardTitle>
             <Button
               variant="outline"
               size="sm"
               onClick={handleExport}
-              disabled={!cierres || cierres.length === 0}
+              disabled={!closings || closings.length === 0}
             >
               <FileDown className="w-4 h-4 mr-1.5" /> Exportar Excel
             </Button>
@@ -2833,7 +2836,7 @@ function TabCierresCaja() {
             <div className="flex justify-center py-12">
               <Loader2 className="w-6 h-6 animate-spin text-plum-800" />
             </div>
-          ) : !cierres || cierres.length === 0 ? (
+          ) : !closings || closings.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-b-xl">
               <Lock className="w-10 h-10 mx-auto mb-2 opacity-30" />
               <p className="text-sm">Sin cierres de caja registrados</p>
@@ -2842,11 +2845,13 @@ function TabCierresCaja() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b bg-gray-50">
-                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha y hora</th>
+                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fondo inicial</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Efectivo día</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Gastos ef.</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Total esp.</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Contado físico</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Diferencia</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Crédito</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">T. Débito</th>
                   <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">QR/Transf.</th>
@@ -2857,57 +2862,186 @@ function TabCierresCaja() {
                 </tr>
               </thead>
               <tbody>
-                {cierres.map((c, i) => {
-                  const bd = breakdowns?.[i]
-                  const fo = fondos?.[i]
-                  if (!bd || !fo) return null
-                  const totalEsperado = fo.fondoInicial + bd.efectivoDelDia - bd.gastosEfectivo
+                {closings.map((c) => {
+                  const diferencia = c.contado_fisico !== null ? c.contado_fisico - c.total_esperado : null
+                  const total = c.efectivo_del_dia + c.credito + c.debito + c.qr_transferencia
                   return (
                     <tr key={c.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
                       <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
-                        {new Date(c.created_at ?? '').toLocaleString('es-AR', {
-                          timeZone: 'America/Argentina/Buenos_Aires',
+                        {new Date(c.fecha + 'T12:00:00').toLocaleDateString('es-AR', {
                           day: '2-digit', month: '2-digit', year: 'numeric',
-                          hour: '2-digit', minute: '2-digit',
                         })}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-muted-foreground">
-                        {formatCurrency(fo.fondoInicial)}
+                        {formatCurrency(c.fondo_inicial)}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-green-600">
-                        {formatCurrency(bd.efectivoDelDia)}
+                        {formatCurrency(c.efectivo_del_dia)}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-red-600">
-                        {bd.gastosEfectivo > 0 ? `-${formatCurrency(bd.gastosEfectivo)}` : '—'}
+                        {c.gastos_efectivo > 0 ? `-${formatCurrency(c.gastos_efectivo)}` : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
-                        {formatCurrency(totalEsperado)}
+                        {formatCurrency(c.total_esperado)}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd.credito > 0 ? formatCurrency(bd.credito) : '—'}
+                        {c.contado_fisico !== null ? formatCurrency(c.contado_fisico) : '—'}
+                      </td>
+                      <td className={cn(
+                        'px-3 py-2.5 text-right tabular-nums font-medium',
+                        diferencia === null ? 'text-muted-foreground' : diferencia === 0 ? 'text-plum-800' : diferencia > 0 ? 'text-green-600' : 'text-red-600',
+                      )}>
+                        {diferencia !== null ? `${diferencia > 0 ? '+' : ''}${formatCurrency(diferencia)}` : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd.debito > 0 ? formatCurrency(bd.debito) : '—'}
+                        {c.credito > 0 ? formatCurrency(c.credito) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {bd.qrTransf > 0 ? formatCurrency(bd.qrTransf) : '—'}
+                        {c.debito > 0 ? formatCurrency(c.debito) : '—'}
+                      </td>
+                      <td className="px-3 py-2.5 text-right tabular-nums">
+                        {c.qr_transferencia > 0 ? formatCurrency(c.qr_transferencia) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
-                        {formatCurrency(bd.totalIngresado)}
+                        {formatCurrency(total)}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums">
-                        {c.amount > 0 ? formatCurrency(c.amount) : '—'}
+                        {c.depositado > 0 ? formatCurrency(c.depositado) : '—'}
                       </td>
                       <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-plum-800">
-                        {formatCurrency(fo.fondoResultante)}
+                        {formatCurrency(c.fondo_resultante)}
                       </td>
                       <td className="px-4 py-2.5 text-xs text-muted-foreground max-w-[180px] truncate">
-                        {c.description ?? '—'}
+                        {c.notas ?? '—'}
                       </td>
                     </tr>
                   )
                 })}
               </tbody>
+            </table>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
+// ── Tab Depósitos ────────────────────────────────────────────────────────────
+
+function TabDepositos() {
+  const tenantId = useTenantId()
+  const { data: tenantUsers } = useAllTenantUsers()
+  const usersMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const u of tenantUsers ?? []) map.set(u.id, u.full_name)
+    return map
+  }, [tenantUsers])
+
+  const { data: deposits, isLoading } = useQuery({
+    queryKey: ['depositos-caja', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, date, amount, description, created_at, user_id')
+        .eq('tenant_id', tenantId)
+        .eq('category', 'cash_transfer')
+        .order('created_at', { ascending: false })
+        .limit(100)
+      if (error) throw error
+      return (data ?? []) as {
+        id: string; date: string; amount: number
+        description: string | null; created_at: string | null; user_id: string
+      }[]
+    },
+    enabled: !!tenantId,
+  })
+
+  const total = (deposits ?? []).reduce((s, d) => s + d.amount, 0)
+
+  function handleExport() {
+    if (!deposits) return
+    const rows = deposits.map((d) => ({
+      'Fecha': new Date(d.date + 'T12:00:00').toLocaleDateString('es-AR'),
+      'Hora': d.created_at ? fmtHora(d.created_at) : '',
+      'Monto depositado': d.amount,
+      'Notas': d.description ?? '',
+      'Registrado por': usersMap.get(d.user_id) ?? '',
+    }))
+    exportToExcel(rows, 'depositos-caja.xlsx', 'Depósitos')
+  }
+
+  return (
+    <div className="space-y-5">
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+              <Wallet className="w-4 h-4" /> Depósitos
+              {!isLoading && (
+                <span className="text-muted-foreground font-normal text-sm">({deposits?.length ?? 0})</span>
+              )}
+            </CardTitle>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExport}
+              disabled={!deposits || deposits.length === 0}
+            >
+              <FileDown className="w-4 h-4 mr-1.5" /> Exportar Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0 pb-4 overflow-x-auto">
+          {isLoading ? (
+            <div className="flex justify-center py-12">
+              <Loader2 className="w-6 h-6 animate-spin text-plum-800" />
+            </div>
+          ) : !deposits || deposits.length === 0 ? (
+            <div className="text-center py-12 text-muted-foreground bg-gray-50 rounded-b-xl">
+              <Wallet className="w-10 h-10 mx-auto mb-2 opacity-30" />
+              <p className="text-sm">Sin depósitos registrados</p>
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-gray-50">
+                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Fecha</th>
+                  <th className="text-left  px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Hora</th>
+                  <th className="text-right px-3 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Monto depositado</th>
+                  <th className="text-left  px-3 py-2.5 text-xs font-medium text-muted-foreground">Notas</th>
+                  <th className="text-left  px-4 py-2.5 text-xs font-medium text-muted-foreground whitespace-nowrap">Registrado por</th>
+                </tr>
+              </thead>
+              <tbody>
+                {deposits.map((d) => (
+                  <tr key={d.id} className="border-b last:border-0 hover:bg-gray-50/50 transition-colors">
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(d.date + 'T12:00:00').toLocaleDateString('es-AR', { day: '2-digit', month: '2-digit', year: 'numeric' })}
+                    </td>
+                    <td className="px-3 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                      {d.created_at ? fmtHora(d.created_at) : '—'}
+                    </td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-semibold text-green-600 whitespace-nowrap">
+                      {formatCurrency(d.amount)}
+                    </td>
+                    <td className="px-3 py-2.5 text-sm text-plum-800 max-w-[320px] truncate">
+                      {d.description ?? '—'}
+                    </td>
+                    <td className="px-4 py-2.5 text-xs text-muted-foreground whitespace-nowrap">
+                      {usersMap.get(d.user_id) ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 bg-gray-50">
+                  <td colSpan={2} className="px-4 py-2.5 text-xs font-semibold text-plum-800">Total</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums font-bold text-green-700 whitespace-nowrap">
+                    {formatCurrency(total)}
+                  </td>
+                  <td colSpan={2}></td>
+                </tr>
+              </tfoot>
             </table>
           )}
         </CardContent>
@@ -4152,12 +4286,13 @@ export default function Finanzas() {
   const showPL         = profile ? canAccess(profile.role, 'finanzas') : false
   const showCashFlow   = profile?.role === 'owner' || profile?.role === 'partner_admin'
   const showCierres    = profile?.role === 'owner' || profile?.role === 'partner_admin'
+  const showDepositos  = profile?.role === 'owner' || profile?.role === 'partner_admin'
   const showProveedores    = profile?.role === 'owner'
   const showConfiguracion  = profile?.role === 'owner' || profile?.role === 'partner_admin'
 
   const [activeTab, setActiveTab] = useState<Tab>(() => {
     const t = searchParams.get('tab')
-    if (t === 'pl' || t === 'cashflow' || t === 'movimientos' || t === 'proveedores') return t as Tab
+    if (t === 'pl' || t === 'cashflow' || t === 'movimientos' || t === 'proveedores' || t === 'depositos') return t as Tab
     return 'caja'
   })
 
@@ -4167,6 +4302,7 @@ export default function Finanzas() {
     { key: 'pl'           as Tab, label: 'P&L y Reportes',      show: showPL          },
     { key: 'cashflow'     as Tab, label: 'Cash Flow',           show: showCashFlow    },
     { key: 'cierres'      as Tab, label: 'Cierres de Caja',     show: showCierres     },
+    { key: 'depositos'    as Tab, label: 'Depósitos',           show: showDepositos   },
     { key: 'proveedores'   as Tab, label: 'Proveedores',         show: showProveedores   },
     { key: 'configuracion' as Tab, label: 'Configuración',       show: showConfiguracion },
   ].filter((t) => t.show)
@@ -4201,6 +4337,7 @@ export default function Finanzas() {
       {activeTab === 'pl'          && showPL          && <TabPL />}
       {activeTab === 'cashflow'    && showCashFlow    && <TabCashFlow />}
       {activeTab === 'cierres'     && showCierres     && <TabCierresCaja />}
+      {activeTab === 'depositos'   && showDepositos   && <TabDepositos />}
       {activeTab === 'proveedores'  && showProveedores  && <TabProveedores />}
       {activeTab === 'configuracion' && showConfiguracion && <TabConfiguracion />}
     </div>
