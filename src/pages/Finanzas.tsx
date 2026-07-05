@@ -440,12 +440,8 @@ function SectionMovimientosHoy() {
 
   const txs = useMemo(() => {
     if (!allTxs) return allTxs
-    return allTxs.filter((tx) => {
-      if (tx.status === 'pending') return false
-      if (lastCloseAt && tx.created_at && tx.created_at <= lastCloseAt) return false
-      return true
-    })
-  }, [allTxs, lastCloseAt])
+    return allTxs.filter((tx) => tx.status !== 'pending')
+  }, [allTxs])
 
   const { profile } = useAuth()
   const tenantId = useTenantId()

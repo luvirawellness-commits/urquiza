@@ -33,20 +33,26 @@ export function useTransactions(month?: string) {
 export function useTodayTransactions() {
   const tenantId = useTenantId()
   const today = getArgentinaDateString()
+  const { data: lastCloseAt } = useLastCajaClose()
   return useQuery({
-    queryKey: ['transactions', tenantId, 'today', today],
+    queryKey: ['transactions', tenantId, 'today', today, lastCloseAt],
     queryFn: async () => {
-      const { data, error } = await supabase
+      let query = supabase
         .from('transactions')
         .select('*')
         .eq('tenant_id', tenantId)
-        .eq('date', today)
         .order('created_at', { ascending: false })
+
+      query = lastCloseAt
+        ? query.gt('created_at', lastCloseAt)
+        : query.eq('date', today)
+
+      const { data, error } = await query
       if (error) throw error
       return data as Transaction[]
     },
     refetchInterval: 30_000,
-    enabled: !!tenantId,
+    enabled: !!tenantId && lastCloseAt !== undefined,
   })
 }
 
@@ -311,17 +317,13 @@ export function useMovimientosCaja(dateFrom: string, dateTo: string) {
 
 export function useLastCajaClose() {
   const tenantId = useTenantId()
-  const today = getArgentinaDateString()
   return useQuery({
-    queryKey: ['last-caja-close', tenantId, today],
+    queryKey: ['last-caja-close', tenantId],
     queryFn: async () => {
       const { data } = await supabase
-        .from('transactions')
+        .from('caja_closings')
         .select('created_at')
         .eq('tenant_id', tenantId)
-        .eq('date', today)
-        .eq('type', 'expense')
-        .eq('category', 'cash_transfer')
         .order('created_at', { ascending: false })
         .limit(1)
         .maybeSingle()
