@@ -59,24 +59,31 @@ export function useTodayTransactions() {
 export function useTodayMetrics() {
   const tenantId = useTenantId()
   const today = getArgentinaDateString()
+  const { data: lastCloseAt } = useLastCajaClose()
   return useQuery({
-    queryKey: ['today-metrics', tenantId, today],
+    queryKey: ['today-metrics', tenantId, today, lastCloseAt],
     queryFn: async () => {
-      const [txRes, apptRes] = await Promise.all([
-        supabase
-          .from('transactions')
-          .select('amount, payment_method, type')
-          .eq('tenant_id', tenantId)
-          .eq('date', today)
-          .eq('status', 'paid'),
-        supabase
-          .from('appointments')
-          .select('id', { count: 'exact', head: true })
-          .eq('tenant_id', tenantId)
-          .gte('scheduled_at', `${today}T00:00:00`)
-          .lte('scheduled_at', `${today}T23:59:59`)
-          .eq('status', 'completed'),
-      ])
+      let txQuery = supabase
+        .from('transactions')
+        .select('amount, payment_method, type')
+        .eq('tenant_id', tenantId)
+        .eq('status', 'paid')
+
+      let apptQuery = supabase
+        .from('appointments')
+        .select('id', { count: 'exact', head: true })
+        .eq('tenant_id', tenantId)
+        .eq('status', 'completed')
+
+      if (lastCloseAt) {
+        txQuery = txQuery.gt('created_at', lastCloseAt)
+        apptQuery = apptQuery.gt('scheduled_at', lastCloseAt)
+      } else {
+        txQuery = txQuery.eq('date', today)
+        apptQuery = apptQuery.gte('scheduled_at', `${today}T00:00:00`).lte('scheduled_at', `${today}T23:59:59`)
+      }
+
+      const [txRes, apptRes] = await Promise.all([txQuery, apptQuery])
 
       const allTx = txRes.data ?? []
       const totalCobrado = allTx
@@ -97,7 +104,7 @@ export function useTodayMetrics() {
       }
     },
     refetchInterval: 30_000,
-    enabled: !!tenantId,
+    enabled: !!tenantId && lastCloseAt !== undefined,
   })
 }
 
