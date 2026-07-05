@@ -15,12 +15,20 @@ export function formatCurrency(amount: number): string {
 }
 
 export function formatDate(date: string | Date): string {
+  let d: Date
+  if (typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    // Date-only string: parse as local date to avoid UTC offset issue
+    const [year, month, day] = date.split('-').map(Number)
+    d = new Date(year, month - 1, day)  // local time, no UTC conversion
+  } else {
+    d = new Date(date)
+  }
   return new Intl.DateTimeFormat('es-AR', {
     day: '2-digit',
     month: '2-digit',
     year: 'numeric',
     timeZone: 'America/Argentina/Buenos_Aires',
-  }).format(new Date(date))
+  }).format(d)
 }
 
 export function formatTime(date: string | Date): string {
