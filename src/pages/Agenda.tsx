@@ -998,15 +998,20 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: Appointment; onClose: () => void; readOnly?: boolean }) {
-  const { currentTenant } = useAuth()
+  const { currentTenant, currentTenantId } = useAuth()
   const reminderTemplate = currentTenant?.whatsapp_reminder_message ?? DEFAULT_REMINDER_MESSAGE
   const reviewMessage = currentTenant?.whatsapp_review_message ?? DEFAULT_REVIEW_MESSAGE
   const updateStatus = useUpdateAppointmentStatus()
+  const qc = useQueryClient()
   const [showPayment, setShowPayment] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
   const [editingNotes, setEditingNotes] = useState(false)
   const [notesValue, setNotesValue] = useState('')
   const [notesSaving, setNotesSaving] = useState(false)
+  const [editingApptNotes, setEditingApptNotes] = useState(false)
+  const [apptNotesValue, setApptNotesValue] = useState(appt.notes ?? '')
+  const [apptNotesSaving, setApptNotesSaving] = useState(false)
+  const isClosedAppt = appt.status === 'completed' || appt.status === 'cancelled'
 
   const { data: clientData } = useClient(appt.client_id ?? '')
   const updateClientMutation = useUpdateClient()
@@ -1018,6 +1023,10 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   useEffect(() => {
     if (clientData) setNotesValue(clientData.notes ?? '')
   }, [clientData?.id, clientData?.notes])
+
+  useEffect(() => {
+    setApptNotesValue(appt.notes ?? '')
+  }, [appt.id, appt.notes])
 
   async function saveNotes() {
     if (!clientData) return
@@ -1036,6 +1045,22 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
       setEditingNotes(false)
     } finally {
       setNotesSaving(false)
+    }
+  }
+
+  async function saveApptNotes() {
+    setApptNotesSaving(true)
+    try {
+      const { error } = await supabase
+        .from('appointments')
+        .update({ notes: apptNotesValue })
+        .eq('id', appt.id)
+        .eq('tenant_id', currentTenantId)
+      if (error) throw error
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      setEditingApptNotes(false)
+    } finally {
+      setApptNotesSaving(false)
     }
   }
 
@@ -1108,10 +1133,63 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
                   {STATUS_LABELS[appt.status]}
                 </span>
               </div>
-              {appt.notes && (
+              {isClosedAppt ? (
+                appt.notes && (
+                  <div className="col-span-2">
+                    <p className="text-xs text-muted-foreground mb-1">Notas del turno</p>
+                    <p className="text-sm">{appt.notes}</p>
+                  </div>
+                )
+              ) : (
                 <div className="col-span-2">
-                  <p className="text-xs text-muted-foreground mb-1">Notas del turno</p>
-                  <p className="text-sm">{appt.notes}</p>
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs text-muted-foreground">Notas del turno</p>
+                    {!editingApptNotes && !readOnly && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingApptNotes(true)}
+                        className="text-xs text-plum-700 hover:underline"
+                      >
+                        Editar
+                      </button>
+                    )}
+                  </div>
+                  {editingApptNotes ? (
+                    <div className="space-y-2">
+                      <textarea
+                        value={apptNotesValue}
+                        onChange={e => setApptNotesValue(e.target.value)}
+                        rows={3}
+                        className="w-full text-sm border rounded-md px-3 py-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-plum-800"
+                        placeholder="Observaciones del turno..."
+                      />
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={saveApptNotes}
+                          disabled={apptNotesSaving}
+                          className="bg-plum-800 hover:bg-plum-700 text-white text-xs h-7 px-3"
+                        >
+                          {apptNotesSaving ? <Loader2 className="w-3 h-3 animate-spin" /> : 'Guardar nota'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => { setEditingApptNotes(false); setApptNotesValue(appt.notes ?? '') }}
+                          className="text-xs h-7 px-3"
+                        >
+                          Cancelar
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm">
+                      {apptNotesValue
+                        ? apptNotesValue
+                        : <span className="italic text-muted-foreground text-xs">Sin notas</span>
+                      }
+                    </p>
+                  )}
                 </div>
               )}
               {appt.client_id && (
