@@ -640,30 +640,24 @@ function ModalCierreCaja({ onClose }: { onClose: () => void }) {
         contadoNum !== null ? contadoNum - depositarNum : totalEsperado - depositarNum,
       )
       if (currentTenantId) {
-        const { error: updateError } = await supabase
-          .from('tenants')
-          .update({ caja_fondo_fijo: nuevoFondo })
-          .eq('id', currentTenantId)
-        if (updateError) throw updateError
-        await refreshTenants()
-
-        const { error: closingError } = await supabase.from('caja_closings').insert({
-          tenant_id: currentTenantId,
-          fecha: today,
-          fondo_inicial: fondoFijo,
-          efectivo_del_dia: totals.efectivo,
-          gastos_efectivo: totals.gastosEfectivo,
-          total_esperado: totalEsperado,
-          contado_fisico: contadoNum,
-          depositado: depositarNum,
-          fondo_resultante: nuevoFondo,
-          credito: totals.credito,
-          debito: totals.debito,
-          qr_transferencia: totals.qrTransferencia,
-          notas: notas || null,
-          created_by: user?.id,
+        const { error: closeError } = await supabase.rpc('close_caja', {
+          p_tenant_id: currentTenantId,
+          p_nuevo_fondo: nuevoFondo,
+          p_fecha: today,
+          p_fondo_inicial: fondoFijo,
+          p_efectivo_del_dia: totals.efectivo,
+          p_gastos_efectivo: totals.gastosEfectivo ?? 0,
+          p_total_esperado: totalEsperado,
+          p_contado_fisico: contadoNum,
+          p_depositado: depositarNum,
+          p_credito: totals.credito ?? 0,
+          p_debito: totals.debito ?? 0,
+          p_qr_transferencia: totals.qrTransferencia ?? 0,
+          p_notas: notas || null,
+          p_user_id: user?.id,
         })
-        if (closingError) throw closingError
+        if (closeError) throw closeError
+        await refreshTenants()
         qc.invalidateQueries({ queryKey: ['caja-closings'] })
       }
 
