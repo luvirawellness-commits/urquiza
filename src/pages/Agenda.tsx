@@ -417,6 +417,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [paymentType, setPaymentType] = useState<PaymentType>('efectivo_digital')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [step, setStep] = useState<'form' | 'prompt' | 'invoice'>('form')
   const [paidAmount, setPaidAmount] = useState(0)
   const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
@@ -439,6 +440,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const totalConDescuento = Math.max(0, montoFinal - depositoPagado)
   const splitTotal = splitRows.reduce((sum, r) => sum + (Number(r.amount) || 0), 0)
   const splitBalanced = Math.abs(splitTotal - totalConDescuento) < 0.01
+  const paymentMethodMissing = paymentType === 'efectivo_digital' && splitRows.some(r => !r.method)
 
   const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
   const [membershipSubOpt, setMembershipSubOpt] = useState<'use_existing' | 'sell_new'>('use_existing')
@@ -507,6 +509,11 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }
 
   async function handleConfirm() {
+    setAttemptedSubmit(true)
+    if (paymentMethodMissing) {
+      setError('Por favor seleccioná el medio de pago antes de confirmar')
+      return
+    }
     setBusy(true); setError(null)
     try {
       const amounts: number[] = []
@@ -556,7 +563,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }
 
   const canConfirm = !busy && (
-    (paymentType === 'efectivo_digital' && splitBalanced) ||
+    (paymentType === 'efectivo_digital' && splitBalanced && !paymentMethodMissing) ||
     (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
@@ -654,7 +661,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
             {splitRows.map((row, i) => (
               <div key={i} className="flex gap-2 items-center">
                 <select
-                  className={cn(SELECT_CLS, 'flex-1')}
+                  className={cn(SELECT_CLS, 'flex-1', attemptedSubmit && !row.method && 'border-red-500 focus:border-red-500')}
                   value={row.method}
                   onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, method: e.target.value } : r))}
                 >
