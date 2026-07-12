@@ -113,7 +113,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenant_id,
         role,
         active,
-        tenant:tenants (
+        tenant:tenants!inner (
           id,
           name,
           slug,
@@ -123,11 +123,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           trial_ends_at,
           caja_fondo_fijo,
           whatsapp_reminder_message,
-          whatsapp_review_message
+          whatsapp_review_message,
+          tenant_type
         )
       `)
       .eq('user_id', userId)
       .eq('active', true)
+      .eq('tenant.tenant_type', 'wellness')
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let tenants: Tenant[] = (userTenants ?? [])
@@ -139,8 +141,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (tenants.length === 0) {
       const { data: profileWithTenant } = await supabase
         .from('users')
-        .select('*, tenant:tenants(*)')
+        .select('*, tenant:tenants!inner(*)')
         .eq('id', userId)
+        .eq('tenant.tenant_type', 'wellness')
         .maybeSingle()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const fallback = (profileWithTenant as any)?.tenant
@@ -284,13 +287,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         tenant_id,
         role,
         active,
-        tenant:tenants (
+        tenant:tenants!inner (
           id, name, slug, address, phone, active, trial_ends_at, caja_fondo_fijo,
-          whatsapp_reminder_message, whatsapp_review_message
+          whatsapp_reminder_message, whatsapp_review_message, tenant_type
         )
       `)
       .eq('user_id', user.id)
       .eq('active', true)
+      .eq('tenant.tenant_type', 'wellness')
 
     if (error) {
       console.error('[refreshTenants] fetch failed, keeping previous availableTenants:', error)

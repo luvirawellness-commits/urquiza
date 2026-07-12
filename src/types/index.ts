@@ -7,6 +7,7 @@ export interface Tenant {
   address?: string
   phone?: string
   whatsapp?: string
+  tenant_type?: string
   breakeven?: number
   royalty_pct?: number
   active: boolean
