@@ -393,6 +393,7 @@ export default function SuperAdmin() {
       const { data, error } = await supabase
         .from('tenants')
         .select('*')
+        .eq('tenant_type', 'wellness')
         .order('created_at', { ascending: false })
       if (error) throw error
       return data as TenantRow[]
