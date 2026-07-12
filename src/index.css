@@ -33,6 +33,9 @@
   body {
     @apply bg-background text-foreground;
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* Base text size scaled 40% (16px -> ~22.4px); matches the fontSize.base
+       override in tailwind.config.js so text-* utilities stay consistent. */
+    font-size: 1.4rem;
   }
 }
 
