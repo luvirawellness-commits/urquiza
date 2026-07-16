@@ -343,9 +343,12 @@ export function useLastCajaClose() {
 export type ReservaRow = {
   id: string
   created_at: string
+  scheduled_at: string
   source: string | null
   price_charged: number | null
   status: string
+  client: { first_name: string; last_name: string } | null
+  service: { name: string } | null
 }
 
 export function useReservasOnline(dateFrom: string, dateTo: string) {
@@ -355,13 +358,18 @@ export function useReservasOnline(dateFrom: string, dateTo: string) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('appointments')
-        .select('id, created_at, source, price_charged, status')
+        .select(`
+          id, created_at, scheduled_at, source, price_charged, status,
+          client:clients(first_name, last_name),
+          service:services(name)
+        `)
         .eq('tenant_id', tenantId)
+        .neq('status', 'blocked')
         .gte('created_at', `${dateFrom}T00:00:00`)
         .lte('created_at', `${dateTo}T23:59:59`)
         .order('created_at', { ascending: true })
       if (error) throw error
-      return (data ?? []) as ReservaRow[]
+      return (data ?? []) as unknown as ReservaRow[]
     },
     enabled: !!tenantId && !!dateFrom && !!dateTo && dateFrom <= dateTo,
   })

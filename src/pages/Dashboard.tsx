@@ -39,8 +39,10 @@ import { useOverdueSupplierInvoicesCount } from '@/hooks/useSupplierInvoices'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn, formatCurrency, formatDate } from '@/lib/utils'
 import type { AppointmentStatus } from '@/types'
+import type { ReservaRow } from '@/hooks/useFinanzas'
 
 const TZ = 'America/Argentina/Buenos_Aires'
 
@@ -126,6 +128,7 @@ function fmtAxisDate(dateStr: string) {
 function TabReservasOnline() {
   const [dateFrom, setDateFrom] = useState(monthStartStr)
   const [dateTo, setDateTo] = useState(todayStr)
+  const [selectedDate, setSelectedDate] = useState<string | null>(null)
 
   const { data, isLoading } = useReservasOnline(dateFrom, dateTo)
 
@@ -298,7 +301,11 @@ function TabReservasOnline() {
                 </thead>
                 <tbody>
                   {tableData.map((row) => (
-                    <tr key={row.date} className="border-b hover:bg-gray-50">
+                    <tr
+                      key={row.date}
+                      onClick={() => setSelectedDate(row.date)}
+                      className="border-b hover:bg-gray-50 cursor-pointer"
+                    >
                       <td className="px-4 py-2.5 font-mono text-xs text-plum-700">
                         {new Date(row.date + 'T12:00:00').toLocaleDateString('es-AR', {
                           weekday: 'short',
@@ -319,7 +326,84 @@ function TabReservasOnline() {
           </CardContent>
         </Card>
       )}
+
+      {selectedDate && (
+        <ReservasDelDiaModal
+          date={selectedDate}
+          reservas={data ?? []}
+          onClose={() => setSelectedDate(null)}
+        />
+      )}
     </div>
+  )
+}
+
+function ReservasDelDiaModal({
+  date,
+  reservas,
+  onClose,
+}: {
+  date: string
+  reservas: ReservaRow[]
+  onClose: () => void
+}) {
+  const dayReservas = reservas.filter((r) => r.created_at.slice(0, 10) === date)
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Reservas del {formatDate(date)}</DialogTitle>
+        </DialogHeader>
+
+        {dayReservas.length === 0 ? (
+          <p className="py-8 text-center text-sm text-muted-foreground">
+            Sin reservas para este día
+          </p>
+        ) : (
+          <div className="max-h-[60vh] overflow-y-auto overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b bg-gray-50 text-left">
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Cliente</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Fecha de la sesión</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Horario de la sesión</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Servicio</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Estado</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Fecha que agendó</th>
+                  <th className="px-4 py-2.5 font-medium text-muted-foreground">Horario que agendó</th>
+                </tr>
+              </thead>
+              <tbody>
+                {dayReservas.map((r) => (
+                  <tr key={r.id} className="border-b hover:bg-gray-50">
+                    <td className="px-4 py-2.5 text-plum-800">
+                      {r.client ? `${r.client.first_name} ${r.client.last_name}` : '—'}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                      {formatDate(r.scheduled_at)}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                      {formatApptTime(r.scheduled_at)}
+                    </td>
+                    <td className="px-4 py-2.5">{r.service?.name ?? '—'}</td>
+                    <td className="px-4 py-2.5">
+                      <StatusBadge status={r.status as AppointmentStatus} />
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                      {formatDate(r.created_at)}
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs text-muted-foreground">
+                      {formatApptTime(r.created_at)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 
