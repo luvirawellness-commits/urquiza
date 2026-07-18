@@ -11,6 +11,7 @@ import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
 import { useClients, useCreateClient, useClient, useUpdateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
+import { useToast } from '@/hooks/useToast'
 import { supabase } from '@/lib/supabase'
 import { applyWhatsAppTemplate, DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
 import {
@@ -998,11 +999,12 @@ function Field({ label, value }: { label: string; value: string }) {
 }
 
 function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: Appointment; onClose: () => void; readOnly?: boolean }) {
-  const { currentTenant, currentTenantId } = useAuth()
+  const { user, profile, currentTenant, currentTenantId } = useAuth()
   const reminderTemplate = currentTenant?.whatsapp_reminder_message ?? DEFAULT_REMINDER_MESSAGE
   const reviewMessage = currentTenant?.whatsapp_review_message ?? DEFAULT_REVIEW_MESSAGE
   const updateStatus = useUpdateAppointmentStatus()
   const qc = useQueryClient()
+  const { toast } = useToast()
   const [showPayment, setShowPayment] = useState(false)
   const [showEdit, setShowEdit] = useState(false)
   const [editingNotes, setEditingNotes] = useState(false)
@@ -1011,7 +1013,33 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   const [editingApptNotes, setEditingApptNotes] = useState(false)
   const [apptNotesValue, setApptNotesValue] = useState(appt.notes ?? '')
   const [apptNotesSaving, setApptNotesSaving] = useState(false)
+  const [showRevertConfirm, setShowRevertConfirm] = useState(false)
+  const [reverting, setReverting] = useState(false)
+  const [revertError, setRevertError] = useState<string | null>(null)
   const isClosedAppt = appt.status === 'completed' || appt.status === 'cancelled'
+  const canRevert = appt.status === 'completed' && profile?.role === 'owner'
+
+  async function handleRevert() {
+    setReverting(true)
+    setRevertError(null)
+    try {
+      const { error } = await supabase.rpc('revert_appointment', {
+        p_appointment_id: appt.id,
+        p_tenant_id: currentTenantId,
+        p_user_id: user?.id,
+      })
+      if (error) throw new Error(error.message || 'Error al revertir la sesión')
+
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      toast({ description: 'Sesión revertida correctamente' })
+      onClose()
+    } catch (e) {
+      setRevertError((e as Error).message || 'Error al revertir la sesión')
+    } finally {
+      setReverting(false)
+    }
+  }
 
   const { data: clientData } = useClient(appt.client_id ?? '')
   const updateClientMutation = useUpdateClient()
@@ -1303,6 +1331,47 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
                 </p>
               )}
             </div>
+
+            {canRevert && (
+              <div className="border-t pt-4 space-y-2">
+                {revertError && <p className="text-sm text-red-600">{revertError}</p>}
+                {showRevertConfirm ? (
+                  <div className="space-y-2">
+                    <p className="text-sm text-gray-700">
+                      ¿Revertir esta sesión? Se eliminarán las transacciones asociadas y el turno
+                      volverá a estado pendiente. Esta acción no se puede deshacer.
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={handleRevert}
+                        disabled={reverting}
+                      >
+                        {reverting ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+                        Revertir
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => { setShowRevertConfirm(false); setRevertError(null) }}
+                        disabled={reverting}
+                      >
+                        Cancelar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => setShowRevertConfirm(true)}
+                  >
+                    Revertir sesión
+                  </Button>
+                )}
+              </div>
+            )}
           </>
         )}
       </DialogContent>
