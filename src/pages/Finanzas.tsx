@@ -1629,12 +1629,45 @@ function computeBolsillos(
   }
 }
 
+function AcreditacionDetailPanel({ p, usersMap }: { p: PendingSettlement; usersMap: Map<string, string> }) {
+  const tx = p.transaction
+  const { data: detail, isLoading } = useTransactionDetail(tx.appointment_id, tx.client_id)
+  const clienteLabel = isLoading
+    ? '…'
+    : detail?.appointment
+      ? [detail.appointment.first_name, detail.appointment.last_name].filter(Boolean).join(' ') || 'Sin cliente'
+      : detail?.client
+        ? [detail.client.first_name, detail.client.last_name].filter(Boolean).join(' ') || 'Sin cliente'
+        : 'Sin cliente'
+
+  return (
+    <div className="bg-gray-50 border border-gray-100 rounded-lg p-4">
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-3 text-sm">
+        <DetailField label="Hora de la transacción">{tx.created_at ? fmtHora(tx.created_at) : '—'}</DetailField>
+        <DetailField label="Registrado por">{usersMap.get(tx.user_id) ?? '—'}</DetailField>
+        <DetailField label="Cliente">{clienteLabel}</DetailField>
+        <DetailField label="Categoría">{CAT_LABELS[tx.category ?? ''] ?? tx.category ?? '—'}</DetailField>
+        <DetailField label="Descripción completa">{tx.description ?? '—'}</DetailField>
+        <DetailField label="Medio de pago original">{PM_LABELS[tx.payment_method ?? ''] ?? tx.payment_method ?? '—'}</DetailField>
+        <DetailField label="Fecha de acreditación estimada">{formatDate(p.settlementDate.toISOString().slice(0, 10))}</DetailField>
+      </div>
+    </div>
+  )
+}
+
 function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: string }) {
   const { currentTenant } = useAuth()
   const [y, m] = month.split('-').map(Number)
   const { data: balance, isLoading: balanceLoading } = useMonthlyBalances(y, m)
   const { data: settings = null } = useTenantPaymentSettings()
   const { data: holidays = [] } = useHolidays()
+  const { data: tenantUsers } = useAllTenantUsers()
+  const usersMap = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const u of tenantUsers ?? []) map.set(u.id, u.full_name)
+    return map
+  }, [tenantUsers])
+  const [expandedAcredId, setExpandedAcredId] = useState<string | null>(null)
 
   const prevY = m === 1 ? y - 1 : y
   const prevM = m === 1 ? 12 : m - 1
@@ -1841,6 +1874,7 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
                   <table className="w-full text-xs">
                     <thead>
                       <tr className="border-b text-left text-muted-foreground">
+                        <th className="w-6 pb-1.5"></th>
                         <th className="pb-1.5 font-medium">Fecha</th>
                         <th className="pb-1.5 font-medium">Concepto</th>
                         <th className="pb-1.5 font-medium text-right">Monto</th>
@@ -1851,17 +1885,38 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
                     <tbody>
                       {[...cardPending]
                         .sort((a, b) => a.settlementDate.getTime() - b.settlementDate.getTime())
-                        .map((p: PendingSettlement) => (
-                          <tr key={p.transaction.id} className="border-b border-dashed last:border-0">
-                            <td className="py-1.5 text-muted-foreground">{formatDate(p.transaction.date)}</td>
-                            <td className="py-1.5 max-w-[120px] truncate">{p.transaction.description}</td>
-                            <td className="py-1.5 text-right tabular-nums text-green-700">+{formatCurrency(p.transaction.amount)}</td>
-                            <td className="py-1.5 text-right tabular-nums">{formatDate(p.settlementDate.toISOString().slice(0, 10))}</td>
-                            <td className="py-1.5 text-right tabular-nums text-amber-600 font-medium">
-                              {p.daysUntilSettlement}d
-                            </td>
-                          </tr>
-                        ))}
+                        .map((p: PendingSettlement) => {
+                          const isExpanded = expandedAcredId === p.transaction.id
+                          return (
+                            <Fragment key={p.transaction.id}>
+                              <tr
+                                className="border-b border-dashed last:border-0 hover:bg-gray-50/50 cursor-pointer"
+                                onClick={() => setExpandedAcredId((prev) => (prev === p.transaction.id ? null : p.transaction.id))}
+                              >
+                                <td className="py-1.5 text-center">
+                                  <ChevronRight className={cn(
+                                    'w-3 h-3 text-muted-foreground transition-transform duration-200 inline-block',
+                                    isExpanded && 'rotate-90',
+                                  )} />
+                                </td>
+                                <td className="py-1.5 text-muted-foreground">{formatDate(p.transaction.date)}</td>
+                                <td className="py-1.5 max-w-[120px] truncate">{p.transaction.description}</td>
+                                <td className="py-1.5 text-right tabular-nums text-green-700">+{formatCurrency(p.transaction.amount)}</td>
+                                <td className="py-1.5 text-right tabular-nums">{formatDate(p.settlementDate.toISOString().slice(0, 10))}</td>
+                                <td className="py-1.5 text-right tabular-nums text-amber-600 font-medium">
+                                  {p.daysUntilSettlement}d
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="border-b border-dashed last:border-0 bg-gray-50/40">
+                                  <td colSpan={6} className="px-1 py-2">
+                                    <AcreditacionDetailPanel p={p} usersMap={usersMap} />
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          )
+                        })}
                     </tbody>
                   </table>
                 </div>
