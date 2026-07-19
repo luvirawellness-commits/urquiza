@@ -116,6 +116,9 @@ export interface Transaction {
   appointment_id?: string
   client_id?: string
   is_cashflow_only?: boolean
+  employee_user_id?: string | null
+  salary_period_year?: number | null
+  salary_period_month?: number | null
 }
 
 export interface DashboardMetrics {
@@ -266,6 +269,9 @@ export interface SupplierInvoice {
   created_at: string
   updated_at?: string | null
   supplier_invoice_payments?: SupplierInvoicePayment[] | null
+  employee_user_id?: string | null
+  salary_period_year?: number | null
+  salary_period_month?: number | null
 }
 
 export interface SalaryIncrease {

@@ -44,6 +44,9 @@ type CreateInvoiceInput = {
   issue_date: string
   due_date: string
   userId: string
+  employee_user_id?: string | null
+  salary_period_year?: number | null
+  salary_period_month?: number | null
 }
 
 export function useCreateSupplierInvoice() {
@@ -63,6 +66,9 @@ export function useCreateSupplierInvoice() {
           issue_date: input.issue_date,
           due_date: input.due_date,
           status: 'pending',
+          employee_user_id: input.employee_user_id ?? null,
+          salary_period_year: input.salary_period_year ?? null,
+          salary_period_month: input.salary_period_month ?? null,
         })
         .select()
         .single()
@@ -85,6 +91,9 @@ export function useCreateSupplierInvoice() {
           status: 'pending',
           is_recurring: false,
           payment_method: 'transfer',
+          employee_user_id: input.employee_user_id ?? null,
+          salary_period_year: input.salary_period_year ?? null,
+          salary_period_month: input.salary_period_month ?? null,
         })
         .select()
         .single()
@@ -118,6 +127,9 @@ type MarkPaidInput = {
   category: string
   description: string
   userId: string
+  employeeUserId?: string | null
+  salaryPeriodYear?: number | null
+  salaryPeriodMonth?: number | null
 }
 
 export function useMarkInvoicePaid() {
@@ -158,6 +170,9 @@ export function useMarkInvoicePaid() {
           payment_method: split.paymentMethod,
           status: 'paid',
           is_cashflow_only: true,
+          employee_user_id: input.employeeUserId ?? null,
+          salary_period_year: input.salaryPeriodYear ?? null,
+          salary_period_month: input.salaryPeriodMonth ?? null,
         })))
         .select('id')
       if (txError) throw txError

@@ -580,6 +580,81 @@ export function useUpdateCCSSStatus() {
   })
 }
 
+// ── Salary payments (sueldos ya abonados en el período) ─────────────────────
+
+export type SalaryPayment = {
+  id: string
+  employee_user_id: string
+  amount: number
+  date: string
+  description: string
+}
+
+const SALARY_PAYMENT_CATEGORIES = ['salary_operativo', 'salary_admin', 'salary_advance_operativo', 'salary_advance_admin']
+
+export function useSalaryPayments(year: number, month: number) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['salary-payments', tenantId, year, month],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('transactions')
+        .select('id, employee_user_id, amount, date, description')
+        .eq('tenant_id', tenantId)
+        .eq('salary_period_year', year)
+        .eq('salary_period_month', month)
+        .eq('status', 'paid')
+        .in('category', SALARY_PAYMENT_CATEGORIES)
+        .not('employee_user_id', 'is', null)
+        .order('date', { ascending: true })
+      if (error) throw error
+      return (data ?? []) as SalaryPayment[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+type RegisterSalaryPaymentInput = {
+  employee_user_id: string
+  amount: number
+  category: 'salary_operativo' | 'salary_admin'
+  payment_method: string
+  date: string
+  description: string
+  user_id: string
+  salary_period_year: number
+  salary_period_month: number
+}
+
+export function useRegisterSalaryPayment() {
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: async (input: RegisterSalaryPaymentInput) => {
+      const { error } = await supabase.from('transactions').insert({
+        tenant_id: tenantId,
+        type: 'expense',
+        category: input.category,
+        amount: input.amount,
+        description: input.description,
+        date: input.date,
+        user_id: input.user_id,
+        status: 'paid',
+        is_recurring: false,
+        payment_method: input.payment_method,
+        employee_user_id: input.employee_user_id,
+        salary_period_year: input.salary_period_year,
+        salary_period_month: input.salary_period_month,
+      })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['salary-payments'] })
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+    },
+  })
+}
+
 export function useCreateHoliday() {
   const tenantId = useTenantId()
   const qc = useQueryClient()

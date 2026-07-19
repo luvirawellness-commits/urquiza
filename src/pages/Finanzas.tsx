@@ -84,6 +84,8 @@ const EXPENSE_CATEGORIES_CAJA = [
   { value: 'utilities', label: 'Servicios (agua, luz, internet, alarma)' },
   { value: 'salary_operativo', label: 'Sueldos Operativos (masoterapeutas, recepción, yoga)' },
   { value: 'salary_admin', label: 'Sueldos Administrativos (gestión, administración)' },
+  { value: 'salary_advance_operativo', label: '💸 Adelanto Sueldo Op.' },
+  { value: 'salary_advance_admin', label: '💸 Adelanto Sueldo Admin.' },
   { value: 'social_charges', label: 'Cargas Sociales (CCSS)' },
   { value: 'marketing', label: 'Marketing y Publicidad' },
   { value: 'management', label: 'Gestión (sistemas, contador)' },
@@ -111,6 +113,7 @@ const CAT_LABELS: Record<string, string> = {
   royalty: 'Royalty', aguinaldo: 'Aguinaldo', vacaciones: 'Vacaciones',
   withdrawal: 'Retiro Socios', cash_transfer: 'Depósito Caja', other: 'Otros',
   internal_transfer: '🔄 Transferencia interna',
+  salary_advance_operativo: '💸 Adelanto Sueldo Op.', salary_advance_admin: '💸 Adelanto Sueldo Admin.',
 }
 
 const MOV_TIPO_OPTS = [
@@ -142,8 +145,10 @@ const MOV_CAT_OPTS = [
   { value: 'other',      label: 'Otros' },
 ]
 
-const SUELDOS_CATS = ['salary_operativo', 'salary_admin', 'salary', 'social_charges']
+const SUELDOS_CATS = ['salary_operativo', 'salary_admin', 'salary', 'social_charges', 'salary_advance_operativo', 'salary_advance_admin']
 const CARD_MEDIOS  = ['credit', 'debit']
+const SALARY_LINK_CATEGORIES = ['salary_operativo', 'salary_admin', 'salary_advance_operativo', 'salary_advance_admin']
+const SALARY_YEAR_OPTIONS = [2024, 2025, 2026, 2027]
 
 const selectCls = 'w-full border border-input rounded-md px-3 py-2 text-sm bg-background focus:outline-none focus:ring-2 focus:ring-plum-800 focus:ring-offset-0'
 
@@ -342,15 +347,66 @@ function SectionRegistrarCobro() {
   )
 }
 
+// ── Empleado + Período (para categorías de sueldo) ──────────────────────────────
+
+function EmpleadoPeriodoFields({
+  employeeId, setEmployeeId, periodYear, setPeriodYear, periodMonth, setPeriodMonth,
+}: {
+  employeeId: string; setEmployeeId: (v: string) => void
+  periodYear: number; setPeriodYear: (v: number) => void
+  periodMonth: number; setPeriodMonth: (v: number) => void
+}) {
+  const { data: tenantUsers } = useAllTenantUsers()
+
+  return (
+    <div className="space-y-2 border rounded-md p-3 bg-gray-50/50">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <Label>Empleado</Label>
+          <select className={selectCls} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)}>
+            <option value="">Sin asignar</option>
+            {(tenantUsers ?? []).map((u) => (
+              <option key={u.id} value={u.id}>{u.full_name}</option>
+            ))}
+          </select>
+        </div>
+        <div className="space-y-1">
+          <Label>Período</Label>
+          <div className="flex gap-2">
+            <select className={selectCls} value={periodMonth} onChange={(e) => setPeriodMonth(Number(e.target.value))}>
+              {MONTHS_ES.map((m, i) => (
+                <option key={m} value={i + 1}>{m}</option>
+              ))}
+            </select>
+            <select className={selectCls} value={periodYear} onChange={(e) => setPeriodYear(Number(e.target.value))}>
+              {SALARY_YEAR_OPTIONS.map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+      </div>
+      <p className="text-xs text-muted-foreground">
+        Asignar empleado y período para que impacte en la liquidación mensual
+      </p>
+    </div>
+  )
+}
+
 // ── Section C ──────────────────────────────────────────────────────────────────
 function SectionGastosDelDia() {
   const { user } = useAuth()
+  const now = new Date()
   const [category, setCategory] = useState('supplies')
   const [proveedor, setProveedor] = useState('')
   const [description, setDescription] = useState('')
   const [amount, setAmount] = useState('')
   const [paymentMethod, setPaymentMethod] = useState('cash')
+  const [employeeId, setEmployeeId] = useState('')
+  const [periodYear, setPeriodYear] = useState(now.getFullYear())
+  const [periodMonth, setPeriodMonth] = useState(now.getMonth() + 1)
   const insertTx = useInsertTransaction()
+  const showSalaryFields = SALARY_LINK_CATEGORIES.includes(category)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -367,8 +423,11 @@ function SectionGastosDelDia() {
         user_id: user!.id,
         status: 'paid',
         is_recurring: false,
+        employee_user_id: showSalaryFields ? (employeeId || null) : null,
+        salary_period_year: showSalaryFields ? periodYear : null,
+        salary_period_month: showSalaryFields ? periodMonth : null,
       })
-      setProveedor(''); setDescription(''); setAmount(''); setCategory('supplies')
+      setProveedor(''); setDescription(''); setAmount(''); setCategory('supplies'); setEmployeeId('')
     } catch (_) { /* error shown below */ }
   }
 
@@ -397,6 +456,14 @@ function SectionGastosDelDia() {
                 onChange={(e) => setProveedor(e.target.value)} />
             </div>
           </div>
+
+          {showSalaryFields && (
+            <EmpleadoPeriodoFields
+              employeeId={employeeId} setEmployeeId={setEmployeeId}
+              periodYear={periodYear} setPeriodYear={setPeriodYear}
+              periodMonth={periodMonth} setPeriodMonth={setPeriodMonth}
+            />
+          )}
 
           <div className="space-y-1">
             <Label>Descripción</Label>
@@ -964,8 +1031,9 @@ function TabMovimientos() {
   }, [rawTxs, tipoFilter, medioFilter, catFilter])
 
   const totals = useMemo(() => {
-    const ingresos = txs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)
-    const egresos  = txs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+    const realTxs = txs.filter((t) => t.category !== 'internal_transfer')
+    const ingresos = realTxs.filter((t) => t.type === 'income').reduce((s, t) => s + t.amount, 0)
+    const egresos  = realTxs.filter((t) => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
     return { ingresos, egresos, saldo: ingresos - egresos }
   }, [txs])
 
@@ -1278,10 +1346,10 @@ function computePLMonth(
   appointments: { service_id: string; duration_minutes: number }[],
   costItems: ServiceCostItem[],
 ): PLNumericFields {
-  const inc = txs.filter((t) => t.type === 'income')
+  const inc = txs.filter((t) => t.type === 'income' && t.category !== 'internal_transfer')
   const exp = txs.filter(
     (t) => t.type === 'expense'
-      && !['cash_transfer', 'withdrawal'].includes(t.category ?? '')
+      && !['cash_transfer', 'withdrawal', 'internal_transfer'].includes(t.category ?? '')
       && !t.is_cashflow_only, // exclude paid-split transactions; the P&L impact is the original invoice transaction
   )
   const sum = (arr: Transaction[]) => arr.reduce((s, t) => s + t.amount, 0)
@@ -1304,13 +1372,13 @@ function computePLMonth(
   }, 0)
   const cmvReal = sum(exp.filter((t) => t.category === 'supplies'))
   const diferenciaCMV = cmvReal - cmvTeorico
-  const costoOperativo = sum(exp.filter((t) => ['salary_operativo', 'salary', 'social_charges'].includes(t.category ?? '')))
+  const costoOperativo = sum(exp.filter((t) => ['salary_operativo', 'salary', 'social_charges', 'salary_advance_operativo'].includes(t.category ?? '')))
   const aguinaldo = sum(exp.filter((t) => t.category === 'aguinaldo'))
   const vacaciones = sum(exp.filter((t) => t.category === 'vacaciones'))
   const costoVentaTotal = cmvReal + costoOperativo + aguinaldo + vacaciones
   const utilidadBruta = totalIngresos - costoVentaTotal
 
-  const sueldoAdmin = sum(exp.filter((t) => t.category === 'salary_admin'))
+  const sueldoAdmin = sum(exp.filter((t) => ['salary_admin', 'salary_advance_admin'].includes(t.category ?? '')))
   const alquiler = sum(exp.filter((t) => t.category === 'rent'))
   const servicios = sum(exp.filter((t) => t.category === 'utilities'))
   const gestion = sum(exp.filter((t) => t.category === 'management'))
@@ -1982,7 +2050,7 @@ function TabPL() {
 
   const panels = useMemo(() => {
     if (periodType !== 'monthly' || !txs || txs.length === 0) return null
-    const inc = txs.filter((t) => t.type === 'income')
+    const inc = txs.filter((t) => t.type === 'income' && t.category !== 'internal_transfer')
     const sum = (arr: typeof txs) => arr.reduce((s, t) => s + t.amount, 0)
     const weeks = [
       { label: 'Semana 1', from: 1, to: 7 },
@@ -1993,7 +2061,7 @@ function TabPL() {
     const cashFlow = weeks.map((w) => {
       const inW = sum(txs.filter((t) => {
         const d = parseInt(t.date.split('-')[2])
-        return t.type === 'income' && d >= w.from && d <= w.to
+        return t.type === 'income' && t.category !== 'internal_transfer' && d >= w.from && d <= w.to
       }))
       const exW = sum(txs.filter((t) => {
         const d = parseInt(t.date.split('-')[2])
@@ -2001,7 +2069,7 @@ function TabPL() {
         // splits are flagged is_cashflow_only. A 'pending' invoice's own P&L
         // transaction has neither, so it's correctly excluded from cash flow.
         const cashImpacting = t.status == null || t.is_cashflow_only === true
-        return t.type === 'expense' && d >= w.from && d <= w.to && cashImpacting
+        return t.type === 'expense' && t.category !== 'internal_transfer' && d >= w.from && d <= w.to && cashImpacting
       }))
       return { label: w.label, ingresos: inW, egresos: exW, saldo: inW - exW }
     })
@@ -2424,7 +2492,7 @@ function TabCashFlow() {
 
   const panels = useMemo(() => {
     if (periodType !== 'monthly' || !txs || txs.length === 0) return null
-    const inc = txs.filter((t) => t.type === 'income')
+    const inc = txs.filter((t) => t.type === 'income' && t.category !== 'internal_transfer')
     const sum = (arr: typeof txs) => arr.reduce((s, t) => s + t.amount, 0)
     const weeks = [
       { label: 'Semana 1', from: 1, to: 7 },
@@ -2435,7 +2503,7 @@ function TabCashFlow() {
     const cashFlow = weeks.map((w) => {
       const inW = sum(txs.filter((t) => {
         const d = parseInt(t.date.split('-')[2])
-        return t.type === 'income' && d >= w.from && d <= w.to
+        return t.type === 'income' && t.category !== 'internal_transfer' && d >= w.from && d <= w.to
       }))
       const exW = sum(txs.filter((t) => {
         const d = parseInt(t.date.split('-')[2])
@@ -2443,7 +2511,7 @@ function TabCashFlow() {
         // splits are flagged is_cashflow_only. A 'pending' invoice's own P&L
         // transaction has neither, so it's correctly excluded from cash flow.
         const cashImpacting = t.status == null || t.is_cashflow_only === true
-        return t.type === 'expense' && d >= w.from && d <= w.to && cashImpacting
+        return t.type === 'expense' && t.category !== 'internal_transfer' && d >= w.from && d <= w.to && cashImpacting
       }))
       return { label: w.label, ingresos: inW, egresos: exW, saldo: inW - exW }
     })
@@ -3278,6 +3346,7 @@ function TabProveedores() {
 
   // New invoice modal
   const [showNew, setShowNew] = useState(false)
+  const nowForNewForm = new Date()
   const [newForm, setNewForm] = useState({
     supplier_name: '',
     invoice_number: '',
@@ -3286,6 +3355,9 @@ function TabProveedores() {
     amount: '',
     issue_date: today,
     due_date: '',
+    employee_user_id: '',
+    salary_period_year: nowForNewForm.getFullYear(),
+    salary_period_month: nowForNewForm.getMonth() + 1,
   })
   const [newError, setNewError] = useState<string | null>(null)
   const [newBusy, setNewBusy] = useState(false)
@@ -3354,7 +3426,12 @@ function TabProveedores() {
   }, [invoicesRaw, today])
 
   function resetNewForm() {
-    setNewForm({ supplier_name: '', invoice_number: '', description: '', category: 'supplies', amount: '', issue_date: today, due_date: '' })
+    const n = new Date()
+    setNewForm({
+      supplier_name: '', invoice_number: '', description: '', category: 'supplies',
+      amount: '', issue_date: today, due_date: '',
+      employee_user_id: '', salary_period_year: n.getFullYear(), salary_period_month: n.getMonth() + 1,
+    })
     setNewError(null)
   }
 
@@ -3366,6 +3443,7 @@ function TabProveedores() {
     if (!newForm.due_date) { setNewError('La fecha de vencimiento es requerida.'); return }
     setNewBusy(true)
     try {
+      const isSalaryCategory = SALARY_LINK_CATEGORIES.includes(newForm.category)
       await createInvoice.mutateAsync({
         supplier_name: newForm.supplier_name.trim(),
         invoice_number: newForm.invoice_number.trim() || undefined,
@@ -3375,6 +3453,9 @@ function TabProveedores() {
         issue_date: newForm.issue_date,
         due_date: newForm.due_date,
         userId: profile?.id ?? '',
+        employee_user_id: isSalaryCategory ? (newForm.employee_user_id || null) : null,
+        salary_period_year: isSalaryCategory ? newForm.salary_period_year : null,
+        salary_period_month: isSalaryCategory ? newForm.salary_period_month : null,
       })
       setShowNew(false)
       resetNewForm()
@@ -3404,6 +3485,9 @@ function TabProveedores() {
         category: payInvoice.category,
         description: desc,
         userId: user.id,
+        employeeUserId: payInvoice.employee_user_id ?? null,
+        salaryPeriodYear: payInvoice.salary_period_year ?? null,
+        salaryPeriodMonth: payInvoice.salary_period_month ?? null,
       })
       setPayInvoice(null)
     } catch (e: unknown) {
@@ -3699,6 +3783,18 @@ function TabProveedores() {
                   ))}
                 </select>
               </div>
+              {SALARY_LINK_CATEGORIES.includes(newForm.category) && (
+                <div className="col-span-2">
+                  <EmpleadoPeriodoFields
+                    employeeId={newForm.employee_user_id}
+                    setEmployeeId={(v) => setNewForm({ ...newForm, employee_user_id: v })}
+                    periodYear={newForm.salary_period_year}
+                    setPeriodYear={(v) => setNewForm({ ...newForm, salary_period_year: v })}
+                    periodMonth={newForm.salary_period_month}
+                    setPeriodMonth={(v) => setNewForm({ ...newForm, salary_period_month: v })}
+                  />
+                </div>
+              )}
               <div className="space-y-1.5">
                 <Label>Fecha de emisión *</Label>
                 <Input

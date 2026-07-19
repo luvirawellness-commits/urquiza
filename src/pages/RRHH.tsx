@@ -18,10 +18,11 @@ import {
   useSalaryIncreases, useBonusPayments, useVacationRecords,
   useCreateSalaryIncrease, useRegisterBonusPayment, useRegisterVacationPayment,
   useEmployeeWeeklySchedules, useUpsertWeeklySchedule, useAppointmentsByDay, useEmployeeWeeklySchedulesMonth,
+  useSalaryPayments, useRegisterSalaryPayment,
   calcMonthScheduleHours, calcHolidayBonus,
   JS_DAY_TO_SCHEDULE_KEY,
   type JobPosition, type EmployeeProfile, type EmployeeCCSS, type Holiday, type HolidayDetail,
-  type WeeklySchedule, type SalaryIncrease, type EmployeeWeeklySchedule,
+  type WeeklySchedule, type SalaryIncrease, type EmployeeWeeklySchedule, type SalaryPayment,
 } from '@/hooks/useRRHH'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -31,7 +32,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription,
 } from '@/components/ui/dialog'
-import { cn, MONTHS_ES, exportToExcel } from '@/lib/utils'
+import { cn, MONTHS_ES, exportToExcel, formatDate } from '@/lib/utils'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -786,12 +787,47 @@ function CcssSection({ card, yearMonth }: { card: CardData; yearMonth: string })
   )
 }
 
-function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMonth: string }) {
+function EmployeeLiquidacionCard({
+  card, yearMonth, year, month, payments,
+}: {
+  card: CardData; yearMonth: string; year: number; month: number; payments: SalaryPayment[]
+}) {
   const emp = card.emp
   const isHourly = emp.position?.contract_type === 'hourly'
   const cardRef = useRef<HTMLDivElement>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const [pdfLoading, setPdfLoading] = useState(false)
+  const { user } = useAuth()
+  const registerPayment = useRegisterSalaryPayment()
+  const [payMethod, setPayMethod] = useState('transfer')
+  const [payBusy, setPayBusy] = useState(false)
+  const [payError, setPayError] = useState<string | null>(null)
+
+  const yaAbonado = payments.reduce((s, p) => s + p.amount, 0)
+  const saldoPendiente = Math.max(0, Math.round((card.subtotal - yaAbonado) * 100) / 100)
+
+  async function handleMarcarPagado() {
+    if (!user || saldoPendiente <= 0) return
+    setPayBusy(true)
+    setPayError(null)
+    try {
+      await registerPayment.mutateAsync({
+        employee_user_id: emp.user_id,
+        amount: saldoPendiente,
+        category: isHourly ? 'salary_operativo' : 'salary_admin',
+        payment_method: payMethod,
+        date: getArgentinaDateString(),
+        description: `Liquidación ${MONTHS_ES[month - 1]} ${year}: ${emp.user?.full_name ?? ''}`,
+        user_id: user.id,
+        salary_period_year: year,
+        salary_period_month: month,
+      })
+    } catch (e) {
+      setPayError(e instanceof Error ? e.message : 'Error al registrar el pago')
+    } finally {
+      setPayBusy(false)
+    }
+  }
 
   async function downloadPDF() {
     if (!cardRef.current) return
@@ -958,6 +994,60 @@ function EmployeeLiquidacionCard({ card, yearMonth }: { card: CardData; yearMont
           </div>
         </div>
 
+        {/* Ya abonado / Saldo pendiente */}
+        <div className="space-y-1.5 border-t pt-3">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Pagos del período</p>
+          <div className="space-y-1 text-sm">
+            {yaAbonado > 0 ? (
+              <div className="space-y-0.5">
+                <div className="flex justify-between text-red-600">
+                  <span>Ya abonado</span>
+                  <span className="tabular-nums font-medium">-{fmtARS(yaAbonado)}</span>
+                </div>
+                <div className="pl-3 space-y-0.5">
+                  {payments.map(p => (
+                    <div key={p.id} className="flex justify-between text-xs text-muted-foreground">
+                      <span>{formatDate(p.date)} · {p.description}</span>
+                      <span className="tabular-nums">{fmtARS(p.amount)}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between text-muted-foreground">
+                <span>Ya abonado</span>
+                <span className="tabular-nums">{fmtARS(0)}</span>
+              </div>
+            )}
+            <div className="flex justify-between font-semibold border-t pt-1">
+              <span>Saldo pendiente</span>
+              <span className="tabular-nums text-plum-800">{fmtARS(saldoPendiente)}</span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 pt-1">
+            <select
+              className="text-xs border border-gray-200 rounded px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-plum-500"
+              value={payMethod}
+              onChange={(e) => setPayMethod(e.target.value)}
+              disabled={saldoPendiente <= 0 || payBusy}
+            >
+              {RRHH_PAYMENT_METHODS.map(m => (
+                <option key={m.value} value={m.value}>{m.label}</option>
+              ))}
+            </select>
+            <Button
+              size="sm"
+              onClick={handleMarcarPagado}
+              disabled={saldoPendiente <= 0 || payBusy}
+              className="bg-plum-800 hover:bg-plum-700 text-white"
+            >
+              {payBusy ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : null}
+              Marcar como pagado
+            </Button>
+          </div>
+          {payError && <p className="text-xs text-red-600">{payError}</p>}
+        </div>
+
         <CcssSection card={card} yearMonth={yearMonth} />
       </CardContent>
     </Card>
@@ -999,8 +1089,9 @@ function LiquidacionTab() {
   const { data: ccssData = [], isLoading: ccssLoading } = useCCSSByMonth(yearMonth)
   const { data: holidays = [], isLoading: holLoading } = useHolidaysForMonth(yearMonth)
   const { data: weeklyScheduleMonth, isLoading: wsLoading } = useEmployeeWeeklySchedulesMonth(year, month)
+  const { data: salaryPayments = [], isLoading: paymentsLoading } = useSalaryPayments(year, month)
 
-  const isLoading = empLoading || apptLoading || absLoading || ccssLoading || holLoading || wsLoading
+  const isLoading = empLoading || apptLoading || absLoading || ccssLoading || holLoading || wsLoading || paymentsLoading
 
   const activeEmployees = employees.filter(e => e.active)
   const schedules = weeklyScheduleMonth?.schedules ?? []
@@ -1055,7 +1146,14 @@ function LiquidacionTab() {
       ) : (
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
           {cards.map(card => (
-            <EmployeeLiquidacionCard key={card.emp.id} card={card} yearMonth={yearMonth} />
+            <EmployeeLiquidacionCard
+              key={card.emp.id}
+              card={card}
+              yearMonth={yearMonth}
+              year={year}
+              month={month}
+              payments={salaryPayments.filter(p => p.employee_user_id === card.emp.user_id)}
+            />
           ))}
         </div>
       )}

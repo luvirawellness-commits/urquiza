@@ -65,7 +65,7 @@ export function useTodayMetrics() {
     queryFn: async () => {
       let txQuery = supabase
         .from('transactions')
-        .select('amount, payment_method, type')
+        .select('amount, payment_method, type, category')
         .eq('tenant_id', tenantId)
         .eq('status', 'paid')
 
@@ -87,7 +87,7 @@ export function useTodayMetrics() {
 
       const allTx = txRes.data ?? []
       const totalCobrado = allTx
-        .filter((t) => t.type === 'income')
+        .filter((t) => t.type === 'income' && t.category !== 'internal_transfer')
         .reduce((s, t) => s + (t.amount ?? 0), 0)
       const cashIncome = allTx
         .filter((t) => t.payment_method === 'cash' && t.type === 'income')
@@ -119,6 +119,9 @@ type InsertTransactionInput = {
   status: string
   is_recurring: boolean
   appointment_id?: string
+  employee_user_id?: string | null
+  salary_period_year?: number | null
+  salary_period_month?: number | null
 }
 
 export function useInsertTransaction() {
@@ -270,6 +273,7 @@ export function useDashboardMetrics() {
           .eq('tenant_id', tenantId)
           .eq('type', 'income')
           .eq('status', 'paid')
+          .neq('category', 'internal_transfer')
           .gte('date', monthStart)
           .lte('date', today),
         supabase
