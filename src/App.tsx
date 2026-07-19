@@ -6,6 +6,7 @@ import { Toaster } from '@/components/ui/toaster'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { AppLayout } from '@/components/layout/AppLayout'
 import Auth from '@/pages/Auth'
+import ResetPassword from '@/pages/ResetPassword'
 import Dashboard from '@/pages/Dashboard'
 import Clientes from '@/pages/Clientes'
 import Agenda from '@/pages/Agenda'
@@ -41,6 +42,7 @@ export default function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/auth" element={<Auth />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/registro" element={<Registro />} />
             <Route path="/aceptar-terminos" element={<AceptarTerminos />} />
             <Route path="/pago" element={<Pago />} />

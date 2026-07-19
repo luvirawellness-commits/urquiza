@@ -1,10 +1,11 @@
 import { useState, Fragment } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Building2, ChevronDown, ChevronUp, Users, Eye, EyeOff, Copy, Wrench } from 'lucide-react'
+import { Loader2, Building2, ChevronDown, ChevronUp, Users, Eye, EyeOff, Copy, Wrench, KeyRound } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Tenant } from '@/types'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import ResetPasswordModal from '@/components/ResetPasswordModal'
 import { cn } from '@/lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -82,6 +83,7 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
   const [savingId, setSavingId] = useState<string | null>(null)
   const [savedId, setSavedId] = useState<string | null>(null)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const [resetUser, setResetUser] = useState<TenantUser | null>(null)
 
   const { data: users = [], isLoading } = useQuery({
     queryKey: ['sa-tenant-users', tenantId],
@@ -144,7 +146,8 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
             <th className="text-left pb-2 pr-6 font-medium">Nombre</th>
             <th className="text-left pb-2 pr-6 font-medium">Email</th>
             <th className="text-left pb-2 pr-6 font-medium">Rol actual</th>
-            <th className="text-left pb-2 font-medium">Cambiar rol</th>
+            <th className="text-left pb-2 pr-6 font-medium">Cambiar rol</th>
+            <th className="text-left pb-2 font-medium">Contraseña</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-amber-100">
@@ -157,7 +160,7 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
                   {ASSIGNABLE_ROLES.find((r) => r.value === u.role)?.label ?? u.role}
                 </span>
               </td>
-              <td className="py-2.5">
+              <td className="py-2.5 pr-6">
                 <div className="flex items-center gap-2">
                   <select
                     value={u.role}
@@ -174,6 +177,17 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
                   {errors[u.id] && <span className="text-xs text-red-600 flex-shrink-0">{errors[u.id]}</span>}
                 </div>
               </td>
+              <td className="py-2.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="text-xs h-7 px-2.5"
+                  onClick={() => setResetUser(u)}
+                >
+                  <KeyRound className="w-3.5 h-3.5 mr-1.5" />
+                  Resetear contraseña
+                </Button>
+              </td>
             </tr>
           ))}
         </tbody>
@@ -181,6 +195,9 @@ function TenantUsersPanel({ tenantId }: { tenantId: string }) {
       <p className="text-[11px] text-muted-foreground mt-3 italic">
         * Los cambios de rol toman efecto la próxima vez que el usuario inicie sesión.
       </p>
+      {resetUser && (
+        <ResetPasswordModal targetUser={resetUser} onClose={() => setResetUser(null)} />
+      )}
     </div>
   )
 }

@@ -4,11 +4,12 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, ChevronDown, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
-  Plus, CheckCircle2, Pencil, Trash2,
+  Plus, CheckCircle2, Pencil, Trash2, ArrowLeftRight,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
+import { useToast } from '@/hooks/useToast'
 import { useClients } from '@/hooks/useClients'
 import { useServices } from '@/hooks/useAppointments'
 import {
@@ -109,6 +110,7 @@ const CAT_LABELS: Record<string, string> = {
   bank_fees: 'Gastos Bancarios', maintenance: 'Mantenimiento', depreciation: 'Depreciación',
   royalty: 'Royalty', aguinaldo: 'Aguinaldo', vacaciones: 'Vacaciones',
   withdrawal: 'Retiro Socios', cash_transfer: 'Depósito Caja', other: 'Otros',
+  internal_transfer: '🔄 Transferencia interna',
 }
 
 const MOV_TIPO_OPTS = [
@@ -136,6 +138,7 @@ const MOV_CAT_OPTS = [
   { value: 'vacaciones', label: 'Vacaciones' },
   { value: 'royalty',    label: 'Royalty' },
   { value: 'marketing',  label: 'Marketing' },
+  { value: 'internal_transfer', label: 'Transferencia interna' },
   { value: 'other',      label: 'Otros' },
 ]
 
@@ -2179,9 +2182,159 @@ function TabPL() {
   )
 }
 
+// ── Transferencia interna ────────────────────────────────────────────────────
+
+const WALLET_OPTIONS = [
+  { value: 'cash', label: '💵 Cajón' },
+  { value: 'safe', label: '🔒 Caja fuerte' },
+  { value: 'transfer', label: '🏦 Transferencias' },
+  { value: 'qr', label: '💳 QR / Tarjetas' },
+]
+
+function TransferenciaInternaModal({ onClose }: { onClose: () => void }) {
+  const { user } = useAuth()
+  const tenantId = useTenantId()
+  const qc = useQueryClient()
+  const { toast } = useToast()
+
+  const [origen, setOrigen] = useState<string>(WALLET_OPTIONS[0].value)
+  const [destino, setDestino] = useState<string>(WALLET_OPTIONS[1].value)
+  const [monto, setMonto] = useState('')
+  const [fecha, setFecha] = useState(getArgentinaDateString())
+  const [descripcion, setDescripcion] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const montoNum = Number(monto) || 0
+  const canSubmit = !busy && origen !== destino && montoNum > 0 && !!fecha
+
+  async function handleConfirm() {
+    setBusy(true)
+    setError(null)
+    try {
+      const description = `Transferencia interna: ${PM_LABELS[origen]} → ${PM_LABELS[destino]}${descripcion ? ` · ${descripcion}` : ''}`
+      const { error } = await supabase.rpc('create_internal_transfer', {
+        p_tenant_id: tenantId,
+        p_user_id: user?.id,
+        p_from_method: origen,
+        p_to_method: destino,
+        p_amount: montoNum,
+        p_date: fecha,
+        p_description: description,
+      })
+      if (error) throw new Error(error.message || 'Error al registrar la transferencia')
+
+      qc.invalidateQueries({ queryKey: ['transactions'] })
+      qc.invalidateQueries({ queryKey: ['today-metrics'] })
+      qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
+      toast({ description: 'Transferencia interna registrada correctamente' })
+      onClose()
+    } catch (e) {
+      setError((e as Error).message || 'Error al registrar la transferencia')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Transferencia interna</DialogTitle>
+          <DialogDescription>
+            Registrá un movimiento entre medios de pago del mismo local
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Desde</Label>
+              <select
+                className={selectCls}
+                value={origen}
+                onChange={(e) => setOrigen(e.target.value)}
+              >
+                {WALLET_OPTIONS.map((w) => (
+                  <option key={w.value} value={w.value}>{w.label}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label>Hacia</Label>
+              <select
+                className={selectCls}
+                value={destino}
+                onChange={(e) => setDestino(e.target.value)}
+              >
+                {WALLET_OPTIONS.map((w) => (
+                  <option key={w.value} value={w.value} disabled={w.value === origen}>
+                    {w.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {origen === destino && (
+            <p className="text-xs text-red-600">El medio de destino no puede ser igual al de origen</p>
+          )}
+
+          <div className="space-y-1">
+            <Label>Monto</Label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">$</span>
+              <Input
+                type="number"
+                min="0"
+                step="0.01"
+                className="pl-6"
+                value={monto}
+                onChange={(e) => setMonto(e.target.value)}
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <Label>Fecha</Label>
+            <input
+              type="date"
+              value={fecha}
+              onChange={(e) => setFecha(e.target.value)}
+              className={selectCls}
+            />
+          </div>
+
+          <div className="space-y-1">
+            <Label>Descripción (opcional)</Label>
+            <Input
+              value={descripcion}
+              onChange={(e) => setDescripcion(e.target.value)}
+              placeholder="ej: Depósito de efectivo a cuenta"
+            />
+          </div>
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+
+          <div className="flex gap-2 pt-2">
+            <Button onClick={handleConfirm} disabled={!canSubmit} className="flex-1">
+              {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+              Registrar transferencia
+            </Button>
+            <Button variant="outline" onClick={onClose} disabled={busy}>
+              Cancelar
+            </Button>
+          </div>
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 // ── Tab Cash Flow ────────────────────────────────────────────────────────────
 
 function TabCashFlow() {
+  const { profile } = useAuth()
+  const [showTransferModal, setShowTransferModal] = useState(false)
   const now = new Date()
   const [periodType, setPeriodType] = useState<PeriodType>('monthly')
   const [year, setYear] = useState(now.getFullYear())
@@ -2323,7 +2476,17 @@ function TabCashFlow() {
             Marca
           </button>
         </div>
+        {profile?.role === 'owner' && (
+          <Button size="sm" variant="outline" onClick={() => setShowTransferModal(true)}>
+            <ArrowLeftRight className="w-3.5 h-3.5 mr-1.5" />
+            Transferir entre medios de pago
+          </Button>
+        )}
       </div>
+
+      {showTransferModal && (
+        <TransferenciaInternaModal onClose={() => setShowTransferModal(false)} />
+      )}
 
       {isLoading ? (
         <div className="flex justify-center py-16">

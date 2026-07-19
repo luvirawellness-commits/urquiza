@@ -1,5 +1,5 @@
 import { useState, useEffect, ElementType } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import ResetPasswordModal from '@/components/ResetPasswordModal'
 import { cn } from '@/lib/utils'
 import type { Tenant, UserProfile } from '@/types'
 import {
@@ -970,6 +971,7 @@ function TabUsuarios() {
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<UserWithTenants | undefined>()
   const [toastPassword, setToastPassword] = useState('')
+  const [resetUser, setResetUser] = useState<UserWithTenants | undefined>()
 
   function openCreate() { setEditing(undefined); setModalOpen(true) }
   function openEdit(u: UserWithTenants) { setEditing(u); setModalOpen(true) }
@@ -1099,6 +1101,17 @@ function TabUsuarios() {
                         <span title={tip}>
                           <Button
                             variant="ghost" size="icon"
+                            className="w-7 h-7 text-muted-foreground hover:text-plum-800"
+                            onClick={() => setResetUser(u)}
+                            disabled={!allowed}
+                            title="Resetear contraseña"
+                          >
+                            <KeyRound className="w-3.5 h-3.5" />
+                          </Button>
+                        </span>
+                        <span title={tip}>
+                          <Button
+                            variant="ghost" size="icon"
                             className="w-7 h-7 text-muted-foreground hover:text-red-600"
                             onClick={() => { if (confirm(`¿Desactivar a ${u.full_name}?`)) deactivateMutation.mutate(u.id) }}
                             disabled={!allowed || deactivateMutation.isPending}
@@ -1122,6 +1135,9 @@ function TabUsuarios() {
         </CardContent>
       </Card>
       <UserModal open={modalOpen} onClose={closeModal} onSuccess={handleUserCreated} user={editing} allTenants={assignableTenants} availableRoles={assignableRoles} />
+      {resetUser && (
+        <ResetPasswordModal targetUser={resetUser} onClose={() => setResetUser(undefined)} />
+      )}
     </div>
   )
 }
