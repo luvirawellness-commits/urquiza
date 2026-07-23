@@ -235,12 +235,13 @@ serve(async (req: Request) => {
         type: 'income',
         category: 'deposit',
         amount,
-        payment_method: 'mp',
+        payment_method: 'transfer',
         date: new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' }),
         appointment_id: appointment.id,
         description: `Seña online: ${service_name ?? 'Servicio'}`,
         status: 'paid',
         client_id,
+        user_id: therapist_id,
       })
 
       if (txErr) {
