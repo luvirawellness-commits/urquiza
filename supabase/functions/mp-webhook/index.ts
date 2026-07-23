@@ -139,6 +139,56 @@ serve(async (req: Request) => {
       return json({ received: true, status: payment.status })
     }
 
+    // Seña (deposit) payments for online bookings — separate flow from the
+    // subscription-plan payments below, so it's handled and returned first.
+    if (payment.metadata?.type === 'sena') {
+      const { appointment_id, tenant_id: senaTenantId, amount } = payment.metadata ?? {}
+      if (!appointment_id || !senaTenantId || !amount) {
+        console.error('Missing sena metadata:', payment.metadata)
+        return json({ error: 'Missing appointment_id, tenant_id or amount in metadata' }, 400)
+      }
+
+      const { data: appointment, error: apptFetchErr } = await supabase
+        .from('appointments')
+        .update({
+          status: 'pending',
+          deposit_paid: true,
+          deposit_amount: amount,
+          deposit_payment_id: String(payment.id),
+        })
+        .eq('id', appointment_id)
+        .eq('tenant_id', senaTenantId)
+        .select('id, service:services(name)')
+        .single()
+
+      if (apptFetchErr || !appointment) {
+        console.error('Appointment update error:', apptFetchErr)
+        return json({ error: apptFetchErr?.message ?? 'Appointment not found' }, 500)
+      }
+
+      const serviceName = (appointment as { service?: { name?: string } | null }).service?.name ?? 'Servicio'
+
+      const { error: txErr } = await supabase.from('transactions').insert({
+        tenant_id: senaTenantId,
+        type: 'income',
+        category: 'deposit',
+        amount,
+        payment_method: 'mp',
+        date: new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' }),
+        appointment_id,
+        description: `Seña online: ${serviceName}`,
+        status: 'paid',
+      })
+
+      if (txErr) {
+        console.error('Transaction insert error:', txErr)
+        return json({ error: txErr.message }, 500)
+      }
+
+      console.log('Sena confirmed:', { appointment_id, tenant_id: senaTenantId, amount })
+      return json({ received: true, appointment_id, deposit_paid: true })
+    }
+
     const { tenant_id, plan } = payment.metadata ?? {}
     if (!tenant_id || !plan) {
       console.error('Missing metadata:', payment.metadata)

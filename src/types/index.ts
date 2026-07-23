@@ -18,6 +18,8 @@ export interface Tenant {
   caja_fondo_fijo?: number | null
   whatsapp_reminder_message?: string | null
   whatsapp_review_message?: string | null
+  sena_online_required?: boolean
+  sena_online_amount?: number
 }
 
 export interface UserTenant {
@@ -79,6 +81,7 @@ export interface Appointment {
   price_charged?: number
   deposit_amount?: number
   deposit_paid?: boolean
+  deposit_payment_id?: string | null
   notes?: string
   client_membership_id?: string | null
   cancelled_at?: string | null

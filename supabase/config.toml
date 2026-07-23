@@ -8,6 +8,11 @@ project_id = "qklmedcvjacblxngsikl"
 [functions.mp-webhook]
 verify_jwt = false
 
+# create-sena-payment is called by anonymous clients from the external online
+# booking site (no Supabase auth session available) — rate-limited by IP instead.
+[functions.create-sena-payment]
+verify_jwt = false
+
 # whatsapp-webhook receives unauthenticated GET (verification) and POST (messages)
 # requests from Meta. Verification uses WHATSAPP_VERIFY_TOKEN env var.
 [functions.whatsapp-webhook]

@@ -1048,6 +1048,46 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   )
   const depositMethodLabel = PAYMENT_METHODS.find(pm => pm.value === depositTx?.payment_method)?.label
 
+  const senaPendiente = !!currentTenant?.sena_online_required && !appt.deposit_paid
+  const senaPendienteAmount = appt.deposit_amount && appt.deposit_amount > 0
+    ? appt.deposit_amount
+    : currentTenant?.sena_online_amount ?? 0
+  const [showRegistrarSena, setShowRegistrarSena] = useState(false)
+  const [senaAmount, setSenaAmount] = useState(String(senaPendienteAmount))
+  const [senaMethod, setSenaMethod] = useState('')
+  const [senaError, setSenaError] = useState<string | null>(null)
+  const [senaSaving, setSenaSaving] = useState(false)
+  const registerDeposit = useRegisterDeposit()
+
+  async function handleRegistrarSena() {
+    setSenaError(null)
+    if (!senaMethod) { setSenaError('Seleccioná el método de pago de la seña.'); return }
+    const amt = Number(senaAmount)
+    if (!(amt > 0)) { setSenaError('Ingresá un monto válido.'); return }
+    setSenaSaving(true)
+    try {
+      await registerDeposit.mutateAsync({
+        appointmentId: appt.id,
+        amount: amt,
+        paymentMethod: senaMethod,
+        clientName: clientName(appt),
+        serviceName: appt.service?.name ?? 'Servicio',
+      })
+      const { error } = await supabase
+        .from('appointments')
+        .update({ deposit_amount: amt, deposit_paid: true })
+        .eq('id', appt.id)
+        .eq('tenant_id', currentTenantId)
+      if (error) throw error
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      setShowRegistrarSena(false)
+    } catch (e) {
+      setSenaError(e instanceof Error ? e.message : 'Error al registrar la seña.')
+    } finally {
+      setSenaSaving(false)
+    }
+  }
+
   useEffect(() => {
     if (clientData) setNotesValue(clientData.notes ?? '')
   }, [clientData?.id, clientData?.notes])
@@ -1154,6 +1194,54 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
                   ...(appt.deposit_paid && depositMethodLabel ? [depositMethodLabel] : []),
                   appt.deposit_paid ? 'Cobrada' : 'Pendiente',
                 ].join(' · ')} />
+              )}
+              {appt.deposit_paid && (appt.deposit_amount ?? 0) > 0 && (
+                <div className="col-span-2">
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-green-100 text-green-700">
+                    ✅ Seña abonada: {formatCurrency(appt.deposit_amount ?? 0)}
+                  </span>
+                </div>
+              )}
+              {senaPendiente && (
+                <div className="col-span-2 space-y-2">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full bg-orange-100 text-orange-700">
+                      ⚠️ Seña pendiente: {formatCurrency(senaPendienteAmount)}
+                    </span>
+                    {!readOnly && !showRegistrarSena && (
+                      <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setShowRegistrarSena(true)}>
+                        Registrar seña
+                      </Button>
+                    )}
+                  </div>
+                  {showRegistrarSena && (
+                    <div className="border rounded-lg p-3 bg-gray-50 space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Monto</Label>
+                          <Input type="number" min="0" value={senaAmount} onChange={e => setSenaAmount(e.target.value)} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Método de pago</Label>
+                          <select value={senaMethod} onChange={e => setSenaMethod(e.target.value)} className={SELECT_CLS}>
+                            <option value="">Seleccionar...</option>
+                            {PAYMENT_METHODS.map(pm => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      {senaError && <p className="text-xs text-destructive">{senaError}</p>}
+                      <div className="flex gap-2">
+                        <Button size="sm" className="h-7 text-xs" onClick={handleRegistrarSena} disabled={senaSaving}>
+                          {senaSaving ? <><Loader2 className="w-3 h-3 mr-1.5 animate-spin" />Guardando...</> : 'Confirmar seña'}
+                        </Button>
+                        <button type="button" className="text-xs text-muted-foreground hover:underline"
+                          onClick={() => { setShowRegistrarSena(false); setSenaError(null) }}>
+                          Cancelar
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
               <div className="col-span-2">
                 <p className="text-xs text-muted-foreground mb-1">Estado</p>

@@ -1,5 +1,5 @@
 import { useState, useEffect, ElementType } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2 } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -19,7 +19,7 @@ import {
 } from '@/hooks/useServices'
 import { DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
 
-type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios' | 'whatsapp'
+type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios' | 'whatsapp' | 'reservas'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -1839,6 +1839,103 @@ function TabWhatsApp() {
   )
 }
 
+// ── TabReservasOnline ─────────────────────────────────────────────────────────
+
+function TabReservasOnline() {
+  const { currentTenant, currentTenantId, refreshTenants } = useAuth()
+
+  const [required, setRequired] = useState(false)
+  const [amount, setAmount] = useState('0')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    setRequired(currentTenant?.sena_online_required ?? false)
+    setAmount(String(currentTenant?.sena_online_amount ?? 0))
+  }, [currentTenant?.id, currentTenant?.sena_online_required, currentTenant?.sena_online_amount])
+
+  async function handleSave() {
+    setError(null)
+    setSaved(false)
+    setSaving(true)
+    try {
+      const { error } = await supabase
+        .from('tenants')
+        .update({
+          sena_online_required: required,
+          sena_online_amount: required ? Number(amount) || 0 : 0,
+        })
+        .eq('id', currentTenantId)
+      if (error) throw error
+      await refreshTenants()
+      setSaved(true)
+      setTimeout(() => setSaved(false), 3000)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : 'Error al guardar.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Política de reservas online</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Definí si los clientes deben abonar una seña por MercadoPago para confirmar un turno reservado online.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <label className="flex items-center gap-2.5 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              checked={required}
+              onChange={(e) => setRequired(e.target.checked)}
+              className="w-4 h-4 rounded"
+            />
+            Requerir seña para reservas online
+          </label>
+
+          {required && (
+            <div className="space-y-1.5 max-w-xs">
+              <Label>Monto de seña ($)</Label>
+              <Input
+                type="number"
+                min="0"
+                step="1"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                placeholder="0"
+              />
+            </div>
+          )}
+
+          {error && <p className="text-sm text-red-600">{error}</p>}
+          <div className="flex items-center gap-3">
+            <Button
+              size="sm"
+              className="bg-plum-700 hover:bg-plum-800 text-white"
+              onClick={handleSave}
+              disabled={saving}
+            >
+              {saving
+                ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                : 'Guardar configuración'}
+            </Button>
+            {saved && (
+              <span className="flex items-center gap-1 text-sm text-green-700">
+                <Check className="w-4 h-4" /> Guardado
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ConfiguracionAdmin({
@@ -1881,6 +1978,7 @@ export default function ConfiguracionAdmin({
     { key: 'servicios', label: 'Servicios',         icon: Layers,       show: true },
     { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,       show: canSeeRoles },
     { key: 'whatsapp',  label: 'WhatsApp',          icon: MessageCircle, show: isOwner },
+    { key: 'reservas',  label: 'Reservas Online',   icon: Link2,        show: isOwner },
   ]
 
   const tabs = allTabs.filter((t) => t.show)
@@ -1920,6 +2018,7 @@ export default function ConfiguracionAdmin({
       {activeTab === 'servicios' && <TabServicios />}
       {activeTab === 'roles'     && <TabRoles canEdit={isOwner} />}
       {activeTab === 'whatsapp'  && isOwner && <TabWhatsApp />}
+      {activeTab === 'reservas' && isOwner && <TabReservasOnline />}
     </div>
   )
 }
