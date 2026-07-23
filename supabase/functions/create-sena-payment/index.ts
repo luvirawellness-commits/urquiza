@@ -45,13 +45,18 @@ serve(async (req: Request) => {
   try {
     // deno-lint-ignore no-explicit-any
     const body = await req.json() as Record<string, any>
-    const { appointment_id, tenant_id, amount, client_name, client_email, service_name } = body
+    const {
+      tenant_id, amount, client_id, client_name, client_email,
+      service_name, service_id, therapist_id, scheduled_at,
+      duration_minutes, notes,
+    } = body
 
     const MP_ACCESS_TOKEN = Deno.env.get('MP_ACCESS_TOKEN')
     if (!MP_ACCESS_TOKEN) return err('Configuración de pago incompleta', 500)
 
-    if (!tenant_id || !amount || !client_name || !service_name) {
-      return err('tenant_id, amount, client_name y service_name son requeridos')
+    if (!tenant_id || !amount || !client_id || !client_name || !service_name ||
+        !service_id || !therapist_id || !scheduled_at || !duration_minutes) {
+      return err('Faltan datos requeridos para iniciar el pago de la seña')
     }
     const amountNum = Number(amount)
     if (!(amountNum > 0)) return err('amount debe ser mayor a 0')
@@ -64,30 +69,22 @@ serve(async (req: Request) => {
       .single()
     if (tenantErr || !tenant) return err('Tenant no encontrado', 404)
 
-    // 2. Verify the appointment exists and is awaiting this payment. The
-    // booking flow must create the appointment (it holds the real
-    // client_id/service_id/therapist_id/scheduled_at) before calling this
-    // function — those IDs aren't part of this payload, so a fresh
-    // appointment can't be built here. Its status must stay 'pending_payment'
-    // until mp-webhook confirms the payment — flipping it early here would
-    // make the slot look confirmed before it actually is.
-    if (!appointment_id) return err('appointment_id es requerido', 400)
+    // 2. Sanity-check the referenced client/service/therapist belong to this
+    // tenant before charging — a bad ID here would only surface as a failed
+    // insert in mp-webhook *after* the client has already paid.
+    const [clientRes, serviceRes, therapistRes] = await Promise.all([
+      supabase.from('clients').select('id').eq('id', client_id).eq('tenant_id', tenant_id).maybeSingle(),
+      supabase.from('services').select('id').eq('id', service_id).eq('tenant_id', tenant_id).maybeSingle(),
+      supabase.from('users').select('id').eq('id', therapist_id).eq('tenant_id', tenant_id).maybeSingle(),
+    ])
+    if (!clientRes.data) return err('Cliente no encontrado', 404)
+    if (!serviceRes.data) return err('Servicio no encontrado', 404)
+    if (!therapistRes.data) return err('Terapeuta no encontrado', 404)
 
-    const { data: appointment, error: apptErr } = await supabase
-      .from('appointments')
-      .select('id, status')
-      .eq('id', appointment_id)
-      .eq('tenant_id', tenant_id)
-      .single()
-    if (apptErr || !appointment) return err('Turno no encontrado', 404)
-
-    if (appointment.status !== 'pending' && appointment.status !== 'pending_payment') {
-      return err('El turno no está disponible para el pago de la seña', 409)
-    }
-
-    // 3. Create MercadoPago preference. All three back_urls point to the same
-    // public booking page (with an explicit ?status= so the page can render
-    // the right message) rather than relying on MP's own redirect params.
+    // No appointment is created here — mp-webhook creates it only once the
+    // seña payment is confirmed as 'approved', so an abandoned checkout never
+    // occupies a slot. All the booking data rides along in the preference
+    // metadata for the webhook to use at that point.
     const BOOKING_URL = Deno.env.get('BOOKING_URL') ?? 'https://luviraos.com'
     const bookingReturnUrl = `${BOOKING_URL}/reservar/${tenant.slug}`
 
@@ -101,7 +98,18 @@ serve(async (req: Request) => {
       },
       auto_return: 'approved',
       notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook`,
-      metadata: { type: 'sena', appointment_id, tenant_id, amount: amountNum },
+      metadata: {
+        type: 'sena',
+        tenant_id,
+        client_id,
+        service_id,
+        service_name,
+        therapist_id,
+        scheduled_at,
+        duration_minutes,
+        amount: amountNum,
+        notes: notes || '',
+      },
       statement_descriptor: 'LUVIRA OS',
     }
 

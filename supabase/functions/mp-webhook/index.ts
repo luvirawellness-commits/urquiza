@@ -141,32 +141,94 @@ serve(async (req: Request) => {
 
     // Seña (deposit) payments for online bookings — separate flow from the
     // subscription-plan payments below, so it's handled and returned first.
+    // The appointment doesn't exist yet at this point; it's created here,
+    // only once the payment is confirmed 'approved'.
     if (payment.metadata?.type === 'sena') {
-      const { appointment_id, tenant_id: senaTenantId, amount } = payment.metadata ?? {}
-      if (!appointment_id || !senaTenantId || !amount) {
-        console.error('Missing sena metadata:', payment.metadata)
-        return json({ error: 'Missing appointment_id, tenant_id or amount in metadata' }, 400)
+      const meta = payment.metadata ?? {}
+      const {
+        tenant_id: senaTenantId, client_id, service_id, service_name,
+        therapist_id, scheduled_at, duration_minutes, amount,
+      } = meta
+
+      if (!senaTenantId || !client_id || !therapist_id || !scheduled_at || !duration_minutes || !amount) {
+        console.error('Missing sena metadata:', meta)
+        return json({ error: 'Missing required fields in sena metadata' }, 400)
       }
 
-      const { data: appointment, error: apptFetchErr } = await supabase
+      // Idempotency: MP can redeliver the same webhook notification. If this
+      // payment already produced an appointment, don't create a second one.
+      const { data: already } = await supabase
         .from('appointments')
-        .update({
+        .select('id')
+        .eq('tenant_id', senaTenantId)
+        .eq('deposit_payment_id', String(payment.id))
+        .maybeSingle()
+
+      if (already) {
+        console.log('Sena payment already processed:', { payment_id: payment.id, appointment_id: already.id })
+        return json({ received: true, appointment_id: already.id, already_processed: true })
+      }
+
+      // The slot was never held before payment, so re-check for a conflict
+      // that may have appeared in the meantime (same overlap logic
+      // public-booking's create-booking uses). If it's gone, the client has
+      // already paid and this needs manual reconciliation — there's no slot
+      // left to attach the payment to.
+      const durMin = Number(duration_minutes)
+      const slotStartMs = new Date(scheduled_at).getTime()
+      const slotEndMs = slotStartMs + durMin * 60_000
+      const lookbackMs = 4 * 60 * 60_000
+
+      const { data: nearby, error: conflictErr } = await supabase
+        .from('appointments')
+        .select('id, scheduled_at, duration_minutes')
+        .eq('tenant_id', senaTenantId)
+        .eq('therapist_id', therapist_id)
+        .gte('scheduled_at', new Date(slotStartMs - lookbackMs).toISOString())
+        .lt('scheduled_at', new Date(slotEndMs).toISOString())
+        .not('status', 'in', '(cancelled,no_show,blocked)')
+
+      if (conflictErr) {
+        console.error('Conflict check error:', conflictErr)
+        return json({ error: conflictErr.message }, 500)
+      }
+
+      const hasConflict = (nearby ?? []).some((a) => {
+        const aStart = new Date(a.scheduled_at as string).getTime()
+        const aEnd = aStart + ((a.duration_minutes as number) ?? 60) * 60_000
+        return slotStartMs < aEnd && slotEndMs > aStart
+      })
+
+      if (hasConflict) {
+        console.error('SENA PAID BUT SLOT NO LONGER AVAILABLE — needs manual reconciliation:', {
+          payment_id: payment.id, tenant_id: senaTenantId, client_id, therapist_id, scheduled_at,
+        })
+        return json({ error: 'Slot no longer available — payment succeeded, needs manual reconciliation', payment_id: payment.id }, 409)
+      }
+
+      const { data: appointment, error: apptErr } = await supabase
+        .from('appointments')
+        .insert({
+          tenant_id: senaTenantId,
+          client_id,
+          therapist_id,
+          service_id: service_id ?? null,
+          scheduled_at,
+          duration_minutes: durMin,
           status: 'pending',
           deposit_paid: true,
           deposit_amount: amount,
           deposit_payment_id: String(payment.id),
+          source: 'web',
+          box_number: 0,
         })
-        .eq('id', appointment_id)
-        .eq('tenant_id', senaTenantId)
-        .select('id, service:services(name)')
+        .select('id')
         .single()
 
-      if (apptFetchErr || !appointment) {
-        console.error('Appointment update error:', apptFetchErr)
-        return json({ error: apptFetchErr?.message ?? 'Appointment not found' }, 500)
+      if (apptErr || !appointment) {
+        console.error('Appointment insert error:', apptErr)
+        return json({ error: apptErr?.message ?? 'Failed to create appointment' }, 500)
       }
-
-      const serviceName = (appointment as { service?: { name?: string } | null }).service?.name ?? 'Servicio'
 
       const { error: txErr } = await supabase.from('transactions').insert({
         tenant_id: senaTenantId,
@@ -175,9 +237,10 @@ serve(async (req: Request) => {
         amount,
         payment_method: 'mp',
         date: new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' }),
-        appointment_id,
-        description: `Seña online: ${serviceName}`,
+        appointment_id: appointment.id,
+        description: `Seña online: ${service_name ?? 'Servicio'}`,
         status: 'paid',
+        client_id,
       })
 
       if (txErr) {
@@ -185,8 +248,8 @@ serve(async (req: Request) => {
         return json({ error: txErr.message }, 500)
       }
 
-      console.log('Sena confirmed:', { appointment_id, tenant_id: senaTenantId, amount })
-      return json({ received: true, appointment_id, deposit_paid: true })
+      console.log('Sena confirmed, appointment created:', { appointment_id: appointment.id, tenant_id: senaTenantId })
+      return json({ received: true, appointment_id: appointment.id, deposit_paid: true })
     }
 
     const { tenant_id, plan } = payment.metadata ?? {}
