@@ -48,7 +48,7 @@ serve(async (req: Request) => {
         console.log('Fetching tenant with slug:', slug)
         const { data: tenant, error: tenantErr } = await supabase
           .from('tenants')
-          .select('id, name, slug, address, phone, whatsapp_number, timezone')
+          .select('id, name, slug, address, phone, whatsapp_number, timezone, sena_online_required, sena_online_amount')
           .eq('slug', slug)
           .eq('active', true)
           .maybeSingle()
@@ -261,6 +261,24 @@ serve(async (req: Request) => {
       const body = await req.json() as Record<string, any>
       const action = body.action as string | undefined
 
+      // ── POST tenant (re-check seña policy right before payment) ────────────
+      if (action === 'tenant') {
+        const { tenant_id } = body
+        if (!tenant_id) return err('tenant_id es requerido')
+
+        const { data: tenant, error: tenantErr } = await supabase
+          .from('tenants')
+          .select('id, name, slug, sena_online_required, sena_online_amount')
+          .eq('id', tenant_id)
+          .eq('active', true)
+          .maybeSingle()
+
+        if (tenantErr) throw tenantErr
+        if (!tenant) return err('Tenant no encontrado', 404)
+
+        return json({ tenant })
+      }
+
       // ── 3. POST register-client ────────────────────────────────────────────
       if (action === 'register-client') {
         const { tenant_id, first_name, last_name, phone, email, notes } = body
@@ -340,6 +358,7 @@ serve(async (req: Request) => {
           scheduled_at,
           duration_minutes,
           notes,
+          status,
         } = body
 
         if (!tenant_id || !client_id || !therapist_id || !scheduled_at || !duration_minutes) {
@@ -348,6 +367,11 @@ serve(async (req: Request) => {
 
         const durMin   = parseInt(String(duration_minutes))
         if (isNaN(durMin) || durMin < 30) return err('duration_minutes inválido')
+
+        // 'pending_payment' is used when the tenant requires a MercadoPago seña —
+        // the appointment holds the slot but isn't confirmed until mp-webhook
+        // approves the payment. Anything else falls back to 'confirmed'.
+        const apptStatus = status === 'pending_payment' ? 'pending_payment' : 'confirmed'
 
         // Verify client belongs to this tenant
         const { data: client, error: clientCheckErr } = await supabase
@@ -415,7 +439,7 @@ serve(async (req: Request) => {
             service_id:       service_id ?? null,
             scheduled_at,
             duration_minutes: durMin,
-            status:           'confirmed',
+            status:           apptStatus,
             source:           'web',
             box_number:       0,
             price_charged:    priceCharged,

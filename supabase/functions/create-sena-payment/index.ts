@@ -56,18 +56,21 @@ serve(async (req: Request) => {
     const amountNum = Number(amount)
     if (!(amountNum > 0)) return err('amount debe ser mayor a 0')
 
-    // 1. Get tenant info
+    // 1. Get tenant info (slug is needed to redirect back to its booking page)
     const { data: tenant, error: tenantErr } = await supabase
       .from('tenants')
-      .select('id, name')
+      .select('id, name, slug')
       .eq('id', tenant_id)
       .single()
     if (tenantErr || !tenant) return err('Tenant no encontrado', 404)
 
-    // 2. Verify the appointment exists and is still pending. The booking flow
-    // must create the appointment (it holds the real client_id/service_id/
-    // therapist_id/scheduled_at) before calling this function — those IDs
-    // aren't part of this payload, so a fresh appointment can't be built here.
+    // 2. Verify the appointment exists and is awaiting this payment. The
+    // booking flow must create the appointment (it holds the real
+    // client_id/service_id/therapist_id/scheduled_at) before calling this
+    // function — those IDs aren't part of this payload, so a fresh
+    // appointment can't be built here. Its status must stay 'pending_payment'
+    // until mp-webhook confirms the payment — flipping it early here would
+    // make the slot look confirmed before it actually is.
     if (!appointment_id) return err('appointment_id es requerido', 400)
 
     const { data: appointment, error: apptErr } = await supabase
@@ -78,25 +81,23 @@ serve(async (req: Request) => {
       .single()
     if (apptErr || !appointment) return err('Turno no encontrado', 404)
 
-    if (appointment.status !== 'pending') {
-      const { error: updateErr } = await supabase
-        .from('appointments')
-        .update({ status: 'pending' })
-        .eq('id', appointment_id)
-        .eq('tenant_id', tenant_id)
-      if (updateErr) return err('No se pudo preparar el turno para el pago', 500)
+    if (appointment.status !== 'pending' && appointment.status !== 'pending_payment') {
+      return err('El turno no está disponible para el pago de la seña', 409)
     }
 
-    // 3. Create MercadoPago preference
-    const APP_URL = Deno.env.get('APP_URL') ?? 'https://app.luviraos.com'
+    // 3. Create MercadoPago preference. All three back_urls point to the same
+    // public booking page (with an explicit ?status= so the page can render
+    // the right message) rather than relying on MP's own redirect params.
+    const BOOKING_URL = Deno.env.get('BOOKING_URL') ?? 'https://luviraos.com'
+    const bookingReturnUrl = `${BOOKING_URL}/reservar/${tenant.slug}`
 
     const preference = {
       items: [{ title: `Seña - ${service_name}`, quantity: 1, unit_price: amountNum, currency_id: 'ARS' }],
       payer: { name: client_name, email: client_email || undefined },
       back_urls: {
-        success: `${APP_URL}/reserva-exitosa`,
-        failure: `${APP_URL}/reserva-fallida`,
-        pending: `${APP_URL}/reserva-pendiente`,
+        success: `${bookingReturnUrl}?status=approved`,
+        failure: `${bookingReturnUrl}?status=failure`,
+        pending: `${bookingReturnUrl}?status=pending`,
       },
       auto_return: 'approved',
       notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook`,

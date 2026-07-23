@@ -69,6 +69,7 @@ function Skeleton({ className }: { className?: string }) {
 
 const STATUS_CONFIG: Record<AppointmentStatus, { label: string; cls: string }> = {
   pending: { label: 'Pendiente', cls: 'bg-gray-400 text-white border-transparent' },
+  pending_payment: { label: 'Esperando seña', cls: 'bg-yellow-500 text-white border-transparent' },
   confirmed: { label: 'Confirmado', cls: 'bg-blue-500 text-white border-transparent' },
   completed: { label: 'Completado', cls: 'bg-green-500 text-white border-transparent' },
   cancelled: { label: 'Cancelado', cls: 'bg-red-500 text-white border-transparent' },

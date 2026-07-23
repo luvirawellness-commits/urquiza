@@ -65,7 +65,7 @@ export interface Client {
   created_at: string
 }
 
-export type AppointmentStatus = 'pending' | 'confirmed' | 'completed' | 'cancelled' | 'no_show' | 'blocked'
+export type AppointmentStatus = 'pending' | 'pending_payment' | 'confirmed' | 'completed' | 'cancelled' | 'no_show' | 'blocked'
 
 export interface Appointment {
   id: string

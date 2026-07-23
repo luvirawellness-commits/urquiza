@@ -209,6 +209,7 @@ function clientName(appt: Appointment): string {
 
 const STATUS_LABELS: Record<AppointmentStatus, string> = {
   pending: 'Pendiente',
+  pending_payment: 'Esperando pago de seña',
   confirmed: 'Confirmado',
   completed: 'Completado',
   cancelled: 'Cancelado',
@@ -218,6 +219,7 @@ const STATUS_LABELS: Record<AppointmentStatus, string> = {
 
 const STATUS_PILL: Record<AppointmentStatus, string> = {
   pending: 'bg-gray-100 text-gray-700',
+  pending_payment: 'bg-yellow-100 text-yellow-700',
   confirmed: 'bg-blue-100 text-blue-700',
   completed: 'bg-blue-100 text-blue-700',
   cancelled: 'bg-red-100 text-red-700',
@@ -227,6 +229,7 @@ const STATUS_PILL: Record<AppointmentStatus, string> = {
 
 const STATUS_DOT: Record<AppointmentStatus, string> = {
   pending: 'bg-gray-400',
+  pending_payment: 'bg-yellow-400',
   confirmed: 'bg-blue-500',
   completed: 'bg-blue-600',
   cancelled: 'bg-red-500',
