@@ -15,8 +15,11 @@ import { useClients, useClient } from '@/hooks/useClients'
 import { useMembershipPlans, useSellMembership } from '@/hooks/useClientMemberships'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import InvoiceModal from '@/components/InvoiceModal'
+import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import type { MembershipPlan } from '@/types'
-import { PAYMENT_METHODS } from '@/lib/paymentMethods'
+import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
+import { canAccess } from '@/lib/permissions'
+import { resolveNewTransactions, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 
 type Props = {
   open: boolean
@@ -38,10 +41,11 @@ export default function VenderMembresiaModal({
   const { user, profile } = useAuth()
   const tenantId = useTenantId()
   const today = getArgentinaDateString()
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
 
   const [phase, setPhase] = useState<'form' | 'confirm' | 'done'>('form')
   const [showInvoice, setShowInvoice] = useState(false)
+  const [membershipTx, setMembershipTx] = useState<ResolvedTransaction | null>(null)
 
   const [titularId, setTitularId] = useState(preSelectedClientId ?? '')
   const [titularSearch, setTitularSearch] = useState('')
@@ -71,6 +75,9 @@ export default function VenderMembresiaModal({
   const titularName = titular
     ? [titular.first_name, titular.last_name].filter(Boolean).join(' ')
     : ''
+
+  const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
+  const stillProcessingInvoice = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
 
   const expiresAt = (() => {
     if (!selectedPlan || !startDate) return ''
@@ -103,6 +110,7 @@ export default function VenderMembresiaModal({
     if (!selectedPlan || !titularId || !user) return
     setError(null)
     try {
+      const beforeIso = new Date().toISOString()
       const membershipId = await sellMembership.mutateAsync({
         clientId: titularId,
         planId: selectedPlan.id,
@@ -117,6 +125,28 @@ export default function VenderMembresiaModal({
         preSelectedAppointmentId,
         clientName: titularName || undefined,
       })
+
+      // sell_membership only inserts a transaction row when amount > 0 —
+      // nothing to invoice otherwise.
+      const amountNum = Number(amount)
+      if (amountNum > 0 && tenantId) {
+        const newTxs = await resolveNewTransactions({
+          tenantId,
+          createdAfter: beforeIso,
+          filters: { client_id: titularId, category: 'membership', amount: amountNum },
+        })
+        const tx = newTxs[newTxs.length - 1] ?? null
+        setMembershipTx(tx)
+        if (tx && hasCajaAccess && isElectronicPayment(tx.payment_method)) {
+          void invoiceQueue.startQueue([{
+            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+            clientName: titularName || 'Consumidor Final', concept: `Membresía ${selectedPlan?.name ?? ''}`,
+          }])
+        }
+      } else {
+        setMembershipTx(null)
+      }
+
       setPhase('done')
       onSuccess?.(membershipId)
     } catch (e) {
@@ -135,6 +165,7 @@ export default function VenderMembresiaModal({
     setPaymentMethod('cash')
     setStartDate(today)
     setError(null)
+    setMembershipTx(null)
     onClose()
   }
 
@@ -173,7 +204,23 @@ export default function VenderMembresiaModal({
                 </p>
               )}
             </div>
-            {isOwnerOrAdmin ? (
+            {Object.keys(invoiceQueue.results).length > 0 && (
+              <div className="space-y-1.5">
+                {Object.values(invoiceQueue.results).map((r, i) => (
+                  <div key={i} className="flex items-center justify-center gap-2 text-sm">
+                    {r.status === 'pending' && (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /><span className="text-muted-foreground">Emitiendo factura...</span></>
+                    )}
+                    {r.status === 'done' && (
+                      <><CheckCircle className="w-3.5 h-3.5 text-green-600" /><span className="text-green-700">Factura emitida ✓</span></>
+                    )}
+                    {r.status === 'error' && <span className="text-red-600 text-xs">{r.message}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {hasCajaAccess && membershipTx && !isElectronicPayment(membershipTx.payment_method) ? (
               <div className="space-y-3">
                 <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
                 <div className="flex gap-2 justify-center">
@@ -184,7 +231,9 @@ export default function VenderMembresiaModal({
                 </div>
               </div>
             ) : (
-              <Button onClick={handleClose} className="mx-auto block px-8">Cerrar</Button>
+              <Button onClick={handleClose} className="mx-auto block px-8" disabled={stillProcessingInvoice}>
+                {stillProcessingInvoice ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Emitiendo factura...</> : 'Cerrar'}
+              </Button>
             )}
           </div>
         )}
@@ -509,6 +558,13 @@ export default function VenderMembresiaModal({
       clientId={titularId || undefined}
       amount={Number(amount)}
       concept={`Membresía ${selectedPlan?.name ?? ''}`}
+      transactionId={membershipTx?.id}
+    />
+
+    <InvoiceTypeChoiceModal
+      open={!!invoiceQueue.pendingChoiceTx}
+      onCancel={invoiceQueue.cancelChoice}
+      onConfirm={invoiceQueue.resolveChoice}
     />
     </>
   )

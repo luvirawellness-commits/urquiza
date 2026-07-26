@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import {
-  ShoppingCart, Loader2, Package, Search, Check, CheckCircle, Plus, Minus, Trash2,
+  ShoppingCart, Loader2, Package, Search, Check, CheckCircle, Plus, Minus, Trash2, AlertCircle,
 } from 'lucide-react'
-import { useAuth } from '@/contexts/AuthContext'
+import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import { useSellableSupplies, useSellCart } from '@/hooks/useSupplies'
 import { useClients } from '@/hooks/useClients'
 import { Card, CardContent } from '@/components/ui/card'
@@ -13,7 +13,11 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn, formatCurrency } from '@/lib/utils'
 import type { Supply, Client } from '@/types'
-import { PAYMENT_METHODS } from '@/lib/paymentMethods'
+import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
+import { canAccess } from '@/lib/permissions'
+import { useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
+import InvoiceModal from '@/components/InvoiceModal'
+import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 
 const SELECT_CLS =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
@@ -50,8 +54,10 @@ function CartModal({
   setSelectedClient: (c: Client | null) => void
   onSuccess: (message: string) => void
 }) {
-  const { user } = useAuth()
+  const { user, profile } = useAuth()
+  const tenantId = useTenantId()
   const sellCart = useSellCart()
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
 
   const [clientSearch, setClientSearch] = useState('')
   const [showClientDrop, setShowClientDrop] = useState(false)
@@ -62,19 +68,35 @@ function CartModal({
   ])
   const [error, setError] = useState('')
 
+  const [phase, setPhase] = useState<'form' | 'done'>('form')
+  const [cashTxs, setCashTxs] = useState<ResolvedTransaction[]>([])
+  const [showInvoice, setShowInvoice] = useState(false)
+  const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
+
   const totalItems = cart.reduce((s, i) => s + i.quantity, 0)
   const total = cart.reduce((s, i) => s + (i.supply.sale_price ?? 0) * i.quantity, 0)
   const splitsTotal = splits.reduce((s, x) => s + (parseFloat(x.amount) || 0), 0)
   const splitsMatch = total > 0 && Math.abs(splitsTotal - total) < 0.01
+  const stillProcessing = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
 
   function resetLocalState() {
     setClientSearch('')
     setShowClientDrop(false)
     setSplits([{ paymentMethod: 'cash', amount: '' }])
     setError('')
+    setPhase('form')
+    setCashTxs([])
+    setShowInvoice(false)
   }
 
   function handleClose() {
+    resetLocalState()
+    onClose()
+  }
+
+  function finishSale() {
+    clearCart()
+    setSelectedClient(null)
     resetLocalState()
     onClose()
   }
@@ -86,35 +108,110 @@ function CartModal({
     if (!user) return
     setError('')
     try {
-      await sellCart.mutateAsync({
+      const newTxs = await sellCart.mutateAsync({
         items: cart,
         splits: splits.map((s) => ({ paymentMethod: s.paymentMethod, amount: parseFloat(s.amount) || 0 })),
         clientId: selectedClient.id,
         userId: user.id,
       })
+
+      if (hasCajaAccess && tenantId) {
+        const electronicTxs = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
+        const cash = newTxs.filter((tx) => !isElectronicPayment(tx.payment_method))
+        setCashTxs(cash)
+
+        if (electronicTxs.length > 0) {
+          const concept = cart.map((i) => i.supply.name).join(', ')
+          const clientNameForInvoice = [selectedClient.first_name, selectedClient.last_name].filter(Boolean).join(' ')
+          void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
+            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+            clientName: clientNameForInvoice, concept,
+          })))
+        }
+
+        if (electronicTxs.length > 0 || cash.length > 0) {
+          setPhase('done')
+          return
+        }
+      }
+
       const itemsLabel = `${totalItems} producto${totalItems !== 1 ? 's' : ''}`
       onSuccess(`Venta registrada: ${itemsLabel} por ${formatCurrency(total)}`)
-      clearCart()
-      setSelectedClient(null)
-      resetLocalState()
-      onClose()
+      finishSale()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al registrar la venta')
     }
   }
 
   const canConfirm = cart.length > 0 && !!selectedClient && splitsMatch && !sellCart.isPending
+  const cashTotal = cashTxs.reduce((s, t) => s + t.amount, 0)
+  const clientNameForInvoice = selectedClient
+    ? [selectedClient.first_name, selectedClient.last_name].filter(Boolean).join(' ')
+    : 'Consumidor Final'
 
   return (
+    <>
     <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose() }}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <span>Carrito de compra</span>
-            <Badge variant="outline">{totalItems} {totalItems === 1 ? 'producto' : 'productos'}</Badge>
+            <span>{phase === 'done' ? 'Venta registrada' : 'Carrito de compra'}</span>
+            {phase === 'form' && (
+              <Badge variant="outline">{totalItems} {totalItems === 1 ? 'producto' : 'productos'}</Badge>
+            )}
           </DialogTitle>
         </DialogHeader>
 
+        {phase === 'done' ? (
+          <div className="space-y-5 py-2">
+            <div className="flex items-center gap-2 text-green-700">
+              <CheckCircle className="w-5 h-5" />
+              <span className="font-semibold">
+                Venta registrada: {totalItems} producto{totalItems !== 1 ? 's' : ''} por {formatCurrency(total)}
+              </span>
+            </div>
+
+            {Object.keys(invoiceQueue.results).length > 0 && (
+              <div className="space-y-1.5">
+                {Object.values(invoiceQueue.results).map((r, i) => (
+                  <div key={i} className="flex items-center gap-2 text-sm">
+                    {r.status === 'pending' && (
+                      <><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /><span className="text-muted-foreground">Emitiendo factura...</span></>
+                    )}
+                    {r.status === 'done' && (
+                      <><CheckCircle className="w-3.5 h-3.5 text-green-600" /><span className="text-green-700">Factura emitida ✓</span></>
+                    )}
+                    {r.status === 'error' && (
+                      <><AlertCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0" /><span className="text-red-600">{r.message}</span></>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {cashTxs.length > 0 ? (
+              <>
+                <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setShowInvoice(true)}
+                    disabled={stillProcessing}
+                    className="flex-1 bg-plum-700 hover:bg-plum-800 text-white"
+                  >
+                    Sí, emitir factura
+                  </Button>
+                  <Button onClick={finishSale} variant="outline" className="flex-1" disabled={stillProcessing}>
+                    No, gracias
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <Button onClick={finishSale} className="w-full" disabled={stillProcessing}>
+                {stillProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Emitiendo factura...</> : 'Cerrar'}
+              </Button>
+            )}
+          </div>
+        ) : (
         <div className="space-y-4 mt-2">
           {/* Client selector */}
           <div className="space-y-1.5">
@@ -276,8 +373,27 @@ function CartModal({
             </Button>
           </div>
         </div>
+        )}
       </DialogContent>
     </Dialog>
+
+    <InvoiceModal
+      isOpen={showInvoice}
+      onClose={finishSale}
+      tenantId={tenantId ?? ''}
+      clientName={clientNameForInvoice}
+      clientId={selectedClient?.id}
+      amount={cashTotal}
+      concept={cart.map((i) => i.supply.name).join(', ')}
+      transactionId={cashTxs[0]?.id}
+    />
+
+    <InvoiceTypeChoiceModal
+      open={!!invoiceQueue.pendingChoiceTx}
+      onCancel={invoiceQueue.cancelChoice}
+      onConfirm={invoiceQueue.resolveChoice}
+    />
+    </>
   )
 }
 

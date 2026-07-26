@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw, Star } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw, Star, AlertCircle } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
+import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import {
   useAppointments, useCreateAppointment, useUpdateAppointmentStatus,
   useUpdateAppointment, useServices, useTherapists, useRegisterDeposit, useDepositTransaction, type Therapist,
@@ -27,7 +28,9 @@ import {
 import { cn, formatTime, formatDate, formatCurrency } from '@/lib/utils'
 import type { Appointment, AppointmentStatus, Client } from '@/types'
 import { getArgentinaDateString } from '../utils/dateUtils'
-import { PAYMENT_METHODS } from '@/lib/paymentMethods'
+import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
+import { canAccess } from '@/lib/permissions'
+import { resolveNewTransactions, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -416,8 +419,9 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [error, setError] = useState<string | null>(null)
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [step, setStep] = useState<'form' | 'prompt' | 'invoice'>('form')
-  const [paidAmount, setPaidAmount] = useState(0)
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
+  const [cashTxs, setCashTxs] = useState<ResolvedTransaction[]>([])
+  const invoiceQueue = useElectronicInvoiceQueue({ tenantId: currentTenantId })
 
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
@@ -529,6 +533,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
       const giftCardId = paymentType === 'gift_card' && gcValid ? gcValid.id : null
 
+      const beforeIso = new Date().toISOString()
       const { error } = await supabase.rpc('close_appointment_with_payment', {
         p_appointment_id:       appt.id,
         p_tenant_id:            currentTenantId!,
@@ -548,9 +553,32 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
       qc.invalidateQueries({ queryKey: ['dashboard-metrics'] })
       if (giftCardId) qc.invalidateQueries({ queryKey: ['gift_cards'] })
 
-      if (isOwnerOrAdmin && currentTenantId) {
-        setPaidAmount(paymentType === 'efectivo_digital' ? totalConDescuento : 0)
-        setStep('prompt')
+      // Only 'efectivo_digital' produces transaction rows to invoice — a
+      // membership charge (existing plan) or a gift-card redemption used as
+      // payment inserts no transaction at all (see close_appointment_with_payment),
+      // so there's nothing to invoice for those regardless of permission.
+      if (paymentType === 'efectivo_digital' && amounts.length > 0 && hasCajaAccess && currentTenantId) {
+        const newTxs = await resolveNewTransactions({
+          tenantId: currentTenantId,
+          createdAfter: beforeIso,
+          filters: { appointment_id: appt.id },
+        })
+        const electronicTxs = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
+        const cash = newTxs.filter((tx) => !isElectronicPayment(tx.payment_method))
+        setCashTxs(cash)
+
+        if (electronicTxs.length > 0) {
+          void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
+            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+            clientName: clientName(appt), concept: appt.service?.name ?? 'Servicio',
+          })))
+        }
+
+        if (electronicTxs.length > 0 || cash.length > 0) {
+          setStep('prompt')
+        } else {
+          onClose()
+        }
       } else {
         onClose()
       }
@@ -566,34 +594,73 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   )
 
   if (step === 'prompt' || step === 'invoice') {
+    const cashTotal = cashTxs.reduce((sum, t) => sum + t.amount, 0)
+    const stillProcessing = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
+
     return (
       <div className="space-y-5 py-2">
         <div className="flex items-center gap-2 text-green-700">
           <CheckCircle className="w-5 h-5" />
           <span className="font-semibold">Sesión cerrada exitosamente</span>
         </div>
-        <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
-        <div className="flex gap-2">
-          <Button
-            onClick={() => setStep('invoice')}
-            className="flex-1 bg-plum-700 hover:bg-plum-800 text-white gap-1.5"
-          >
-            <FileText className="w-3.5 h-3.5" />
-            Sí, emitir factura
+
+        {Object.keys(invoiceQueue.results).length > 0 && (
+          <div className="space-y-1.5">
+            {Object.values(invoiceQueue.results).map((r, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm">
+                {r.status === 'pending' && (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /><span className="text-muted-foreground">Emitiendo factura...</span></>
+                )}
+                {r.status === 'done' && (
+                  <><CheckCircle className="w-3.5 h-3.5 text-green-600" /><span className="text-green-700">Factura emitida ✓</span></>
+                )}
+                {r.status === 'error' && (
+                  <><AlertCircle className="w-3.5 h-3.5 text-red-600 flex-shrink-0" /><span className="text-red-600">{r.message}</span></>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {cashTxs.length > 0 ? (
+          <>
+            <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+            <div className="flex gap-2">
+              <Button
+                onClick={() => setStep('invoice')}
+                disabled={stillProcessing}
+                className="flex-1 bg-plum-700 hover:bg-plum-800 text-white gap-1.5"
+              >
+                <FileText className="w-3.5 h-3.5" />
+                Sí, emitir factura
+              </Button>
+              <Button onClick={onClose} variant="outline" className="flex-1" disabled={stillProcessing}>
+                No, gracias
+              </Button>
+            </div>
+          </>
+        ) : (
+          <Button onClick={onClose} className="w-full" disabled={stillProcessing}>
+            {stillProcessing ? <><Loader2 className="w-4 h-4 animate-spin mr-2" />Emitiendo factura...</> : 'Cerrar'}
           </Button>
-          <Button onClick={onClose} variant="outline" className="flex-1">
-            No, gracias
-          </Button>
-        </div>
+        )}
+
         <InvoiceModal
           isOpen={step === 'invoice'}
           onClose={onClose}
           tenantId={currentTenantId!}
           clientName={clientName(appt)}
           clientId={appt.client_id ?? undefined}
-          amount={paidAmount}
+          amount={cashTotal}
           concept={`${appt.service?.name ?? 'Servicio'} ${appt.duration_minutes}min`}
           appointmentId={appt.id}
+          transactionId={cashTxs[0]?.id}
+        />
+
+        <InvoiceTypeChoiceModal
+          open={!!invoiceQueue.pendingChoiceTx}
+          onCancel={invoiceQueue.cancelChoice}
+          onConfirm={invoiceQueue.resolveChoice}
         />
       </div>
     )

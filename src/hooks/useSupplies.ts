@@ -197,7 +197,7 @@ export function useSellCart() {
 
       const description = `Venta: ${input.items.map((i) => i.supply.name).join(', ')}`
       const date = getArgentinaDateString()
-      const { error: txErr } = await supabase
+      const { data: newTxs, error: txErr } = await supabase
         .from('transactions')
         .insert(input.splits.map((split) => ({
           tenant_id: tenantId,
@@ -211,7 +211,9 @@ export function useSellCart() {
           user_id: input.userId,
           status: 'paid',
         })))
+        .select('id, amount, payment_method, client_id')
       if (txErr) throw txErr
+      return (newTxs ?? []) as { id: string; amount: number; payment_method: string; client_id: string | null }[]
     },
     onSuccess: () => {
       // ['supplies'] prefix-matches useSellableSupplies's key (['supplies', tenantId, 'sellable']) too.

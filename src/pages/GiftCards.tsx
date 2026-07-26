@@ -3,6 +3,7 @@ import { getArgentinaDateString } from '../utils/dateUtils'
 import { Gift, Loader2, Download, FileText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import InvoiceModal from '@/components/InvoiceModal'
+import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import { useServices, useTherapists } from '@/hooks/useAppointments'
 import { useGiftCards, useCreateGiftCard, GiftCard } from '@/hooks/useGiftCards'
 import { supabase } from '@/lib/supabase'
@@ -14,7 +15,9 @@ import { Label } from '@/components/ui/label'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { cn, formatCurrency, formatDate, exportToExcel } from '@/lib/utils'
 import { CARD_BASE64 } from '@/lib/cardBase64'
-import { PAYMENT_METHODS } from '@/lib/paymentMethods'
+import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
+import { canAccess } from '@/lib/permissions'
+import { resolveNewTransactions, useElectronicInvoiceQueue, type QueuedInvoiceStatus } from '@/hooks/useAutoInvoice'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
@@ -190,11 +193,12 @@ async function generateGiftCardImage(
 }
 // ── Gift card image modal ──────────────────────────────────────────────────────
 function GiftCardImageModal({
-  gc, onClose, onInvoice,
+  gc, onClose, onInvoice, invoiceStatus,
 }: {
   gc: GeneratedGiftCard
   onClose: () => void
   onInvoice?: () => void
+  invoiceStatus?: QueuedInvoiceStatus | null
 }) {
   function handleDownload() {
     const a = document.createElement('a')
@@ -222,6 +226,20 @@ function GiftCardImageModal({
           <img src={gc.imageDataUrl} alt={`Gift Card ${gc.tenantName}`} style={{ width: '100%', borderRadius: '8px' }} />
         </div>
 
+        {invoiceStatus && (
+          <div className="flex items-center gap-2 text-sm">
+            {invoiceStatus.status === 'pending' && (
+              <><Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" /><span className="text-muted-foreground">Emitiendo factura...</span></>
+            )}
+            {invoiceStatus.status === 'done' && (
+              <><span className="text-green-700">Factura emitida ✓</span></>
+            )}
+            {invoiceStatus.status === 'error' && (
+              <span className="text-red-600">{invoiceStatus.message}</span>
+            )}
+          </div>
+        )}
+
         <div className="flex gap-2 mt-2">
           <Button onClick={handleDownload} className="flex-1 gap-2">
             <Download className="w-4 h-4" /> Descargar Gift Card
@@ -247,7 +265,7 @@ function GiftCardForm() {
   const { data: services } = useServices()
   const { data: therapists } = useTherapists()
   const createGC = useCreateGiftCard()
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
 
   const [serviceId, setServiceId] = useState('')
   const [duration, setDuration] = useState<60 | 90>(60)
@@ -260,8 +278,11 @@ function GiftCardForm() {
   const [senderName, setSenderName] = useState('')
   const [message, setMessage] = useState('')
   const [generatedGC, setGeneratedGC] = useState<GeneratedGiftCard | null>(null)
-  const [pendingInvoice, setPendingInvoice] = useState<{ amount: number; concept: string; clientName: string } | null>(null)
+  const [pendingInvoice, setPendingInvoice] = useState<{ amount: number; concept: string; clientName: string; transactionId?: string } | null>(null)
   const [showInvoice, setShowInvoice] = useState(false)
+  const [autoInvoiceTxId, setAutoInvoiceTxId] = useState<string | null>(null)
+
+  const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
 
   const selectedService = services?.find((s) => s.id === serviceId)
 
@@ -285,6 +306,7 @@ function GiftCardForm() {
     e.preventDefault()
     if (!serviceId || !amount || !recipientName.trim()) return
     try {
+      const beforeIso = new Date().toISOString()
       const result = await createGC.mutateAsync({
         service_id: serviceId,
         service_name: selectedService?.name ?? 'Servicio',
@@ -299,6 +321,34 @@ function GiftCardForm() {
         sender_name: senderName.trim(),
         message: message.trim(),
       })
+
+      // create_gift_card's description is always exactly 'Gift Card #' + code,
+      // which makes the resulting transaction row unambiguous to find.
+      if (tenantId) {
+        const newTxs = await resolveNewTransactions({
+          tenantId,
+          createdAfter: beforeIso,
+          filters: { description: `Gift Card #${result.code}` },
+        })
+        const tx = newTxs[newTxs.length - 1] ?? null
+        const clientNameForInvoice = recipientName.trim() || 'Consumidor Final'
+        if (tx && hasCajaAccess) {
+          if (isElectronicPayment(tx.payment_method)) {
+            setAutoInvoiceTxId(tx.id)
+            void invoiceQueue.startQueue([{
+              id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+              clientName: clientNameForInvoice, concept: `Gift Card #${result.code}`,
+            }])
+          } else {
+            setPendingInvoice({
+              amount: Number(amount),
+              concept: `Gift Card ${selectedService?.name ?? 'Servicio'} ${duration}min`,
+              clientName: clientNameForInvoice,
+              transactionId: tx.id,
+            })
+          }
+        }
+      }
 
       const { data: tenantData } = await supabase
         .from('tenants')
@@ -332,13 +382,6 @@ function GiftCardForm() {
         imageDataUrl,
         tenantName: td?.name ?? 'GiftCard',
       })
-      if (isOwnerOrAdmin) {
-        setPendingInvoice({
-          amount: Number(amount),
-          concept: `Gift Card ${selectedService?.name ?? 'Servicio'} ${duration}min`,
-          clientName: recipientName.trim() || 'Consumidor Final',
-        })
-      }
       setServiceId(''); setAmount(''); setPaymentMethod('cash'); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
       setRecipientName(''); setSenderName(''); setMessage('')
@@ -463,8 +506,9 @@ function GiftCardForm() {
       {generatedGC && (
         <GiftCardImageModal
           gc={generatedGC}
-          onClose={() => setGeneratedGC(null)}
+          onClose={() => { setGeneratedGC(null); setAutoInvoiceTxId(null) }}
           onInvoice={pendingInvoice ? () => { setGeneratedGC(null); setShowInvoice(true) } : undefined}
+          invoiceStatus={autoInvoiceTxId ? invoiceQueue.results[autoInvoiceTxId] : null}
         />
       )}
 
@@ -476,8 +520,15 @@ function GiftCardForm() {
           clientName={pendingInvoice.clientName}
           amount={pendingInvoice.amount}
           concept={pendingInvoice.concept}
+          transactionId={pendingInvoice.transactionId}
         />
       )}
+
+      <InvoiceTypeChoiceModal
+        open={!!invoiceQueue.pendingChoiceTx}
+        onCancel={invoiceQueue.cancelChoice}
+        onConfirm={invoiceQueue.resolveChoice}
+      />
     </>
   )
 }

@@ -4,13 +4,17 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Loader2, DollarSign, ChevronLeft, ChevronRight, ChevronDown, Wallet,
   TrendingUp, TrendingDown, Receipt, ShoppingCart, CreditCard, Clock, Lock, FileDown, FileText,
-  Plus, CheckCircle2, Pencil, Trash2, ArrowLeftRight,
+  Plus, CheckCircle2, Pencil, Trash2, ArrowLeftRight, Download,
 } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
+import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/useToast'
-import { useClients } from '@/hooks/useClients'
+import { useClients, useClient } from '@/hooks/useClients'
+import { useExistingInvoice, useTriggerInvoicing } from '@/hooks/useAutoInvoice'
+import { isElectronicPayment } from '@/lib/paymentMethods'
+import { generateInvoicePDF } from '@/utils/generateInvoicePDF'
 import { useServices } from '@/hooks/useAppointments'
 import {
   useTransactionsRange,
@@ -991,6 +995,142 @@ function TransactionDetailPanel({ tx, usersMap }: { tx: Transaction; usersMap: M
 }
 
 // ── Tab Movimientos de Caja ───────────────────────────────────────────────────
+// ── Movimientos: per-row invoice action ─────────────────────────────────────
+// Income rows only. If an invoice already exists for the transaction, shows
+// a Download action (re-download only, never re-issues — mirrors
+// Facturacion.tsx's TabHistorial.handlePDF). Otherwise shows an "Emitir
+// factura" action regardless of payment method: electronic transactions
+// should already have auto-invoiced at the moment of sale, so seeing this
+// here means one slipped through — better to allow a manual catch-up than
+// hide the capability.
+function MovimientoFacturaCell({
+  tx, tenantId, arcaConfig,
+}: {
+  tx: Transaction
+  tenantId: string
+  arcaConfig: { razon_social?: string | null; cuit?: string | null; iva_condition?: string | null } | null | undefined
+}) {
+  const qc = useQueryClient()
+  const { data: existingInvoice, isLoading } = useExistingInvoice(tx.id)
+  const { data: client } = useClient(tx.client_id ?? '')
+  const { triggerInvoicing } = useTriggerInvoicing()
+
+  const [status, setStatus] = useState<'idle' | 'pending' | 'error'>('idle')
+  const [errorMsg, setErrorMsg] = useState('')
+  const [showChoice, setShowChoice] = useState(false)
+  const [showManualInvoice, setShowManualInvoice] = useState(false)
+
+  const clientName = tx.client_id && client
+    ? [client.first_name, client.last_name].filter(Boolean).join(' ') || 'Consumidor Final'
+    : 'Consumidor Final'
+  const concept = tx.description ?? 'Venta'
+
+  function invalidateInvoiceCheck() {
+    qc.invalidateQueries({ queryKey: ['existing-invoice', tenantId, tx.id] })
+  }
+
+  async function handleEmitirElectronic(invoiceType?: 'A' | 'B', receptorCuit?: string) {
+    setStatus('pending')
+    setErrorMsg('')
+    try {
+      const result = await triggerInvoicing({
+        tenantId,
+        transactionId: tx.id,
+        clientId: tx.client_id ?? undefined,
+        clientName,
+        amount: tx.amount,
+        concept,
+        paymentMethod: tx.payment_method ?? '',
+        invoiceType,
+        receptorCuit,
+      })
+      if (result.needsInvoiceTypeChoice) {
+        setStatus('idle')
+        setShowChoice(true)
+        return
+      }
+      setStatus('idle')
+      invalidateInvoiceCheck()
+    } catch (e) {
+      setStatus('error')
+      setErrorMsg(e instanceof Error ? e.message : 'Error al facturar')
+    }
+  }
+
+  function handleDownload() {
+    if (!existingInvoice || existingInvoice.invoice_number == null) return
+    void generateInvoicePDF({
+      invoice_type: existingInvoice.invoice_type,
+      invoice_number: existingInvoice.invoice_number,
+      punto_venta: existingInvoice.punto_venta ?? 1,
+      razon_social: arcaConfig?.razon_social ?? '',
+      cuit_emisor: arcaConfig?.cuit ?? '',
+      iva_condition_emisor: arcaConfig?.iva_condition ?? 'monotributo',
+      client_name: existingInvoice.client_name,
+      client_cuit: existingInvoice.client_cuit,
+      client_iva_condition: existingInvoice.client_iva_condition ?? 'consumidor_final',
+      concept: existingInvoice.concept ?? 'Servicios prestados',
+      subtotal: existingInvoice.subtotal,
+      iva_amount: existingInvoice.iva_amount,
+      total: existingInvoice.total,
+      cae: existingInvoice.cae ?? '',
+      cae_expires_at: existingInvoice.cae_expires_at ?? '',
+      date: existingInvoice.created_at,
+    })
+  }
+
+  if (isLoading) return null
+
+  if (existingInvoice) {
+    return (
+      <button
+        onClick={(e) => { e.stopPropagation(); handleDownload() }}
+        title="Descargar PDF"
+        className="text-plum-600 hover:text-plum-800 transition-colors"
+      >
+        <Download className="w-3.5 h-3.5" />
+      </button>
+    )
+  }
+
+  return (
+    <>
+      <button
+        onClick={(e) => {
+          e.stopPropagation()
+          if (isElectronicPayment(tx.payment_method ?? '')) void handleEmitirElectronic()
+          else setShowManualInvoice(true)
+        }}
+        title="Emitir factura"
+        disabled={status === 'pending'}
+        className="text-plum-400 hover:text-plum-700 transition-colors disabled:opacity-50"
+      >
+        {status === 'pending' ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+      </button>
+      {status === 'error' && <span className="text-xs text-red-600 ml-1">{errorMsg}</span>}
+
+      <InvoiceTypeChoiceModal
+        open={showChoice}
+        onCancel={() => setShowChoice(false)}
+        onConfirm={(type, cuit) => { setShowChoice(false); void handleEmitirElectronic(type, cuit) }}
+      />
+
+      {showManualInvoice && (
+        <InvoiceModal
+          isOpen={showManualInvoice}
+          onClose={() => { setShowManualInvoice(false); invalidateInvoiceCheck() }}
+          tenantId={tenantId}
+          clientName={clientName}
+          clientId={tx.client_id ?? undefined}
+          amount={tx.amount}
+          concept={concept}
+          transactionId={tx.id}
+        />
+      )}
+    </>
+  )
+}
+
 function TabMovimientos() {
   const now = new Date()
   const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -1010,6 +1150,22 @@ function TabMovimientos() {
     for (const u of tenantUsers ?? []) map.set(u.id, u.full_name)
     return map
   }, [tenantUsers])
+
+  const { profile } = useAuth()
+  const tenantId = useTenantId()
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
+  const { data: arcaConfig } = useQuery({
+    queryKey: ['arca-config', tenantId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('tenant_arca_config')
+        .select('razon_social, cuit, iva_condition')
+        .eq('tenant_id', tenantId)
+        .maybeSingle()
+      return data
+    },
+    enabled: !!tenantId && hasCajaAccess,
+  })
 
   const txs = useMemo(() => {
     if (!rawTxs) return []
@@ -1156,6 +1312,7 @@ function TabMovimientos() {
                     <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Descripción</th>
                     <th className="text-left px-3 py-2.5 text-xs font-medium text-muted-foreground">Medio</th>
                     <th className="text-right px-4 py-2.5 text-xs font-medium text-muted-foreground">Monto</th>
+                    {hasCajaAccess && <th className="w-10 px-2 py-2.5"></th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1204,10 +1361,17 @@ function TabMovimientos() {
                           )}>
                             {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                           </td>
+                          {hasCajaAccess && (
+                            <td className="px-2 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
+                              {tx.type === 'income' && tenantId && (
+                                <MovimientoFacturaCell tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
+                              )}
+                            </td>
+                          )}
                         </tr>
                         {isExpanded && (
                           <tr className="border-b last:border-0 bg-gray-50/40">
-                            <td colSpan={7} className="px-4 py-3">
+                            <td colSpan={hasCajaAccess ? 8 : 7} className="px-4 py-3">
                               <TransactionDetailPanel tx={tx} usersMap={usersMap} />
                             </td>
                           </tr>

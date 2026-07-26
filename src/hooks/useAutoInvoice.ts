@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { isElectronicPayment } from '@/lib/paymentMethods'
@@ -128,5 +129,143 @@ export function useTriggerInvoicing() {
     triggerInvoicing: mutation.mutateAsync,
     isPending: mutation.isPending,
     error: mutation.error,
+  }
+}
+
+// ── Stage 2 additions ─────────────────────────────────────────────────────────
+// The four sale flows (session close, membership, gift card, product cart) all
+// need the same two things: a way to find the transaction row(s) a just-run
+// RPC/insert created (none of those calls return transaction ids directly),
+// and a way to walk a list of transactions through triggerInvoicing one at a
+// time, pausing for the A/B choice modal when needed. Built once here instead
+// of four times to keep that (non-trivial, money-handling) logic consistent.
+
+export type ResolvedTransaction = {
+  id: string
+  amount: number
+  payment_method: string
+  client_id: string | null
+}
+
+// Finds transaction rows created after `createdAfter` (capture this via
+// new Date().toISOString() immediately before calling the RPC/insert) matching
+// the given equality filters. None of close_appointment_with_payment,
+// sell_membership, or create_gift_card return the transaction ids they insert,
+// so callers resolve them with a tight time-bound query instead of changing
+// those RPCs' return types (a bigger, riskier change than Stage 2 needs).
+export async function resolveNewTransactions(params: {
+  tenantId: string
+  createdAfter: string
+  filters: Record<string, string | number>
+}): Promise<ResolvedTransaction[]> {
+  let query = supabase
+    .from('transactions')
+    .select('id, amount, payment_method, client_id')
+    .eq('tenant_id', params.tenantId)
+    .gte('created_at', params.createdAfter)
+  for (const [column, value] of Object.entries(params.filters)) {
+    query = query.eq(column, value)
+  }
+  const { data, error } = await query.order('created_at', { ascending: true })
+  if (error) throw error
+  return (data ?? []) as ResolvedTransaction[]
+}
+
+export type QueuedInvoiceTx = {
+  id: string
+  amount: number
+  paymentMethod: string
+  clientId?: string | null
+  clientName: string
+  concept: string
+}
+
+export type QueuedInvoiceStatus = {
+  status: 'pending' | 'done' | 'error'
+  message?: string
+  invoice?: InvoiceResult
+}
+
+// Sequentially runs triggerInvoicing over a list of (already known electronic)
+// transactions. When one needs the A/B choice, processing pauses and exposes
+// `pendingChoiceTx` — the caller renders InvoiceTypeChoiceModal and calls
+// resolveChoice() on confirm, which re-fires that transaction with the chosen
+// type and then resumes the rest of the queue. cancelChoice() marks the
+// paused transaction as skipped and resumes the remaining queue.
+export function useElectronicInvoiceQueue(opts: {
+  tenantId: string | null | undefined
+}) {
+  const { triggerInvoicing } = useTriggerInvoicing()
+  const [results, setResults] = useState<Record<string, QueuedInvoiceStatus>>({})
+  const [pendingChoiceTx, setPendingChoiceTx] = useState<QueuedInvoiceTx | null>(null)
+  const [remainingQueue, setRemainingQueue] = useState<QueuedInvoiceTx[]>([])
+
+  async function invoiceOne(
+    tx: QueuedInvoiceTx,
+    invoiceType?: 'A' | 'B',
+    receptorCuit?: string,
+  ): Promise<'paused' | 'done'> {
+    if (!opts.tenantId) return 'done'
+    setResults((prev) => ({ ...prev, [tx.id]: { status: 'pending' } }))
+    try {
+      const result = await triggerInvoicing({
+        tenantId: opts.tenantId,
+        transactionId: tx.id,
+        clientId: tx.clientId ?? undefined,
+        clientName: tx.clientName,
+        amount: tx.amount,
+        concept: tx.concept,
+        paymentMethod: tx.paymentMethod,
+        invoiceType,
+        receptorCuit,
+      })
+      if (result.needsInvoiceTypeChoice) {
+        setPendingChoiceTx(tx)
+        return 'paused'
+      }
+      setResults((prev) => ({ ...prev, [tx.id]: { status: 'done', invoice: result.invoice } }))
+      return 'done'
+    } catch (e) {
+      setResults((prev) => ({
+        ...prev,
+        [tx.id]: { status: 'error', message: e instanceof Error ? e.message : 'Error al facturar' },
+      }))
+      return 'done'
+    }
+  }
+
+  async function processQueue(queue: QueuedInvoiceTx[]) {
+    if (queue.length === 0) return
+    const [tx, ...rest] = queue
+    const outcome = await invoiceOne(tx)
+    if (outcome === 'paused') {
+      setRemainingQueue(rest)
+      return
+    }
+    await processQueue(rest)
+  }
+
+  async function resolveChoice(invoiceType: 'A' | 'B', receptorCuit?: string) {
+    if (!pendingChoiceTx) return
+    const tx = pendingChoiceTx
+    setPendingChoiceTx(null)
+    await invoiceOne(tx, invoiceType, receptorCuit)
+    await processQueue(remainingQueue)
+  }
+
+  async function cancelChoice() {
+    if (!pendingChoiceTx) return
+    const tx = pendingChoiceTx
+    setResults((prev) => ({ ...prev, [tx.id]: { status: 'error', message: 'Facturación cancelada' } }))
+    setPendingChoiceTx(null)
+    await processQueue(remainingQueue)
+  }
+
+  return {
+    startQueue: processQueue,
+    results,
+    pendingChoiceTx,
+    resolveChoice,
+    cancelChoice,
   }
 }
