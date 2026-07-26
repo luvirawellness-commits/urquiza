@@ -70,9 +70,23 @@ serve(async (req: Request) => {
     return json({ error: 'Configuration error' }, 500)
   }
 
-  const MP_ACCESS_TOKEN = Deno.env.get('MP_ACCESS_TOKEN')
+  // Which MP account's token to fetch the payment with has to be known
+  // BEFORE fetching it (fetching IS how metadata.type would otherwise be
+  // read) — MP's own webhook payload is just { type: 'payment', data: { id } },
+  // no tenant/flow context. So the discriminator instead lives in the
+  // notification_url's own query string, which we control at preference-
+  // creation time and MP preserves as configured. create-payment sets
+  // ?flow=plan; create-sena-payment's notification_url is untouched (no
+  // ?flow=), so the absence of the param here is exactly today's existing
+  // sena behavior, unchanged.
+  const url = new URL(req.url)
+  const isPlanFlow = url.searchParams.get('flow') === 'plan'
+
+  const MP_ACCESS_TOKEN = isPlanFlow
+    ? Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN')
+    : Deno.env.get('MP_ACCESS_TOKEN')
   if (!MP_ACCESS_TOKEN) {
-    console.error('MP_ACCESS_TOKEN not set')
+    console.error(isPlanFlow ? 'MP_SUBSCRIPTIONS_ACCESS_TOKEN not set' : 'MP_ACCESS_TOKEN not set')
     return json({ error: 'Configuration error' }, 500)
   }
 
@@ -83,8 +97,6 @@ serve(async (req: Request) => {
   )
 
   try {
-    const url = new URL(req.url)
-
     // Read signature headers before consuming body
     const xSignature = req.headers.get('x-signature') ?? ''
     const xRequestId = req.headers.get('x-request-id') ?? ''

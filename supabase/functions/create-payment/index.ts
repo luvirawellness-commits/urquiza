@@ -33,9 +33,12 @@ serve(async (req: Request) => {
     const body = await req.json() as Record<string, any>
     const { tenant_id, plan, access_token, test: isTest } = body
 
+    // Separate MercadoPago application from the one create-sena-payment uses —
+    // this is Cristian's own account (Luvira OS's subscription revenue),
+    // never the tenant's own deposit money.
     const MP_ACCESS_TOKEN = isTest === true
-      ? Deno.env.get('MP_ACCESS_TOKEN_TEST')
-      : Deno.env.get('MP_ACCESS_TOKEN')
+      ? Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN_TEST')
+      : Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN')
     if (!MP_ACCESS_TOKEN) return err('Configuración de pago incompleta', 500)
 
     if (!tenant_id || !plan || !access_token) {
@@ -83,7 +86,12 @@ serve(async (req: Request) => {
         pending: 'https://app.luviraos.com/pago-pendiente',
       },
       auto_return: 'approved',
-      notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook`,
+      // ?flow=plan tells mp-webhook which MP account's token to fetch this
+      // payment with, before it's fetched the payment (and so before it can
+      // read metadata.type). MP preserves query params on notification_url
+      // as configured — sena's notification_url is untouched (no ?flow=),
+      // so mp-webhook's existing default there is unaffected by this change.
+      notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook?flow=plan`,
       metadata: { tenant_id, plan, test: isTest ?? false },
       statement_descriptor: 'LUVIRA OS',
     }
