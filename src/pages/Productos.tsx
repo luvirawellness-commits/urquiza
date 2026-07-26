@@ -13,15 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { cn, formatCurrency } from '@/lib/utils'
 import type { Supply, Client } from '@/types'
-
-const PAYMENT_METHODS = [
-  { value: 'cash', label: 'Efectivo' },
-  { value: 'transfer', label: 'Transferencia' },
-  { value: 'qr', label: 'QR' },
-  { value: 'mp', label: 'Mercado Pago' },
-  { value: 'debit', label: 'Débito' },
-  { value: 'credit', label: 'Crédito' },
-] as const
+import { PAYMENT_METHODS } from '@/lib/paymentMethods'
 
 const SELECT_CLS =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'

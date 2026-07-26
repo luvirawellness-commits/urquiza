@@ -27,6 +27,7 @@ import {
 import { cn, formatTime, formatDate, formatCurrency } from '@/lib/utils'
 import type { Appointment, AppointmentStatus, Client } from '@/types'
 import { getArgentinaDateString } from '../utils/dateUtils'
+import { PAYMENT_METHODS } from '@/lib/paymentMethods'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -242,14 +243,6 @@ const TERMINAL: AppointmentStatus[] = ['completed', 'cancelled', 'no_show', 'blo
 const SELECT_CLS =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
-const PAYMENT_METHODS = [
-  { value: 'cash', label: 'Efectivo' },
-  { value: 'transfer', label: 'Transferencia' },
-  { value: 'qr', label: 'QR' },
-  { value: 'mp', label: 'Mercado Pago' },
-  { value: 'debit', label: 'Débito' },
-  { value: 'credit', label: 'Crédito' },
-] as const
 
 type PaymentType = 'efectivo_digital' | 'membresia' | 'gift_card'
 type SplitRow = { method: string; amount: string }

@@ -16,6 +16,7 @@ import { useMembershipPlans, useSellMembership } from '@/hooks/useClientMembersh
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import InvoiceModal from '@/components/InvoiceModal'
 import type { MembershipPlan } from '@/types'
+import { PAYMENT_METHODS } from '@/lib/paymentMethods'
 
 type Props = {
   open: boolean
@@ -26,15 +27,6 @@ type Props = {
   restrictToServiceId?: string
   restrictToServiceName?: string
 }
-
-const PAYMENT_METHODS = [
-  { value: 'cash', label: 'Efectivo' },
-  { value: 'transfer', label: 'Transferencia' },
-  { value: 'qr', label: 'QR' },
-  { value: 'mp', label: 'Mercado Pago' },
-  { value: 'debit', label: 'Débito' },
-  { value: 'credit', label: 'Crédito' },
-] as const
 
 const SELECT_CLS =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
