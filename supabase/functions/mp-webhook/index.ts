@@ -42,12 +42,6 @@ async function verifyMpSignature(
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('')
 
-  // TEMPORARY DEBUG — remove once the subscriptions signature mismatch is
-  // resolved. Neither value is secret (manifest is id/request-id/ts; hex is
-  // our computed signature, not MP's), safe to log in full/partial.
-  console.log('DEBUG manifest:', manifest)
-  console.log('DEBUG computed hex (first12):', hex.slice(0, 12))
-
   return hex === v1
 }
 
@@ -99,18 +93,6 @@ serve(async (req: Request) => {
       ? 'MP_SUBSCRIPTIONS_WEBHOOK_SECRET not configured — cannot verify webhook signatures'
       : 'MP_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
     return json({ error: 'Configuration error' }, 500)
-  }
-
-  // TEMPORARY DEBUG — remove once the subscriptions signature mismatch is
-  // resolved. Partial reveal only (length + 4 chars each end), never the
-  // full secret, to compare what Supabase is actually reading for
-  // MP_SUBSCRIPTIONS_WEBHOOK_SECRET against what's in MP's dashboard.
-  if (isPlanFlow) {
-    console.log('DEBUG webhookSecret fingerprint:', {
-      length: webhookSecret?.length,
-      first4: webhookSecret?.slice(0, 4),
-      last4: webhookSecret?.slice(-4),
-    })
   }
 
   const MP_ACCESS_TOKEN = isPlanFlow
