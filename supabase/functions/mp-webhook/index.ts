@@ -64,23 +64,32 @@ serve(async (req: Request) => {
 
   if (!rl.allowed) return rateLimitResponse(rl.resetIn)
 
-  const webhookSecret = Deno.env.get('MP_WEBHOOK_SECRET')
-  if (!webhookSecret) {
-    console.error('MP_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
-    return json({ error: 'Configuration error' }, 500)
-  }
-
-  // Which MP account's token to fetch the payment with has to be known
-  // BEFORE fetching it (fetching IS how metadata.type would otherwise be
-  // read) — MP's own webhook payload is just { type: 'payment', data: { id } },
-  // no tenant/flow context. So the discriminator instead lives in the
-  // notification_url's own query string, which we control at preference-
-  // creation time and MP preserves as configured. create-payment sets
-  // ?flow=plan; create-sena-payment's notification_url is untouched (no
-  // ?flow=), so the absence of the param here is exactly today's existing
-  // sena behavior, unchanged.
+  // Which MP account this notification belongs to has to be known before any
+  // per-account secret/token lookup — MP's own webhook payload is just
+  // { type: 'payment', data: { id } }, no tenant/flow context, and fetching
+  // the payment to find out is itself gated behind having the right token.
+  // So the discriminator instead lives in the notification_url's own query
+  // string, which we control at preference-creation time and MP preserves
+  // as configured. create-payment sets ?flow=plan; create-sena-payment's
+  // notification_url is untouched (no ?flow=), so the absence of the param
+  // here is exactly today's existing sena behavior, unchanged.
   const url = new URL(req.url)
   const isPlanFlow = url.searchParams.get('flow') === 'plan'
+
+  // Each MP application ("Luvira OS - Suscripciones" vs. the sena/tenant-
+  // deposit one) signs its webhook notifications with its own secret —
+  // verifying a plan-flow notification against the sena secret (or vice
+  // versa) always fails, so this has to branch the same way the token
+  // selection below does.
+  const webhookSecret = isPlanFlow
+    ? Deno.env.get('MP_SUBSCRIPTIONS_WEBHOOK_SECRET')
+    : Deno.env.get('MP_WEBHOOK_SECRET')
+  if (!webhookSecret) {
+    console.error(isPlanFlow
+      ? 'MP_SUBSCRIPTIONS_WEBHOOK_SECRET not configured — cannot verify webhook signatures'
+      : 'MP_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
+    return json({ error: 'Configuration error' }, 500)
+  }
 
   const MP_ACCESS_TOKEN = isPlanFlow
     ? Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN')
