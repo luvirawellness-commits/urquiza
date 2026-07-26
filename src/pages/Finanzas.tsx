@@ -519,8 +519,8 @@ function SectionMovimientosHoy() {
 
   const { profile } = useAuth()
   const tenantId = useTenantId()
-  const isOwnerOrAdmin = profile?.role === 'owner' || profile?.role === 'partner_admin' || profile?.role === 'super_admin'
-  const [invoiceTx, setInvoiceTx] = useState<{ id: string; amount: number; description: string } | null>(null)
+  const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
+  const { data: arcaConfig } = useArcaConfigLite(tenantId, hasCajaAccess)
 
   return (
     <div>
@@ -587,32 +587,14 @@ function SectionMovimientosHoy() {
                   )}>
                     {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                   </span>
-                  {isOwnerOrAdmin && tx.type === 'income' && (
-                    <button
-                      title="Emitir factura"
-                      onClick={() => setInvoiceTx({ id: tx.id, amount: tx.amount, description: tx.description })}
-                      className="ml-1 p-1 rounded hover:bg-plum-50 text-plum-400 hover:text-plum-700 transition-colors"
-                    >
-                      <FileText className="w-3.5 h-3.5" />
-                    </button>
+                  {hasCajaAccess && tx.type === 'income' && tenantId && (
+                    <TransactionInvoiceAction tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
                   )}
                 </div>
               </CardContent>
             </Card>
           ))}
         </div>
-      )}
-
-      {invoiceTx && (
-        <InvoiceModal
-          isOpen={!!invoiceTx}
-          onClose={() => setInvoiceTx(null)}
-          tenantId={tenantId}
-          clientName="Consumidor Final"
-          amount={invoiceTx.amount}
-          concept={invoiceTx.description}
-          transactionId={invoiceTx.id}
-        />
       )}
     </div>
   )
@@ -994,16 +976,37 @@ function TransactionDetailPanel({ tx, usersMap }: { tx: Transaction; usersMap: M
   )
 }
 
-// ── Tab Movimientos de Caja ───────────────────────────────────────────────────
-// ── Movimientos: per-row invoice action ─────────────────────────────────────
-// Income rows only. If an invoice already exists for the transaction, shows
-// a Download action (re-download only, never re-issues — mirrors
-// Facturacion.tsx's TabHistorial.handlePDF). Otherwise shows an "Emitir
-// factura" action regardless of payment method: electronic transactions
-// should already have auto-invoiced at the moment of sale, so seeing this
-// here means one slipped through — better to allow a manual catch-up than
-// hide the capability.
-function MovimientoFacturaCell({
+// ── Shared: tenant ARCA config (razón social/CUIT/IVA condition only) ────────
+// Used wherever a PDF needs to be regenerated from a stored invoice. Same
+// queryKey as Facturacion.tsx's own local useArcaConfig, so react-query
+// dedupes the fetch across screens instead of each one hitting the DB apart.
+function useArcaConfigLite(tenantId: string | null | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['arca-config', tenantId],
+    queryFn: async () => {
+      const { data } = await supabase
+        .from('tenant_arca_config')
+        .select('razon_social, cuit, iva_condition')
+        .eq('tenant_id', tenantId)
+        .maybeSingle()
+      return data
+    },
+    enabled: !!tenantId && enabled,
+  })
+}
+
+// ── Shared: invoice action for a transaction row ────────────────────────────
+// Used by both TabMovimientos (Finanzas → Movimientos de Caja, historical,
+// all-time) and SectionMovimientosHoy (Caja tab, today-only) — one
+// implementation instead of two independently-maintained copies. Income
+// rows only, caja-permission gated by the caller. If an invoice already
+// exists for the transaction, shows a Download action (re-download only,
+// never re-issues — mirrors Facturacion.tsx's TabHistorial.handlePDF).
+// Otherwise shows an "Emitir factura" action regardless of payment method:
+// electronic transactions should already have auto-invoiced at the moment
+// of sale, so seeing this here means one slipped through — better to allow
+// a manual catch-up than hide the capability.
+function TransactionInvoiceAction({
   tx, tenantId, arcaConfig,
 }: {
   tx: Transaction
@@ -1131,6 +1134,7 @@ function MovimientoFacturaCell({
   )
 }
 
+// ── Tab Movimientos de Caja ───────────────────────────────────────────────────
 function TabMovimientos() {
   const now = new Date()
   const currentMonthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
@@ -1154,18 +1158,7 @@ function TabMovimientos() {
   const { profile } = useAuth()
   const tenantId = useTenantId()
   const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
-  const { data: arcaConfig } = useQuery({
-    queryKey: ['arca-config', tenantId],
-    queryFn: async () => {
-      const { data } = await supabase
-        .from('tenant_arca_config')
-        .select('razon_social, cuit, iva_condition')
-        .eq('tenant_id', tenantId)
-        .maybeSingle()
-      return data
-    },
-    enabled: !!tenantId && hasCajaAccess,
-  })
+  const { data: arcaConfig } = useArcaConfigLite(tenantId, hasCajaAccess)
 
   const txs = useMemo(() => {
     if (!rawTxs) return []
@@ -1364,7 +1357,7 @@ function TabMovimientos() {
                           {hasCajaAccess && (
                             <td className="px-2 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
                               {tx.type === 'income' && tenantId && (
-                                <MovimientoFacturaCell tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
+                                <TransactionInvoiceAction tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
                               )}
                             </td>
                           )}

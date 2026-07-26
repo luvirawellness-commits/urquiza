@@ -354,7 +354,7 @@ serve(async (req: Request) => {
     // 3. Invoice fields
     const {
       invoice_type, client_name, client_cuit, client_iva_condition,
-      client_address, subtotal, appointment_id, transaction_id, client_id,
+      client_address, subtotal, appointment_id, transaction_id, client_id, concept,
     } = body
 
     if (!invoice_type || !client_name || !subtotal) {
@@ -449,6 +449,7 @@ serve(async (req: Request) => {
         client_cuit:          client_cuit ?? null,
         client_iva_condition: client_iva_condition ?? 'consumidor_final',
         client_address:       client_address ?? null,
+        concept:              concept ?? null,
         status:               'authorized',
         arca_response:        { cae, caeVto, cbteTipo, nextNum },
       })
