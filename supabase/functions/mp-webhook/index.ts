@@ -81,9 +81,13 @@ serve(async (req: Request) => {
   // verifying a plan-flow notification against the sena secret (or vice
   // versa) always fails, so this has to branch the same way the token
   // selection below does.
-  const webhookSecret = isPlanFlow
+  // .trim() defensively — a stray trailing newline/space from pasting a
+  // secret into the dashboard is invisible but changes the HMAC key
+  // material entirely, and fails signature verification the exact same way
+  // a genuinely wrong secret would.
+  const webhookSecret = (isPlanFlow
     ? Deno.env.get('MP_SUBSCRIPTIONS_WEBHOOK_SECRET')
-    : Deno.env.get('MP_WEBHOOK_SECRET')
+    : Deno.env.get('MP_WEBHOOK_SECRET'))?.trim()
   if (!webhookSecret) {
     console.error(isPlanFlow
       ? 'MP_SUBSCRIPTIONS_WEBHOOK_SECRET not configured — cannot verify webhook signatures'
