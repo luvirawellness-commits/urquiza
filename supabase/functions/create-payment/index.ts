@@ -44,13 +44,9 @@ serve(async (req: Request) => {
     if (!tenant_id || !plan || !access_token) {
       return err('tenant_id, plan y access_token son requeridos')
     }
-    // 'test' is a 1-day, $1 USD plan used only to validate the
-    // MP_SUBSCRIPTIONS_ACCESS_TOKEN flow end-to-end with a real low-value
-    // charge — intentionally not listed in Pago.tsx's PLANS, so it's only
-    // reachable by invoking this function directly, never from the UI.
-    const VALID_PLANS = ['monthly', 'quarterly', 'semiannual', 'annual', 'test']
+    const VALID_PLANS = ['monthly', 'quarterly', 'semiannual', 'annual']
     if (!VALID_PLANS.includes(plan)) {
-      return err('plan debe ser "monthly", "quarterly", "semiannual", "annual" o "test"')
+      return err('plan debe ser "monthly", "quarterly", "semiannual" o "annual"')
     }
 
     // 1. Verify access_token
@@ -72,14 +68,12 @@ serve(async (req: Request) => {
       quarterly:  195,
       semiannual: 330,
       annual:     480,
-      test:       1,
     }
     const TITLES: Record<string, string> = {
       monthly:    'Luvira OS — Plan Mensual',
       quarterly:  'Luvira OS — Plan Trimestral (3 meses)',
       semiannual: 'Luvira OS — Plan Semestral (6 meses)',
       annual:     'Luvira OS — Plan Anual (12 meses)',
-      test:       'Suscripción de prueba (1 día)',
     }
     const unitPrice = PRICES[plan]
     const title = TITLES[plan]
