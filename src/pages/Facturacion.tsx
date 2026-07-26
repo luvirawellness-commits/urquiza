@@ -140,9 +140,14 @@ function useInvoices(tenantId: string) {
 
 function TabEmitir({ tenantId, session }: { tenantId: string; session: { access_token: string } | null }) {
   const qc = useQueryClient()
+  const { data: arcaConfig } = useArcaConfig(tenantId)
   const [form, setForm] = useState<InvoiceForm>(EMPTY_INVOICE)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<InvoiceResult | null>(null)
+  // form gets reset right after a successful submit (below), so the
+  // client/concept fields needed for the PDF are captured here before that
+  // reset wipes them — result itself doesn't carry client_name/cuit/concept.
+  const [issuedFor, setIssuedFor] = useState<InvoiceForm | null>(null)
   const [error, setError] = useState('')
 
   const set = (k: keyof InvoiceForm, v: string | boolean) =>
@@ -175,6 +180,7 @@ function TabEmitir({ tenantId, session }: { tenantId: string; session: { access_
       if (data?.error) throw new Error(data.error)
 
       setResult(data as InvoiceResult)
+      setIssuedFor(form)
       setForm(EMPTY_INVOICE)
       qc.invalidateQueries({ queryKey: ['invoices', tenantId] })
     } catch (e) {
@@ -182,6 +188,27 @@ function TabEmitir({ tenantId, session }: { tenantId: string; session: { access_
     } finally {
       setBusy(false)
     }
+  }
+
+  async function handleDownloadPDF() {
+    if (!result || !issuedFor) return
+    await generateInvoicePDF({
+      invoice_type:         result.invoice_type,
+      invoice_number:       result.invoice_number,
+      punto_venta:          result.punto_venta,
+      razon_social:         result.razon_social ?? arcaConfig?.razon_social ?? '',
+      cuit_emisor:          result.cuit_emisor ?? arcaConfig?.cuit ?? '',
+      iva_condition_emisor: arcaConfig?.iva_condition ?? 'monotributo',
+      client_name:          issuedFor.client_name,
+      client_cuit:          issuedFor.client_cuit || null,
+      client_iva_condition: issuedFor.client_iva_condition,
+      concept:              issuedFor.concept,
+      subtotal:             result.subtotal,
+      iva_amount:           result.iva_amount,
+      total:                result.total,
+      cae:                  result.cae,
+      cae_expires_at:       result.cae_expires_at,
+    })
   }
 
   const subtotalNum = parseFloat(form.subtotal || '0')
@@ -204,7 +231,11 @@ function TabEmitir({ tenantId, session }: { tenantId: string; session: { access_
             <div className="col-span-2"><p className="text-gray-500">CAE</p><p className="font-mono text-xs break-all">{result.cae}</p></div>
           </div>
           <div className="flex gap-2 pt-2">
-            <Button size="sm" variant="outline" onClick={() => setResult(null)}>
+            <Button size="sm" variant="outline" onClick={handleDownloadPDF} className="gap-1.5">
+              <Download className="w-3.5 h-3.5" />
+              Descargar PDF
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => { setResult(null); setIssuedFor(null) }}>
               Nueva factura
             </Button>
           </div>
