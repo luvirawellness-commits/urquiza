@@ -126,6 +126,12 @@ serve(async (req: Request) => {
     authUrl.searchParams.set('redirect_uri', redirectUri)
     authUrl.searchParams.set('code_challenge', codeChallenge)
     authUrl.searchParams.set('code_challenge_method', 'S256')
+    // Required for the refresh_token grant to be usable at all (Stage B.3) —
+    // per MP's OAuth renewal docs, refresh only works "if the application
+    // return[s] the scope parameter indicating the value offline_access".
+    // Without this, MP may still issue a refresh_token but reject it at
+    // renewal time, silently defeating the whole refresh mechanism.
+    authUrl.searchParams.set('scope', 'offline_access')
 
     return json({ url: authUrl.toString() })
 

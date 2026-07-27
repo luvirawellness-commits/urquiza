@@ -28,3 +28,10 @@ verify_jwt = false
 # via the state param, matched against tenant_mp_config.oauth_state.
 [functions.mp-oauth-callback]
 verify_jwt = false
+
+# mp-token-refresh-cron is called by a Supabase Cron job (no JWT available) —
+# same reasoning as whatsapp-reminders. Guarded internally by a shared secret
+# (MP_CRON_SECRET, checked against the x-cron-secret header) since it makes
+# MercadoPago API calls on every connected tenant's behalf.
+[functions.mp-token-refresh-cron]
+verify_jwt = false

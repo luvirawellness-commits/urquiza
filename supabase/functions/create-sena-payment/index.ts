@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import { checkRateLimit, rateLimitResponse } from '../_shared/rateLimit.ts'
+import { refreshMpToken } from '../_shared/mpTokenRefresh.ts'
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -73,7 +74,7 @@ serve(async (req: Request) => {
       supabase.from('clients').select('id').eq('id', client_id).eq('tenant_id', tenant_id).maybeSingle(),
       supabase.from('services').select('id').eq('id', service_id).eq('tenant_id', tenant_id).maybeSingle(),
       supabase.from('users').select('id').eq('id', therapist_id).eq('tenant_id', tenant_id).maybeSingle(),
-      supabase.from('tenant_mp_config').select('access_token').eq('tenant_id', tenant_id).maybeSingle(),
+      supabase.from('tenant_mp_config').select('access_token, token_expires_at').eq('tenant_id', tenant_id).maybeSingle(),
     ])
     if (!clientRes.data) return err('Cliente no encontrado', 404)
     if (!serviceRes.data) return err('Servicio no encontrado', 404)
@@ -86,6 +87,29 @@ serve(async (req: Request) => {
     const MP_ACCESS_TOKEN = mpConfigRes.data?.access_token
     if (!MP_ACCESS_TOKEN) {
       return err('Este local todavía no conectó su cuenta de MercadoPago', 400)
+    }
+
+    // Refresh-on-use: proactively renew a token nearing its 180-day expiry so
+    // an active tenant's token is (almost) never the thing that actually
+    // expires — the daily mp-token-refresh-cron job is the backstop for
+    // tenants with no bookings to trigger this path.
+    const REFRESH_MARGIN_MS = 15 * 24 * 60 * 60_000
+    const expiresAtMs = mpConfigRes.data?.token_expires_at
+      ? new Date(mpConfigRes.data.token_expires_at).getTime()
+      : null
+    let accessTokenToUse = MP_ACCESS_TOKEN
+
+    if (expiresAtMs !== null && expiresAtMs - Date.now() <= REFRESH_MARGIN_MS) {
+      const refreshResult = await refreshMpToken(tenant_id)
+      if (refreshResult.success && refreshResult.access_token) {
+        accessTokenToUse = refreshResult.access_token
+      } else {
+        // The stored token may still be valid for up to ~15 more days —
+        // failing a real customer's booking over a proactive-renewal hiccup
+        // would be worse than trying with what we have; if it's truly dead,
+        // the MP preference call below fails with its own clear error instead.
+        console.warn('Sena token refresh-on-use failed, proceeding with existing token:', { tenant_id, error: refreshResult.error })
+      }
     }
 
     // No appointment is created here — mp-webhook creates it only once the
@@ -126,7 +150,7 @@ serve(async (req: Request) => {
     const mpRes = await fetch('https://api.mercadopago.com/checkout/preferences', {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${MP_ACCESS_TOKEN}`,
+        'Authorization': `Bearer ${accessTokenToUse}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(preference),
