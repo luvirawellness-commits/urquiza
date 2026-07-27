@@ -297,7 +297,11 @@ serve(async (req: Request) => {
       const { error: txErr } = await supabase.from('transactions').insert({
         tenant_id: senaTenantId,
         type: 'income',
-        category: 'deposit',
+        // Matches useRegisterDeposit's category for in-person señas — both
+        // are money collected for a session, just at a different point in
+        // time. A distinct 'deposit' category here was an oversight that
+        // silently excluded online señas from the P&L's Sesiones line.
+        category: 'session',
         amount,
         payment_method: 'transfer',
         date: new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Argentina/Buenos_Aires' }),
