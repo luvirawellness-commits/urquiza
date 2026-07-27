@@ -21,3 +21,9 @@ verify_jwt = false
 # whatsapp-reminders is called by a cron scheduler — no JWT available.
 [functions.whatsapp-reminders]
 verify_jwt = false
+
+# mp-oauth-callback is hit directly by the browser as a MercadoPago redirect
+# (no Supabase session on that request) — CSRF is instead handled internally
+# via the state param, matched against tenant_mp_config.oauth_state.
+[functions.mp-oauth-callback]
+verify_jwt = false

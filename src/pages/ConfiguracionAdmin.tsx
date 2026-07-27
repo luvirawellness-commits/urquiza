@@ -1,5 +1,6 @@
 import { useState, useEffect, ElementType } from 'react'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2, CreditCard, Unlink, AlertCircle } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -1841,6 +1842,162 @@ function TabWhatsApp() {
 
 // ── TabReservasOnline ─────────────────────────────────────────────────────────
 
+type MpConfigRow = {
+  tenant_id: string
+  access_token: string | null
+  mp_user_id: string | null
+  is_test_mode: boolean
+}
+
+function useMpConfig(tenantId: string) {
+  return useQuery({
+    queryKey: ['mp-config', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('tenant_mp_config')
+        .select('tenant_id, access_token, mp_user_id, is_test_mode')
+        .eq('tenant_id', tenantId)
+        .maybeSingle()
+      if (error) throw error
+      return data as MpConfigRow | null
+    },
+    enabled: !!tenantId,
+  })
+}
+
+const MP_ERROR_LABELS: Record<string, string> = {
+  missing_params: 'MercadoPago no envió los datos esperados. Intentá de nuevo.',
+  invalid_state: 'La solicitud de conexión no es válida o ya fue usada. Intentá de nuevo.',
+  expired_state: 'La conexión tardó demasiado y expiró. Intentá de nuevo.',
+  server_misconfigured: 'MercadoPago Connect no está configurado del lado del servidor. Contactá a soporte.',
+  token_exchange_failed: 'MercadoPago rechazó el intercambio de credenciales. Intentá de nuevo.',
+  storage_failed: 'La cuenta se conectó pero no se pudo guardar. Intentá de nuevo.',
+  internal_error: 'Ocurrió un error interno. Intentá de nuevo.',
+}
+
+function MpConnectSection({ tenantId }: { tenantId: string }) {
+  const { user, session } = useAuth()
+  const qc = useQueryClient()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const { data: mpConfig, isLoading } = useMpConfig(tenantId)
+  const [connecting, setConnecting] = useState(false)
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [error, setError] = useState('')
+
+  const mpConnected = searchParams.get('mp_connected')
+  const mpErrorParam = searchParams.get('mp_error')
+  const [banner, setBanner] = useState<{ ok: boolean; message: string } | null>(null)
+
+  useEffect(() => {
+    if (mpConnected === 'true') {
+      setBanner({ ok: true, message: 'Cuenta de MercadoPago conectada correctamente.' })
+      qc.invalidateQueries({ queryKey: ['mp-config', tenantId] })
+    } else if (mpConnected === 'false') {
+      setBanner({ ok: false, message: MP_ERROR_LABELS[mpErrorParam ?? ''] ?? 'No se pudo conectar la cuenta de MercadoPago.' })
+    }
+    if (mpConnected !== null) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('mp_connected')
+      next.delete('mp_error')
+      setSearchParams(next, { replace: true })
+    }
+    // Only meant to run once when the redirect back from mp-oauth-callback lands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function handleConnect() {
+    if (!user?.id || !session?.access_token) { setError('Sesión expirada. Recargá la página.'); return }
+    setError('')
+    setConnecting(true)
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('mp-oauth-authorize', {
+        body: { tenant_id: tenantId, user_id: user.id, access_token: session.access_token },
+      })
+      if (fnErr) throw new Error(fnErr.message ?? 'Error al iniciar la conexión con MercadoPago')
+      if (data?.error) throw new Error(data.error)
+      if (!data?.url) throw new Error('MercadoPago no devolvió una URL de autorización')
+      window.location.href = data.url
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al conectar con MercadoPago')
+      setConnecting(false)
+    }
+  }
+
+  async function handleDisconnect() {
+    if (!confirm('¿Desconectar la cuenta de MercadoPago? Las señas de reservas online dejarán de poder cobrarse hasta reconectar.')) return
+    setError('')
+    setDisconnecting(true)
+    try {
+      const { error: updateErr } = await supabase
+        .from('tenant_mp_config')
+        .update({
+          access_token: null,
+          refresh_token: null,
+          token_expires_at: null,
+          mp_user_id: null,
+          public_key: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('tenant_id', tenantId)
+      if (updateErr) throw updateErr
+      await qc.invalidateQueries({ queryKey: ['mp-config', tenantId] })
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error al desconectar')
+    } finally {
+      setDisconnecting(false)
+    }
+  }
+
+  const isConnected = !!mpConfig?.access_token
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+          <CreditCard className="w-4 h-4" />
+          Cuenta de MercadoPago
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Conectá la cuenta de MercadoPago de este local para que las señas de reservas online se acrediten directamente ahí.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {banner && (
+          <div className={cn(
+            'flex items-start gap-2 p-3 rounded-lg text-sm',
+            banner.ok ? 'bg-green-50 border border-green-200 text-green-700' : 'bg-red-50 border border-red-200 text-red-700'
+          )}>
+            {banner.ok ? <Check className="w-4 h-4 flex-shrink-0 mt-0.5" /> : <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />}
+            {banner.message}
+          </div>
+        )}
+
+        {isLoading ? (
+          <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+        ) : isConnected ? (
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2 text-sm">
+              <Badge variant="success">Conectado</Badge>
+              <span className="text-muted-foreground">Cuenta MP: {mpConfig?.mp_user_id}</span>
+              {mpConfig?.is_test_mode && <Badge variant="secondary" className="text-xs">Modo prueba</Badge>}
+            </div>
+            <Button variant="outline" size="sm" onClick={handleDisconnect} disabled={disconnecting} className="gap-1.5">
+              {disconnecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Unlink className="w-3.5 h-3.5" />}
+              Desconectar
+            </Button>
+          </div>
+        ) : (
+          <Button onClick={handleConnect} disabled={connecting} className="bg-plum-700 hover:bg-plum-800 text-white gap-1.5">
+            {connecting ? <><Loader2 className="w-4 h-4 animate-spin" />Redirigiendo...</> : <><CreditCard className="w-4 h-4" />Conectar MercadoPago</>}
+          </Button>
+        )}
+
+        {error && <p className="text-sm text-red-600">{error}</p>}
+      </CardContent>
+    </Card>
+  )
+}
+
 function TabReservasOnline() {
   const { currentTenant, currentTenantId, refreshTenants } = useAuth()
 
@@ -1932,6 +2089,8 @@ function TabReservasOnline() {
           </div>
         </CardContent>
       </Card>
+
+      <MpConnectSection tenantId={currentTenantId} />
     </div>
   )
 }
