@@ -70,36 +70,35 @@ serve(async (req: Request) => {
   // the payment to find out is itself gated behind having the right token.
   // So the discriminator instead lives in the notification_url's own query
   // string, which we control at preference-creation time and MP preserves
-  // as configured. create-payment sets ?flow=plan; create-sena-payment's
-  // notification_url is untouched (no ?flow=), so the absence of the param
-  // here is exactly today's existing sena behavior, unchanged.
+  // as configured. create-payment sets ?flow=plan; create-sena-payment (Stage
+  // B) sets ?flow=sena&tenant_id=... — tenant_id is how the sena branch below
+  // knows which tenant's OAuth-connected account to use.
   const url = new URL(req.url)
   const isPlanFlow = url.searchParams.get('flow') === 'plan'
+  const senaTenantIdParam = url.searchParams.get('tenant_id')
 
-  // Each MP application ("Luvira OS - Suscripciones" vs. the sena/tenant-
-  // deposit one) signs its webhook notifications with its own secret —
+  // Each MP application signs its webhook notifications with its own secret —
   // verifying a plan-flow notification against the sena secret (or vice
   // versa) always fails, so this has to branch the same way the token
-  // selection below does.
+  // selection below does. Sena payments moved to per-tenant OAuth-connected
+  // accounts in Stage B, all created through the "Luvira OS - Connect"
+  // application — MP_PLATFORM_WEBHOOK_SECRET is THAT application's own
+  // webhook secret (configured in its "Your integrations" > Webhooks panel),
+  // not the old MP_WEBHOOK_SECRET, which belonged to whichever personal
+  // account the shared pre-Stage-B sena token was issued under. Reusing the
+  // old secret here would silently fail signature verification on every sena
+  // payment — the exact "wrong secret" bug from Stage A, so no fallback.
   // .trim() defensively — a stray trailing newline/space from pasting a
   // secret into the dashboard is invisible but changes the HMAC key
   // material entirely, and fails signature verification the exact same way
   // a genuinely wrong secret would.
   const webhookSecret = (isPlanFlow
     ? Deno.env.get('MP_SUBSCRIPTIONS_WEBHOOK_SECRET')
-    : Deno.env.get('MP_WEBHOOK_SECRET'))?.trim()
+    : Deno.env.get('MP_PLATFORM_WEBHOOK_SECRET'))?.trim()
   if (!webhookSecret) {
     console.error(isPlanFlow
       ? 'MP_SUBSCRIPTIONS_WEBHOOK_SECRET not configured — cannot verify webhook signatures'
-      : 'MP_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
-    return json({ error: 'Configuration error' }, 500)
-  }
-
-  const MP_ACCESS_TOKEN = isPlanFlow
-    ? Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN')
-    : Deno.env.get('MP_ACCESS_TOKEN')
-  if (!MP_ACCESS_TOKEN) {
-    console.error(isPlanFlow ? 'MP_SUBSCRIPTIONS_ACCESS_TOKEN not set' : 'MP_ACCESS_TOKEN not set')
+      : 'MP_PLATFORM_WEBHOOK_SECRET not configured — cannot verify webhook signatures')
     return json({ error: 'Configuration error' }, 500)
   }
 
@@ -108,6 +107,46 @@ serve(async (req: Request) => {
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
     { auth: { autoRefreshToken: false, persistSession: false } },
   )
+
+  // Plan/subscription payments still use one shared platform token (Stage A,
+  // untouched). Sena payments now use each tenant's own OAuth-connected
+  // MercadoPago access token (Stage B) looked up by the tenant_id carried in
+  // the notification_url — no shared sena token exists to fall back to.
+  let MP_ACCESS_TOKEN: string
+  if (isPlanFlow) {
+    const token = Deno.env.get('MP_SUBSCRIPTIONS_ACCESS_TOKEN')
+    if (!token) {
+      console.error('MP_SUBSCRIPTIONS_ACCESS_TOKEN not set')
+      return json({ error: 'Configuration error' }, 500)
+    }
+    MP_ACCESS_TOKEN = token
+  } else {
+    if (!senaTenantIdParam) {
+      // Only expected for a preference created before this migration shipped
+      // (old notification_url had no tenant_id) — there's no shared sena
+      // token left to fall back to, so this can't be resolved automatically.
+      console.error('Sena webhook missing tenant_id in notification_url — cannot resolve MercadoPago account', { url: req.url })
+      return json({ error: 'Missing tenant_id in notification_url' }, 400)
+    }
+
+    const { data: mpConfig, error: mpConfigErr } = await supabase
+      .from('tenant_mp_config')
+      .select('access_token')
+      .eq('tenant_id', senaTenantIdParam)
+      .maybeSingle()
+
+    if (mpConfigErr) {
+      console.error('Failed to look up tenant_mp_config:', mpConfigErr)
+      return json({ error: 'Failed to resolve tenant MercadoPago account' }, 500)
+    }
+    // Defends against a tenant disconnecting their MP account between
+    // preference creation (already validated there) and this webhook arriving.
+    if (!mpConfig?.access_token) {
+      console.error('Tenant has no connected MercadoPago account:', { tenant_id: senaTenantIdParam })
+      return json({ error: 'Tenant MercadoPago account not connected' }, 400)
+    }
+    MP_ACCESS_TOKEN = mpConfig.access_token
+  }
 
   try {
     // Read signature headers before consuming body

@@ -3,8 +3,9 @@
 project_id = "qklmedcvjacblxngsikl"
 
 # mp-webhook receives unauthenticated POST requests from MercadoPago.
-# Signature authenticity is verified via HMAC-SHA256 (MP_WEBHOOK_SECRET)
-# inside the function itself — JWT verification is intentionally disabled.
+# Signature authenticity is verified via HMAC-SHA256 inside the function
+# itself (MP_SUBSCRIPTIONS_WEBHOOK_SECRET for ?flow=plan, MP_PLATFORM_WEBHOOK_SECRET
+# for sena/tenant-deposit payments) — JWT verification is intentionally disabled.
 [functions.mp-webhook]
 verify_jwt = false
 

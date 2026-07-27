@@ -51,9 +51,6 @@ serve(async (req: Request) => {
       duration_minutes, notes,
     } = body
 
-    const MP_ACCESS_TOKEN = Deno.env.get('MP_ACCESS_TOKEN')
-    if (!MP_ACCESS_TOKEN) return err('Configuración de pago incompleta', 500)
-
     if (!tenant_id || !amount || !client_id || !client_name || !service_name ||
         !service_id || !therapist_id || !scheduled_at || !duration_minutes) {
       return err('Faltan datos requeridos para iniciar el pago de la seña')
@@ -72,14 +69,24 @@ serve(async (req: Request) => {
     // 2. Sanity-check the referenced client/service/therapist belong to this
     // tenant before charging — a bad ID here would only surface as a failed
     // insert in mp-webhook *after* the client has already paid.
-    const [clientRes, serviceRes, therapistRes] = await Promise.all([
+    const [clientRes, serviceRes, therapistRes, mpConfigRes] = await Promise.all([
       supabase.from('clients').select('id').eq('id', client_id).eq('tenant_id', tenant_id).maybeSingle(),
       supabase.from('services').select('id').eq('id', service_id).eq('tenant_id', tenant_id).maybeSingle(),
       supabase.from('users').select('id').eq('id', therapist_id).eq('tenant_id', tenant_id).maybeSingle(),
+      supabase.from('tenant_mp_config').select('access_token').eq('tenant_id', tenant_id).maybeSingle(),
     ])
     if (!clientRes.data) return err('Cliente no encontrado', 404)
     if (!serviceRes.data) return err('Servicio no encontrado', 404)
     if (!therapistRes.data) return err('Terapeuta no encontrado', 404)
+
+    // Each tenant charges into its OWN MercadoPago account via OAuth Connect
+    // (Stage B) — no shared token, no fallback. Falling back to a shared
+    // token here would silently recreate the exact cross-tenant money
+    // problem Stage B exists to fix.
+    const MP_ACCESS_TOKEN = mpConfigRes.data?.access_token
+    if (!MP_ACCESS_TOKEN) {
+      return err('Este local todavía no conectó su cuenta de MercadoPago', 400)
+    }
 
     // No appointment is created here — mp-webhook creates it only once the
     // seña payment is confirmed as 'approved', so an abandoned checkout never
@@ -97,7 +104,10 @@ serve(async (req: Request) => {
         pending: `${bookingReturnUrl}?status=pending`,
       },
       auto_return: 'approved',
-      notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook`,
+      // tenant_id travels in the query string so mp-webhook knows which
+      // tenant's MercadoPago account to fetch the payment with *before* it
+      // has to fetch anything — see mp-webhook's flow/tenant_id handling.
+      notification_url: `${Deno.env.get('SUPABASE_URL')}/functions/v1/mp-webhook?flow=sena&tenant_id=${encodeURIComponent(tenant_id)}`,
       metadata: {
         type: 'sena',
         tenant_id,
