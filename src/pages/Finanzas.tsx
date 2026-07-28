@@ -587,7 +587,7 @@ function SectionMovimientosHoy() {
                   )}>
                     {tx.type === 'income' ? '+' : '-'}{formatCurrency(tx.amount)}
                   </span>
-                  {hasCajaAccess && tx.type === 'income' && tenantId && (
+                  {hasCajaAccess && tx.type === 'income' && tx.category !== 'internal_transfer' && tenantId && (
                     <TransactionInvoiceAction tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
                   )}
                 </div>
@@ -1356,7 +1356,7 @@ function TabMovimientos() {
                           </td>
                           {hasCajaAccess && (
                             <td className="px-2 py-2.5 text-center" onClick={(e) => e.stopPropagation()}>
-                              {tx.type === 'income' && tenantId && (
+                              {tx.type === 'income' && tx.category !== 'internal_transfer' && tenantId && (
                                 <TransactionInvoiceAction tx={tx} tenantId={tenantId} arcaConfig={arcaConfig} />
                               )}
                             </td>
@@ -1834,6 +1834,7 @@ function computeBolsillos(
   const deposits    = sum((t) => t.type === 'expense' && isPaid(t) && t.category === 'cash_transfer')
   const cashIn      = sum((t) => t.type === 'income' && t.payment_method === 'cash')
   const cashOut     = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer')
+  const safeIn      = sum((t) => t.type === 'income' && SAFE_METHODS.includes(t.payment_method ?? ''))
   const safeOut     = sum((t) => t.type === 'expense' && isPaid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer')
   const transferIn  = sum((t) => t.type === 'income' && t.payment_method === 'transfer')
   const transferOut = sum((t) => t.type === 'expense' && isPaid(t) && t.payment_method === 'transfer')
@@ -1847,7 +1848,7 @@ function computeBolsillos(
 
   return {
     cajon: cajonFondo, cashIn, cashOut, deposits,
-    openingSafe, safeOut, cajaMayor: openingSafe + deposits - safeOut,
+    openingSafe, safeIn, safeOut, cajaMayor: openingSafe + deposits + safeIn - safeOut,
     openingTransfer, transferIn, transferOut, transferBalance: openingTransfer + transferIn - transferOut,
     openingCards, cardIn, cardOut, cardBalance: openingCards + cardIn - cardOut,
     cardIncomeTxs,
@@ -2025,7 +2026,7 @@ function SectionBalanceTesoreria({ txs, month }: { txs: Transaction[]; month: st
               <BolsilloCard
                 icon="🔒" label="Caja fuerte"
                 declared={bolsillos.openingSafe}
-                income={bolsillos.deposits}
+                income={bolsillos.deposits + bolsillos.safeIn}
                 expense={bolsillos.safeOut}
                 current={bolsillos.cajaMayor}
               />
@@ -4283,6 +4284,7 @@ function TabConfiguracion() {
       cashIn:      postTxs.filter((t) => t.type === 'income' && t.payment_method === 'cash'),
       cashOut:     postTxs.filter((t) => t.type === 'expense' && paid(t) && t.payment_method === 'cash' && t.category !== 'cash_transfer'),
       cashDeposit: postTxs.filter((t) => t.type === 'expense' && paid(t) && t.category === 'cash_transfer'),
+      safeIn:      postTxs.filter((t) => t.type === 'income' && SAFE_METHODS.includes(t.payment_method ?? '')),
       safeOut:     postTxs.filter((t) => t.type === 'expense' && paid(t) && SAFE_METHODS.includes(t.payment_method ?? '') && t.category !== 'cash_transfer'),
       transferIn:  postTxs.filter((t) => t.type === 'income' && t.payment_method === 'transfer'),
       transferOut: postTxs.filter((t) => t.type === 'expense' && paid(t) && t.payment_method === 'transfer'),
@@ -4324,6 +4326,7 @@ function TabConfiguracion() {
       balance: calcBalances.safe,
       rows: [
         ...detailTxs.cashDeposit.map((tx) => ({ tx, direction: 'in'  as const, typeLabel: 'Depósito desde cajón' })),
+        ...detailTxs.safeIn.map((tx) => ({ tx, direction: 'in'  as const, typeLabel: 'Ingreso caja fuerte' })),
         ...detailTxs.safeOut.map((tx) => ({ tx, direction: 'out' as const, typeLabel: 'Egreso caja fuerte' })),
       ].sort(sortByDate),
     },

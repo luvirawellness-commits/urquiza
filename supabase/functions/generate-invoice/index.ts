@@ -326,6 +326,22 @@ serve(async (req: Request) => {
 
     if (!tenant_id) return err('tenant_id requerido')
 
+    // Internal transfers between payment methods are not real sales and must
+    // never reach ARCA — enforced here (not just hidden client-side) since
+    // this endpoint is reachable directly given a transaction_id.
+    if (body.transaction_id) {
+      const { data: tx, error: txErr } = await supabase
+        .from('transactions')
+        .select('category')
+        .eq('id', body.transaction_id)
+        .eq('tenant_id', tenant_id)
+        .single()
+      if (txErr || !tx) return err('Transacción no encontrada.')
+      if (tx.category === 'internal_transfer') {
+        return err('Las transferencias internas entre medios de pago no son facturables.')
+      }
+    }
+
     // 1. Get ARCA config
     const { data: config, error: cfgErr } = await supabase
       .from('tenant_arca_config')
