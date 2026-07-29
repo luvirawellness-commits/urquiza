@@ -31,6 +31,10 @@ import { getArgentinaDateString } from '../utils/dateUtils'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
 import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
+import {
+  useActivePointDevices, createPointOrder, checkPointOrder, cancelPointOrder,
+  POINT_TERMINAL_STATUSES, POINT_STATUS_LABELS,
+} from '@/hooks/useMercadoPagoPoint'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -250,6 +254,16 @@ const SELECT_CLS =
 type PaymentType = 'efectivo_digital' | 'membresia' | 'gift_card'
 type SplitRow = { method: string; amount: string }
 
+// Fraud prevention (Stage C.2): when a tenant has at least one active Point
+// reader, these three methods can ONLY be charged through it — manual entry
+// for them is removed entirely, not offered as an alternative, so staff can
+// never record a fake card payment without money actually passing through
+// the reader. Cash/transfer/mp/other are unaffected: no card-present
+// equivalent exists for a manual bank transfer or cash in hand either way.
+const POINT_ONLY_METHODS = ['debit', 'credit', 'qr']
+
+type PointChargeStatus = 'idle' | 'creating' | 'waiting' | 'processed' | 'failed' | 'canceled' | 'expired'
+
 // ── MiniCalendar ──────────────────────────────────────────────────────────────
 
 function MiniCalendar({ currentDate, onSelect, onClose }: {
@@ -410,10 +424,186 @@ function DayApptBlock({
   )
 }
 
+// ── PointChargeControl ────────────────────────────────────────────────────────
+// Owns one row's Point charge lifecycle end to end: create order → poll every
+// ~3s → terminal state. Reports status up to the parent row via onStatusChange
+// so canConfirm/handleConfirm (in CerrarSesionStep) can gate on it — the
+// parent never touches the order id or polling itself. Session close must NOT
+// happen until this reports 'processed' (Stage C.2 business requirement #1);
+// there is no manual-entry fallback for this row while devices are active.
+function PointChargeControl({
+  amount, deviceId, deviceLabel, description, externalReference,
+  tenantId, userId, accessToken, status, onStatusChange,
+}: {
+  amount: number
+  deviceId: string | null
+  deviceLabel: string | null
+  description: string
+  externalReference: string
+  tenantId: string
+  userId: string
+  accessToken: string
+  status: PointChargeStatus
+  onStatusChange: (status: PointChargeStatus) => void
+}) {
+  const [statusDetail, setStatusDetail] = useState<string | null>(null)
+  const [errorMsg, setErrorMsg] = useState('')
+  const [canceling, setCanceling] = useState(false)
+  const orderIdRef = useRef<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  function stopPolling() {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+  }
+
+  // Cleanup on unmount only (e.g. the row is removed) — not on every
+  // re-render, since amount/onStatusChange change across renders while a
+  // charge is still legitimately in flight.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => stopPolling, [])
+
+  function startPolling(orderId: string) {
+    stopPolling()
+    pollRef.current = setInterval(async () => {
+      try {
+        const result = await checkPointOrder({ tenantId, userId, accessToken, orderId })
+        setStatusDetail(result.status_detail ?? null)
+        const mpStatus = result.status ?? ''
+        if (mpStatus === 'processed') {
+          stopPolling()
+          onStatusChange('processed')
+        } else if ((POINT_TERMINAL_STATUSES as readonly string[]).includes(mpStatus) && mpStatus !== 'processed') {
+          stopPolling()
+          setErrorMsg(POINT_STATUS_LABELS[mpStatus] ?? 'El cobro no se pudo completar.')
+          onStatusChange(mpStatus as PointChargeStatus)
+        }
+        // Any other status (created, at_terminal, ...) is still in progress — keep polling.
+      } catch (e) {
+        // A single failed poll (network blip) shouldn't abort a live charge —
+        // just try again on the next tick.
+        console.warn('Point poll error:', e)
+      }
+    }, 3000)
+  }
+
+  async function handleCharge() {
+    if (!deviceId || !(amount > 0)) return
+    setErrorMsg('')
+    onStatusChange('creating')
+    try {
+      const result = await createPointOrder({
+        tenantId, userId, accessToken, amount, description,
+        externalReference, terminalId: deviceId,
+      })
+      orderIdRef.current = result.order_id
+      onStatusChange('waiting')
+      startPolling(result.order_id)
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : 'Error al iniciar el cobro con Point')
+      onStatusChange('idle')
+    }
+  }
+
+  async function handleCancel() {
+    if (!orderIdRef.current) return
+    setCanceling(true)
+    try {
+      await cancelPointOrder({ tenantId, userId, accessToken, orderId: orderIdRef.current })
+      stopPolling()
+      orderIdRef.current = null
+      setErrorMsg('')
+      setStatusDetail(null)
+      onStatusChange('idle')
+    } catch {
+      // MP only allows canceling while status is still "created" — past that
+      // the card may already be mid-swipe on the terminal. Don't pretend it's
+      // canceled and let staff walk away from a charge that might still land;
+      // keep polling so the real outcome is still captured.
+      setErrorMsg('No se pudo cancelar — el cobro puede seguir en curso en el lector. Esperá el resultado.')
+    } finally {
+      setCanceling(false)
+    }
+  }
+
+  function handleRetry() {
+    orderIdRef.current = null
+    setErrorMsg('')
+    setStatusDetail(null)
+    onStatusChange('idle')
+  }
+
+  if (status === 'idle') {
+    return (
+      <div className="space-y-1">
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!deviceId || !(amount > 0)}
+          onClick={handleCharge}
+          className="gap-1.5 w-full"
+        >
+          <CreditCard className="w-3.5 h-3.5" />
+          Cobrar con Point{deviceLabel ? ` (${deviceLabel})` : ''}
+        </Button>
+        {!deviceId && <p className="text-xs text-amber-600">Elegí un lector para cobrar.</p>}
+        {errorMsg && <p className="text-xs text-red-600">{errorMsg}</p>}
+      </div>
+    )
+  }
+
+  if (status === 'creating' || status === 'waiting') {
+    return (
+      <div className="space-y-1.5 rounded-md border border-plum-200 bg-plum-50 p-2">
+        <div className="flex items-center gap-2 text-sm text-plum-800">
+          <Loader2 className="w-3.5 h-3.5 animate-spin flex-shrink-0" />
+          <span>
+            {status === 'creating'
+              ? 'Iniciando cobro...'
+              : `Esperando pago en el lector${deviceLabel ? `: ${deviceLabel}` : ''}...`}
+          </span>
+        </div>
+        {statusDetail && <p className="text-xs text-plum-600">{statusDetail}</p>}
+        {status === 'waiting' && (
+          <button
+            type="button"
+            onClick={handleCancel}
+            disabled={canceling}
+            className="text-xs text-red-600 hover:underline disabled:opacity-50"
+          >
+            {canceling ? 'Cancelando...' : 'Cancelar cobro'}
+          </button>
+        )}
+        {errorMsg && <p className="text-xs text-red-600">{errorMsg}</p>}
+      </div>
+    )
+  }
+
+  if (status === 'processed') {
+    return (
+      <div className="flex items-center gap-1.5 text-sm text-green-700">
+        <CheckCircle className="w-3.5 h-3.5" />
+        Pago confirmado en el lector
+      </div>
+    )
+  }
+
+  // failed / canceled / expired
+  return (
+    <div className="space-y-1">
+      <p className="text-xs text-red-600">{errorMsg || 'El cobro no se completó.'}</p>
+      <Button type="button" size="sm" variant="outline" onClick={handleRetry} className="gap-1.5">
+        <RefreshCw className="w-3.5 h-3.5" />
+        Reintentar cobro
+      </Button>
+    </div>
+  )
+}
+
 // ── CerrarSesionStep ──────────────────────────────────────────────────────────
 
 function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () => void }) {
-  const { user, profile, currentTenantId } = useAuth()
+  const { user, profile, session, currentTenantId } = useAuth()
   const [paymentType, setPaymentType] = useState<PaymentType>('efectivo_digital')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -424,6 +614,19 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [electronicTxs, setElectronicTxs] = useState<ResolvedTransaction[]>([])
   const [invoiceAnswered, setInvoiceAnswered] = useState(false)
   const invoiceQueue = useElectronicInvoiceQueue({ tenantId: currentTenantId })
+
+  // Stage C.2: if this tenant has active Point readers, debit/credit/qr must
+  // be charged through one of them — see POINT_ONLY_METHODS.
+  const { data: pointDevices = [] } = useActivePointDevices(currentTenantId)
+  const hasActivePointDevices = pointDevices.length > 0
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
+  const [pointChargeStatuses, setPointChargeStatuses] = useState<Record<number, PointChargeStatus>>({})
+
+  useEffect(() => {
+    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
+  }, [pointDevices])
+
+  const anyPointCharging = Object.values(pointChargeStatuses).some((s) => s === 'creating' || s === 'waiting')
 
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
@@ -445,6 +648,25 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const splitBalanced = Math.abs(splitTotal - totalConDescuento) < 0.01
   const paymentMethodMissing = paymentType === 'efectivo_digital' && splitRows.some(r => !r.method)
 
+  // Every row currently set to a Point-only method (while devices are active)
+  // must have actually cleared its charge before the session can close —
+  // this is the fraud-prevention gate: no manual fallback exists for these.
+  const pointRowsReady = !hasActivePointDevices || splitRows.every((row, i) =>
+    !POINT_ONLY_METHODS.includes(row.method) || pointChargeStatuses[i] === 'processed',
+  )
+
+  function setRowPointStatus(index: number, status: PointChargeStatus) {
+    setPointChargeStatuses((prev) => ({ ...prev, [index]: status }))
+  }
+
+  // True once a row's Point charge has actually started or landed — its
+  // method/amount must not change underneath a live or completed charge.
+  function isRowLocked(index: number, method: string) {
+    if (!hasActivePointDevices || !POINT_ONLY_METHODS.includes(method)) return false
+    const s = pointChargeStatuses[index] ?? 'idle'
+    return s === 'creating' || s === 'waiting' || s === 'processed'
+  }
+
   const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
   const [membershipSubOpt, setMembershipSubOpt] = useState<'use_existing' | 'sell_new'>('use_existing')
   const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(null)
@@ -457,7 +679,13 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }, [activeMemberships])
 
   useEffect(() => {
-    setSplitRows(prev => prev.length === 1 ? [{ ...prev[0], amount: String(totalConDescuento) }] : prev)
+    // Never overwrite a row whose Point charge is live or already processed —
+    // that amount is now tied to real money already sent to/through the
+    // reader, editing the base price afterward must not silently change it.
+    setSplitRows(prev => (prev.length === 1 && !isRowLocked(0, prev[0].method))
+      ? [{ ...prev[0], amount: String(totalConDescuento) }]
+      : prev)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalConDescuento])
 
   const selectedMembership = activeMemberships?.find((m) => m.id === selectedMembershipId) ?? null
@@ -517,15 +745,32 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
       setError('Por favor seleccioná el medio de pago antes de confirmar')
       return
     }
+    // Defense-in-depth alongside the disabled Confirm button: never let a
+    // debit/credit/qr row through without an actually-processed Point charge
+    // when devices are active — this is the fraud-prevention requirement.
+    if (!pointRowsReady) {
+      setError('Todavía hay un cobro con Point pendiente de confirmar.')
+      return
+    }
     setBusy(true); setError(null)
     try {
       const amounts: number[] = []
       const methods: string[] = []
+      const collectedViaPoint: boolean[] = []
       if (paymentType === 'efectivo_digital') {
-        for (const row of splitRows) {
+        splitRows.forEach((row, i) => {
           const amt = Number(row.amount) || 0
-          if (amt > 0) { amounts.push(amt); methods.push(row.method) }
-        }
+          if (amt > 0) {
+            amounts.push(amt)
+            methods.push(row.method)
+            // Point is never a payment_method of its own — the stored method
+            // stays the real one the customer paid with, this flag just tags
+            // which of those actually went through the physical reader.
+            collectedViaPoint.push(
+              hasActivePointDevices && POINT_ONLY_METHODS.includes(row.method) && pointChargeStatuses[i] === 'processed',
+            )
+          }
+        })
       }
 
       const membershipId =
@@ -545,6 +790,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
         p_payment_methods:      methods,
         p_client_membership_id: membershipId,
         p_gift_card_id:         giftCardId,
+        p_collected_via_point:  collectedViaPoint,
       })
       if (error) throw new Error(error.message || 'Error al cerrar la sesión')
 
@@ -600,7 +846,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   }
 
   const canConfirm = !busy && (
-    (paymentType === 'efectivo_digital' && splitBalanced && !paymentMethodMissing) ||
+    (paymentType === 'efectivo_digital' && splitBalanced && !paymentMethodMissing && pointRowsReady) ||
     (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
@@ -699,13 +945,16 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
               paymentType === opt.value ? 'border-plum-800 bg-plum-50' : 'border-gray-200 hover:border-gray-300',
             )}>
               <input type="radio" name="paymentType" value={opt.value}
-                checked={paymentType === opt.value} disabled={!opt.enabled}
+                checked={paymentType === opt.value} disabled={!opt.enabled || anyPointCharging}
                 onChange={() => { if (opt.enabled) setPaymentType(opt.value) }}
                 className="accent-plum-800" />
               <span className="text-sm">{opt.label}</span>
             </label>
           ))}
         </div>
+        {anyPointCharging && (
+          <p className="text-xs text-amber-600">Hay un cobro con Point en curso — esperá a que termine antes de cambiar el tipo de cobro.</p>
+        )}
       </div>
 
       {paymentType === 'efectivo_digital' && (
@@ -733,30 +982,96 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
           </div>
           <div className="space-y-2">
             <Label className="text-xs">Métodos de pago</Label>
-            {splitRows.map((row, i) => (
-              <div key={i} className="flex gap-2 items-center">
+
+            {hasActivePointDevices && pointDevices.length > 1 && (
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Lector Point</Label>
                 <select
-                  className={cn(SELECT_CLS, 'flex-1', attemptedSubmit && !row.method && 'border-red-500 focus:border-red-500')}
-                  value={row.method}
-                  onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, method: e.target.value } : r))}
+                  className={SELECT_CLS}
+                  value={selectedDeviceId ?? ''}
+                  onChange={(e) => setSelectedDeviceId(e.target.value || null)}
                 >
-                  {PAYMENT_METHODS.map((pm) => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+                  <option value="">Seleccionar lector...</option>
+                  {pointDevices.map((d) => (
+                    <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
+                  ))}
                 </select>
-                <Input
-                  type="number" min="0" step="1"
-                  className="w-28"
-                  value={row.amount}
-                  onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, amount: e.target.value } : r))}
-                />
-                {splitRows.length > 1 && (
-                  <button
-                    type="button"
-                    onClick={() => setSplitRows(prev => prev.filter((_, j) => j !== i))}
-                    className="text-muted-foreground hover:text-red-600 px-1 text-base leading-none"
-                  >✕</button>
-                )}
               </div>
-            ))}
+            )}
+
+            {splitRows.map((row, i) => {
+              const rowStatus = pointChargeStatuses[i] ?? 'idle'
+              const isPointRow = hasActivePointDevices && POINT_ONLY_METHODS.includes(row.method)
+              const rowLocked = isRowLocked(i, row.method)
+              const deviceLabel = pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null
+
+              function updateMethod(method: string) {
+                setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, method } : r))
+                setPointChargeStatuses((prev) => {
+                  if (!(i in prev)) return prev
+                  const next = { ...prev }
+                  delete next[i]
+                  return next
+                })
+              }
+
+              function removeRow() {
+                setSplitRows(prev => prev.filter((_, j) => j !== i))
+                setPointChargeStatuses((prev) => {
+                  const next: Record<number, PointChargeStatus> = {}
+                  Object.entries(prev).forEach(([k, v]) => {
+                    const idx = Number(k)
+                    if (idx < i) next[idx] = v
+                    else if (idx > i) next[idx - 1] = v
+                  })
+                  return next
+                })
+              }
+
+              return (
+                <div key={i} className={cn('space-y-1.5', isPointRow && 'rounded-md border p-2')}>
+                  <div className="flex gap-2 items-center">
+                    <select
+                      className={cn(SELECT_CLS, 'flex-1', attemptedSubmit && !row.method && 'border-red-500 focus:border-red-500')}
+                      value={row.method}
+                      disabled={rowLocked}
+                      onChange={(e) => updateMethod(e.target.value)}
+                    >
+                      {PAYMENT_METHODS.map((pm) => <option key={pm.value} value={pm.value}>{pm.label}</option>)}
+                    </select>
+                    <Input
+                      type="number" min="0" step="1"
+                      className="w-28"
+                      value={row.amount}
+                      disabled={rowLocked}
+                      onChange={(e) => setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, amount: e.target.value } : r))}
+                    />
+                    {splitRows.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={removeRow}
+                        disabled={rowLocked}
+                        className="text-muted-foreground hover:text-red-600 px-1 text-base leading-none disabled:opacity-30"
+                      >✕</button>
+                    )}
+                  </div>
+                  {isPointRow && (
+                    <PointChargeControl
+                      amount={Number(row.amount) || 0}
+                      deviceId={selectedDeviceId}
+                      deviceLabel={deviceLabel}
+                      description={buildDescription()}
+                      externalReference={`sesion-${appt.id}-${i}`}
+                      tenantId={currentTenantId!}
+                      userId={user!.id}
+                      accessToken={session?.access_token ?? ''}
+                      status={rowStatus}
+                      onStatusChange={(status) => setRowPointStatus(i, status)}
+                    />
+                  )}
+                </div>
+              )
+            })}
             {splitRows.length < 3 && (
               <button
                 type="button"
