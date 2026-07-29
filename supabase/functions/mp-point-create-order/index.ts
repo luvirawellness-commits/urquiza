@@ -67,23 +67,30 @@ serve(async (req: Request) => {
     const {
       tenant_id, user_id, access_token,
       amount, description, external_reference, terminal_id,
-      appointment_id, payment_method,
+      appointment_id, idempotency_key, payment_method,
     } = body
 
     // Logged before any validation/auth — every invocation produces at least
     // this line, so a request that fails early still leaves a trace.
-    console.log('mp-point-create-order: request received', { tenant_id, user_id, amount, terminal_id, external_reference, appointment_id, payment_method })
+    console.log('mp-point-create-order: request received', { tenant_id, user_id, amount, terminal_id, external_reference, appointment_id, idempotency_key, payment_method })
 
-    if (!tenant_id || !user_id || !access_token || !amount || !terminal_id || !appointment_id || !payment_method) {
+    if (!tenant_id || !user_id || !access_token || !amount || !terminal_id || !payment_method) {
       console.error('mp-point-create-order: missing required fields', {
-        tenant_id, user_id, amount, terminal_id, appointment_id, payment_method, has_access_token: !!access_token,
+        tenant_id, user_id, amount, terminal_id, payment_method, has_access_token: !!access_token,
       })
-      // appointment_id/payment_method are mandatory here specifically because
-      // this function's only caller (Agenda.tsx's session checkout) always
-      // has both, and appointment_id is what the duplicate-charge guard below
-      // keys off of — a future non-appointment Point flow would need its own
-      // dedup key, not a relaxation of this check.
-      return err('tenant_id, user_id, access_token, amount, terminal_id, appointment_id y payment_method son requeridos')
+      return err('tenant_id, user_id, access_token, amount, terminal_id y payment_method son requeridos')
+    }
+    // Exactly one dedup key is required — appointment_id for session-closing
+    // charges (Agenda.tsx), idempotency_key for entity-less sales that don't
+    // exist as a DB row until after the charge succeeds (gift cards,
+    // standalone membership sales — see 20260803000000). Each has its own
+    // partial unique index on point_charges; allowing both or neither would
+    // either double-guard nothing or leave the charge fully unguarded.
+    if (!appointment_id && !idempotency_key) {
+      return err('Se requiere appointment_id o idempotency_key')
+    }
+    if (appointment_id && idempotency_key) {
+      return err('appointment_id e idempotency_key son mutuamente excluyentes')
     }
     const amountNum = Number(amount)
     if (!(amountNum > 0)) return err('amount debe ser mayor a 0')
@@ -125,23 +132,25 @@ serve(async (req: Request) => {
     // this function, so hitting one here means a race (e.g. two staff
     // opening the same session at once) — reject before ever touching MP,
     // which is strictly better than creating an order we'd have to unwind.
-    // The insert below (step 2, the point_charges_one_active_per_appointment
-    // unique index) is what catches the case where two requests both pass
-    // this check at the same instant.
-    const { data: existingCharge, error: existingChargeErr } = await supabase
+    // The insert below (step 2, point_charges_one_active_per_appointment or
+    // point_charges_one_active_per_idempotency_key) is what catches the case
+    // where two requests both pass this check at the same instant.
+    let existingChargeQuery = supabase
       .from('point_charges')
       .select('mp_order_id')
       .eq('tenant_id', tenant_id)
-      .eq('appointment_id', appointment_id)
       .eq('status', 'created')
-      .maybeSingle()
+    existingChargeQuery = appointment_id
+      ? existingChargeQuery.eq('appointment_id', appointment_id)
+      : existingChargeQuery.eq('idempotency_key', idempotency_key)
+    const { data: existingCharge, error: existingChargeErr } = await existingChargeQuery.maybeSingle()
 
     if (existingChargeErr) throw existingChargeErr
     if (existingCharge) {
-      console.error('mp-point-create-order: an active charge already exists for this appointment', {
-        tenant_id, appointment_id, existing_order_id: existingCharge.mp_order_id,
+      console.error('mp-point-create-order: an active charge already exists for this key', {
+        tenant_id, appointment_id, idempotency_key, existing_order_id: existingCharge.mp_order_id,
       })
-      return err('Ya hay un cobro con Point en curso para esta sesión.', 409)
+      return err('Ya hay un cobro con Point en curso.', 409)
     }
 
     const { data: mpConfig, error: mpConfigErr } = await supabase
@@ -221,7 +230,8 @@ serve(async (req: Request) => {
       .from('point_charges')
       .insert({
         tenant_id,
-        appointment_id,
+        appointment_id: appointment_id ?? null,
+        idempotency_key: idempotency_key ?? null,
         terminal_id,
         mp_order_id: mpOrderId,
         amount: amountNum,
@@ -237,16 +247,16 @@ serve(async (req: Request) => {
       // doesn't sit there as a second, untracked charge attempt, and report
       // the failure instead of handing back an order_id nothing will track.
       if (insertErr.code === '23505') {
-        console.error('mp-point-create-order: race detected — another charge was already inserted for this appointment, canceling the order just created', {
-          tenant_id, appointment_id, mp_order_id: mpOrderId,
+        console.error('mp-point-create-order: race detected — another charge was already inserted for this key, canceling the order just created', {
+          tenant_id, appointment_id, idempotency_key, mp_order_id: mpOrderId,
         })
         await cancelMpOrderBestEffort(mpAccessToken, mpOrderId)
-        return err('Ya hay un cobro con Point en curso para esta sesión.', 409)
+        return err('Ya hay un cobro con Point en curso.', 409)
       }
       throw insertErr
     }
 
-    console.log('mp-point-create-order: point_charges row saved', { tenant_id, appointment_id, mp_order_id: mpOrderId })
+    console.log('mp-point-create-order: point_charges row saved', { tenant_id, appointment_id, idempotency_key, mp_order_id: mpOrderId })
 
     return json({
       order_id: orderBody?.id,
