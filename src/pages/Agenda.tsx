@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw, Star, AlertCircle } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Loader2, CheckCircle, CreditCard, UserPlus, MessageCircle, Pencil, FileText, RefreshCw, Star, AlertCircle, Mail } from 'lucide-react'
 import InvoiceModal from '@/components/InvoiceModal'
 import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import {
@@ -30,7 +30,7 @@ import type { Appointment, AppointmentStatus, Client } from '@/types'
 import { getArgentinaDateString } from '../utils/dateUtils'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
-import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
+import { fetchTransactionsByIds, useElectronicInvoiceQueue, useExistingInvoiceForAppointment, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 import {
   useActivePointDevices, usePendingPointCharge, createPointOrder, checkPointOrder, cancelPointOrder,
   POINT_TERMINAL_STATUSES, POINT_STATUS_LABELS,
@@ -1572,6 +1572,30 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   )
   const depositMethodLabel = PAYMENT_METHODS.find(pm => pm.value === depositTx?.payment_method)?.label
 
+  const { data: existingInvoice, isLoading: existingInvoiceLoading } = useExistingInvoiceForAppointment(
+    appt.status === 'completed' ? appt.id : undefined
+  )
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false)
+  const [sendingInvoice, setSendingInvoice] = useState(false)
+  const [sendInvoiceMsg, setSendInvoiceMsg] = useState('')
+
+  async function handleSendExistingInvoice() {
+    if (!existingInvoice || !clientData?.email) return
+    setSendingInvoice(true)
+    setSendInvoiceMsg('')
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('send-invoice-email', {
+        body: { invoice_id: existingInvoice.id, tenant_id: currentTenantId, client_email: clientData.email },
+      })
+      if (fnErr) throw new Error(fnErr.message)
+      setSendInvoiceMsg(data?.message ?? 'Email enviado')
+    } catch (e) {
+      setSendInvoiceMsg(e instanceof Error ? e.message : 'Error al enviar el email')
+    } finally {
+      setSendingInvoice(false)
+    }
+  }
+
   const senaPendiente = !!currentTenant?.sena_online_required && !appt.deposit_paid
   const senaPendienteAmount = appt.deposit_amount && appt.deposit_amount > 0
     ? appt.deposit_amount
@@ -1951,6 +1975,48 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
               )}
             </div>
 
+            {appt.status === 'completed' && !existingInvoiceLoading && (
+              <div className="border-t pt-4 space-y-1.5">
+                <div className="flex flex-wrap gap-2 items-center">
+                  {existingInvoice ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={handleSendExistingInvoice}
+                      disabled={sendingInvoice || !clientData?.email}
+                      className="gap-1.5"
+                    >
+                      {sendingInvoice ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+                      Enviar factura
+                    </Button>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setShowInvoiceModal(true)}
+                      className="gap-1.5"
+                    >
+                      <FileText className="w-3.5 h-3.5" />
+                      Enviar factura
+                    </Button>
+                  )}
+                </div>
+                {existingInvoice && !clientData?.email && (
+                  <p className="text-xs text-muted-foreground">
+                    Este cliente no tiene email registrado
+                  </p>
+                )}
+                {sendInvoiceMsg && (
+                  <p className={cn(
+                    'text-xs',
+                    sendInvoiceMsg.includes('Error') || sendInvoiceMsg.includes('no se pudo') ? 'text-red-600' : 'text-green-600'
+                  )}>
+                    {sendInvoiceMsg}
+                  </p>
+                )}
+              </div>
+            )}
+
             {canRevert && (
               <div className="border-t pt-4 space-y-2">
                 {revertError && <p className="text-sm text-red-600">{revertError}</p>}
@@ -1991,6 +2057,20 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
                 )}
               </div>
             )}
+
+            <InvoiceModal
+              isOpen={showInvoiceModal}
+              onClose={() => {
+                setShowInvoiceModal(false)
+                qc.invalidateQueries({ queryKey: ['existing-invoice-appointment', currentTenantId, appt.id] })
+              }}
+              tenantId={currentTenantId!}
+              clientName={clientName(appt)}
+              clientId={appt.client_id ?? undefined}
+              amount={appt.price_charged ?? 0}
+              concept={appt.service?.name ?? 'Servicio'}
+              appointmentId={appt.id}
+            />
           </>
         )}
       </DialogContent>

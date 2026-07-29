@@ -44,6 +44,48 @@ export function useExistingInvoice(transactionId: string | undefined) {
   })
 }
 
+// ── useExistingInvoiceForAppointment ────────────────────────────────────────
+// Same purpose as useExistingInvoice but scoped to an appointment instead of a
+// single transaction — needed because a completed appointment can have more
+// than one transaction (split payments) and because invoices created through
+// the electronic auto-invoice queue only stamp transaction_id, never
+// appointment_id, while invoices created through InvoiceModal's cash path set
+// appointment_id directly. Checking either alone misses invoices from the
+// other path, so this resolves the appointment's session transactions first,
+// then matches invoices against transaction_id OR appointment_id.
+
+export function useExistingInvoiceForAppointment(appointmentId: string | undefined) {
+  const tenantId = useTenantId()
+  return useQuery({
+    queryKey: ['existing-invoice-appointment', tenantId, appointmentId],
+    queryFn: async () => {
+      const { data: txs, error: txErr } = await supabase
+        .from('transactions')
+        .select('id')
+        .eq('tenant_id', tenantId)
+        .eq('appointment_id', appointmentId as string)
+        .eq('category', 'session')
+      if (txErr) throw txErr
+
+      const txIds = (txs ?? []).map((t) => t.id)
+      const orFilter = txIds.length > 0
+        ? `appointment_id.eq.${appointmentId},transaction_id.in.(${txIds.join(',')})`
+        : `appointment_id.eq.${appointmentId}`
+
+      const { data, error } = await supabase
+        .from('invoices')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .or(orFilter)
+        .order('created_at', { ascending: false })
+        .limit(1)
+      if (error) throw error
+      return data?.[0] ?? null
+    },
+    enabled: !!tenantId && !!appointmentId,
+  })
+}
+
 // ── useTriggerInvoicing ───────────────────────────────────────────────────────
 
 export type TriggerInvoicingInput = {
