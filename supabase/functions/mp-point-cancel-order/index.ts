@@ -107,6 +107,22 @@ serve(async (req: Request) => {
       )
     }
 
+    // Critical: without this, point_charges would keep saying 'created' for
+    // an order MP just confirmed canceled — since the partial unique index
+    // (point_charges_one_active_per_appointment) only allows one 'created'
+    // row per appointment, that stale row would permanently block starting
+    // any new charge for this session, even though nothing is actually in
+    // flight anymore.
+    const { error: updateErr } = await supabase
+      .from('point_charges')
+      .update({ status: 'canceled', updated_at: new Date().toISOString() })
+      .eq('tenant_id', tenant_id)
+      .eq('mp_order_id', order_id)
+
+    if (updateErr) {
+      console.error('mp-point-cancel-order: failed to update point_charges row', updateErr, { tenant_id, order_id })
+    }
+
     return json({ order_id: cancelBody?.id, status: cancelBody?.status })
 
   } catch (error) {

@@ -31,6 +31,36 @@ export function useActivePointDevices(tenantId: string | null | undefined) {
   })
 }
 
+export type PendingPointCharge = {
+  mp_order_id: string
+  terminal_id: string
+  amount: number
+  payment_method: string
+}
+
+// The duplicate-charge fix: point_charges is the durable record of any
+// order still unresolved ('created' covers MP's own "created"/"at_terminal"
+// states alike — see mp-point-check-order). Checked before ever offering a
+// fresh "Cobrar con Point" button, and again whenever the session modal is
+// reopened, so a charge that's still genuinely in flight is resumed instead
+// of a second one being started underneath it.
+export function usePendingPointCharge(appointmentId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['point-charge-pending', appointmentId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('point_charges')
+        .select('mp_order_id, terminal_id, amount, payment_method')
+        .eq('appointment_id', appointmentId as string)
+        .eq('status', 'created')
+        .maybeSingle()
+      if (error) throw error
+      return data as PendingPointCharge | null
+    },
+    enabled: !!appointmentId,
+  })
+}
+
 export type PointOrderResult = {
   order_id: string
   status: string
@@ -44,6 +74,8 @@ export async function createPointOrder(auth: CallerAuth & {
   description: string
   externalReference: string
   terminalId: string
+  appointmentId: string
+  paymentMethod: string
 }): Promise<PointOrderResult> {
   const { data, error } = await supabase.functions.invoke('mp-point-create-order', {
     body: {
@@ -54,6 +86,8 @@ export async function createPointOrder(auth: CallerAuth & {
       description: auth.description,
       external_reference: auth.externalReference,
       terminal_id: auth.terminalId,
+      appointment_id: auth.appointmentId,
+      payment_method: auth.paymentMethod,
     },
   })
   if (error) throw new Error(error.message ?? 'Error al iniciar el cobro con Point')

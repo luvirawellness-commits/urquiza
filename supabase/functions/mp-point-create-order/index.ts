@@ -30,6 +30,27 @@ const CAJA_ROLES = ['owner', 'partner_admin', 'receptionist']
 // integration (create-sena-payment, mp-point-list-devices/register-device).
 const REFRESH_MARGIN_MS = 15 * 24 * 60 * 60_000
 
+// Used only for the true-race cleanup path below (see the point_charges
+// insert): the order was just created seconds ago and is still status
+// "created", so it's within MP's cancelable window — but this is
+// best-effort, not load-bearing. If it fails, the order is simply left to
+// expire on its own via expiration_time; either way point_charges never
+// records it as this tenant's active charge, so it can't cause a duplicate.
+async function cancelMpOrderBestEffort(accessToken: string, orderId: string): Promise<void> {
+  try {
+    await fetch(`https://api.mercadopago.com/v1/orders/${encodeURIComponent(orderId)}/cancel`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'X-Idempotency-Key': crypto.randomUUID(),
+      },
+    })
+  } catch (e) {
+    console.warn('mp-point-create-order: best-effort cancel of orphaned order failed', { orderId, error: e })
+  }
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders })
   if (req.method !== 'POST') return err('Método no permitido', 405)
@@ -46,10 +67,23 @@ serve(async (req: Request) => {
     const {
       tenant_id, user_id, access_token,
       amount, description, external_reference, terminal_id,
+      appointment_id, payment_method,
     } = body
 
-    if (!tenant_id || !user_id || !access_token || !amount || !terminal_id) {
-      return err('tenant_id, user_id, access_token, amount y terminal_id son requeridos')
+    // Logged before any validation/auth — every invocation produces at least
+    // this line, so a request that fails early still leaves a trace.
+    console.log('mp-point-create-order: request received', { tenant_id, user_id, amount, terminal_id, external_reference, appointment_id, payment_method })
+
+    if (!tenant_id || !user_id || !access_token || !amount || !terminal_id || !appointment_id || !payment_method) {
+      console.error('mp-point-create-order: missing required fields', {
+        tenant_id, user_id, amount, terminal_id, appointment_id, payment_method, has_access_token: !!access_token,
+      })
+      // appointment_id/payment_method are mandatory here specifically because
+      // this function's only caller (Agenda.tsx's session checkout) always
+      // has both, and appointment_id is what the duplicate-charge guard below
+      // keys off of — a future non-appointment Point flow would need its own
+      // dedup key, not a relaxation of this check.
+      return err('tenant_id, user_id, access_token, amount, terminal_id, appointment_id y payment_method son requeridos')
     }
     const amountNum = Number(amount)
     if (!(amountNum > 0)) return err('amount debe ser mayor a 0')
@@ -81,7 +115,34 @@ serve(async (req: Request) => {
       .maybeSingle()
 
     if (deviceErr) throw deviceErr
-    if (!device) return err('El lector Point indicado no está registrado o no está activo para este local', 404)
+    if (!device) {
+      console.error('mp-point-create-order: terminal not registered/active for tenant', { tenant_id, terminal_id })
+      return err('El lector Point indicado no está registrado o no está activo para este local', 404)
+    }
+
+    // Duplicate-charge guard, step 1 of 2: the frontend is expected to have
+    // already checked for and resumed any pending charge before ever calling
+    // this function, so hitting one here means a race (e.g. two staff
+    // opening the same session at once) — reject before ever touching MP,
+    // which is strictly better than creating an order we'd have to unwind.
+    // The insert below (step 2, the point_charges_one_active_per_appointment
+    // unique index) is what catches the case where two requests both pass
+    // this check at the same instant.
+    const { data: existingCharge, error: existingChargeErr } = await supabase
+      .from('point_charges')
+      .select('mp_order_id')
+      .eq('tenant_id', tenant_id)
+      .eq('appointment_id', appointment_id)
+      .eq('status', 'created')
+      .maybeSingle()
+
+    if (existingChargeErr) throw existingChargeErr
+    if (existingCharge) {
+      console.error('mp-point-create-order: an active charge already exists for this appointment', {
+        tenant_id, appointment_id, existing_order_id: existingCharge.mp_order_id,
+      })
+      return err('Ya hay un cobro con Point en curso para esta sesión.', 409)
+    }
 
     const { data: mpConfig, error: mpConfigErr } = await supabase
       .from('tenant_mp_config')
@@ -91,6 +152,7 @@ serve(async (req: Request) => {
 
     if (mpConfigErr) throw mpConfigErr
     if (!mpConfig?.access_token) {
+      console.error('mp-point-create-order: tenant has no connected MercadoPago account', { tenant_id })
       return err('Este local todavía no conectó su cuenta de MercadoPago', 400)
     }
 
@@ -129,6 +191,17 @@ serve(async (req: Request) => {
 
     const orderBody = await orderRes.json().catch(() => null) as Record<string, unknown> | null
 
+    // Full response logged unconditionally — the initial status/status_detail
+    // MP hands back here is the first signal of whether the order actually
+    // reached the terminal (e.g. "at_terminal") vs. sat at "created", which
+    // check-order's polling logs alone can't distinguish retroactively.
+    console.log('mp-point-create-order: MP response', {
+      tenant_id,
+      terminal_id,
+      http_status: orderRes.status,
+      body: orderBody,
+    })
+
     if (!orderRes.ok) {
       console.error('mp-point-create-order: MP order creation failed:', orderRes.status, orderBody)
       return err(
@@ -137,7 +210,43 @@ serve(async (req: Request) => {
       )
     }
 
-    console.log('mp-point-create-order: order created:', { tenant_id, terminal_id, order_id: orderBody?.id })
+    const mpOrderId = String(orderBody?.id ?? '')
+
+    // Duplicate-charge guard, step 2 of 2: this is the row that makes the
+    // charge durable server-side (see 20260802000000_point_charges.sql) —
+    // without it, the order_id existed only in the frontend's local state,
+    // and any way the modal closed (crash, navigation, X button) lost track
+    // of it forever, even though the money could still land on MP's side.
+    const { error: insertErr } = await supabase
+      .from('point_charges')
+      .insert({
+        tenant_id,
+        appointment_id,
+        terminal_id,
+        mp_order_id: mpOrderId,
+        amount: amountNum,
+        payment_method,
+        status: 'created',
+        created_by: user_id,
+      })
+
+    if (insertErr) {
+      // 23505 = unique_violation. This is the true-race case: two requests
+      // both passed the pre-check above before either had inserted. The MP
+      // order already exists at this point — cancel it best-effort so it
+      // doesn't sit there as a second, untracked charge attempt, and report
+      // the failure instead of handing back an order_id nothing will track.
+      if (insertErr.code === '23505') {
+        console.error('mp-point-create-order: race detected — another charge was already inserted for this appointment, canceling the order just created', {
+          tenant_id, appointment_id, mp_order_id: mpOrderId,
+        })
+        await cancelMpOrderBestEffort(mpAccessToken, mpOrderId)
+        return err('Ya hay un cobro con Point en curso para esta sesión.', 409)
+      }
+      throw insertErr
+    }
+
+    console.log('mp-point-create-order: point_charges row saved', { tenant_id, appointment_id, mp_order_id: mpOrderId })
 
     return json({
       order_id: orderBody?.id,

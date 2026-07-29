@@ -32,7 +32,7 @@ import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
 import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 import {
-  useActivePointDevices, createPointOrder, checkPointOrder, cancelPointOrder,
+  useActivePointDevices, usePendingPointCharge, createPointOrder, checkPointOrder, cancelPointOrder,
   POINT_TERMINAL_STATUSES, POINT_STATUS_LABELS,
 } from '@/hooks/useMercadoPagoPoint'
 
@@ -433,22 +433,31 @@ function DayApptBlock({
 // there is no manual-entry fallback for this row while devices are active.
 function PointChargeControl({
   amount, deviceId, deviceLabel, description, externalReference,
-  tenantId, userId, accessToken, status, onStatusChange,
+  appointmentId, paymentMethod, tenantId, userId, accessToken,
+  status, onStatusChange, resumeOrderId,
 }: {
   amount: number
   deviceId: string | null
   deviceLabel: string | null
   description: string
   externalReference: string
+  appointmentId: string
+  paymentMethod: string
   tenantId: string
   userId: string
   accessToken: string
   status: PointChargeStatus
   onStatusChange: (status: PointChargeStatus) => void
+  // Set when point_charges already had an unresolved row for this
+  // appointment when the modal opened (e.g. it was closed mid-charge last
+  // time) — resumes polling against that real order instead of starting a
+  // brand-new one, which is the actual fix for the duplicate-charge bug.
+  resumeOrderId?: string | null
 }) {
   const [statusDetail, setStatusDetail] = useState<string | null>(null)
   const [errorMsg, setErrorMsg] = useState('')
   const [canceling, setCanceling] = useState(false)
+  const [isResuming, setIsResuming] = useState(false)
   const orderIdRef = useRef<string | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
@@ -463,10 +472,13 @@ function PointChargeControl({
   useEffect(() => stopPolling, [])
 
   function startPolling(orderId: string) {
+    console.log('[Point] starting poll loop', { orderId })
     stopPolling()
     pollRef.current = setInterval(async () => {
+      console.log('[Point] poll tick', { orderId })
       try {
         const result = await checkPointOrder({ tenantId, userId, accessToken, orderId })
+        console.log('[Point] poll result', result)
         setStatusDetail(result.status_detail ?? null)
         const mpStatus = result.status ?? ''
         if (mpStatus === 'processed') {
@@ -481,24 +493,41 @@ function PointChargeControl({
       } catch (e) {
         // A single failed poll (network blip) shouldn't abort a live charge —
         // just try again on the next tick.
-        console.warn('Point poll error:', e)
+        console.warn('[Point] poll error', e)
       }
     }, 3000)
+    console.log('[Point] poll interval registered', { orderId, intervalId: pollRef.current })
   }
+
+  // Resume takes over on mount if point_charges already had an unresolved
+  // order for this appointment — never calls create-order again for it.
+  useEffect(() => {
+    if (resumeOrderId && !orderIdRef.current) {
+      console.log('[Point] resuming existing order', { resumeOrderId })
+      orderIdRef.current = resumeOrderId
+      setIsResuming(true)
+      startPolling(resumeOrderId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resumeOrderId])
 
   async function handleCharge() {
     if (!deviceId || !(amount > 0)) return
     setErrorMsg('')
+    setIsResuming(false)
     onStatusChange('creating')
+    console.log('[Point] creating order', { deviceId, amount, externalReference, appointmentId, paymentMethod })
     try {
       const result = await createPointOrder({
         tenantId, userId, accessToken, amount, description,
-        externalReference, terminalId: deviceId,
+        externalReference, terminalId: deviceId, appointmentId, paymentMethod,
       })
+      console.log('[Point] order created', result)
       orderIdRef.current = result.order_id
       onStatusChange('waiting')
       startPolling(result.order_id)
     } catch (e) {
+      console.error('[Point] order creation failed', e)
       setErrorMsg(e instanceof Error ? e.message : 'Error al iniciar el cobro con Point')
       onStatusChange('idle')
     }
@@ -529,6 +558,7 @@ function PointChargeControl({
     orderIdRef.current = null
     setErrorMsg('')
     setStatusDetail(null)
+    setIsResuming(false)
     onStatusChange('idle')
   }
 
@@ -560,7 +590,9 @@ function PointChargeControl({
           <span>
             {status === 'creating'
               ? 'Iniciando cobro...'
-              : `Esperando pago en el lector${deviceLabel ? `: ${deviceLabel}` : ''}...`}
+              : isResuming
+                ? 'Ya hay un cobro en curso para esta sesión, verificando estado...'
+                : `Esperando pago en el lector${deviceLabel ? `: ${deviceLabel}` : ''}...`}
           </span>
         </div>
         {statusDetail && <p className="text-xs text-plum-600">{statusDetail}</p>}
@@ -602,7 +634,15 @@ function PointChargeControl({
 
 // ── CerrarSesionStep ──────────────────────────────────────────────────────────
 
-function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () => void }) {
+function CerrarSesionStep({ appt, onClose, onChargingChange }: {
+  appt: Appointment
+  onClose: () => void
+  // Reports whether a Point charge is in flight up to AppointmentDetailModal,
+  // which blocks the Dialog from closing while true — a defense-in-depth
+  // layer on top of the point_charges resume logic below, not a replacement
+  // for it (see Part 5 of the duplicate-charge fix).
+  onChargingChange?: (charging: boolean) => void
+}) {
   const { user, profile, session, currentTenantId } = useAuth()
   const [paymentType, setPaymentType] = useState<PaymentType>('efectivo_digital')
   const [busy, setBusy] = useState(false)
@@ -621,12 +661,38 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const hasActivePointDevices = pointDevices.length > 0
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [pointChargeStatuses, setPointChargeStatuses] = useState<Record<number, PointChargeStatus>>({})
+  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
 
   useEffect(() => {
     if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
   }, [pointDevices])
 
   const anyPointCharging = Object.values(pointChargeStatuses).some((s) => s === 'creating' || s === 'waiting')
+
+  useEffect(() => {
+    onChargingChange?.(anyPointCharging)
+    // Make sure the parent isn't left thinking a charge is still in flight
+    // if this step unmounts while one was active.
+    return () => onChargingChange?.(false)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyPointCharging])
+
+  // Duplicate-charge fix, frontend half: if point_charges already has an
+  // unresolved order for this appointment (the modal was closed mid-charge
+  // last time, or a teammate has it open elsewhere), resume tracking it
+  // instead of ever offering a fresh "Cobrar con Point" button. Applied once
+  // per mount, guarded by resumeAppliedRef — this only seeds initial state,
+  // it must never re-run and stomp on the user's own edits afterward.
+  const { data: pendingCharge } = usePendingPointCharge(appt.id)
+  const resumeAppliedRef = useRef(false)
+  useEffect(() => {
+    if (resumeAppliedRef.current || !pendingCharge) return
+    resumeAppliedRef.current = true
+    setSplitRows([{ method: pendingCharge.payment_method, amount: String(pendingCharge.amount) }])
+    setPointChargeStatuses({ 0: 'waiting' })
+    setSelectedDeviceId(pendingCharge.terminal_id)
+    setResumeOrderId(pendingCharge.mp_order_id)
+  }, [pendingCharge])
 
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
@@ -648,12 +714,18 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const splitBalanced = Math.abs(splitTotal - totalConDescuento) < 0.01
   const paymentMethodMissing = paymentType === 'efectivo_digital' && splitRows.some(r => !r.method)
 
-  // Every row currently set to a Point-only method (while devices are active)
-  // must have actually cleared its charge before the session can close —
-  // this is the fraud-prevention gate: no manual fallback exists for these.
-  const pointRowsReady = !hasActivePointDevices || splitRows.every((row, i) =>
-    !POINT_ONLY_METHODS.includes(row.method) || pointChargeStatuses[i] === 'processed',
-  )
+  // Every row currently tracked as a Point charge must have actually cleared
+  // before the session can close — this is the fraud-prevention gate: no
+  // manual fallback exists for these. A row counts as tracked if devices are
+  // active OR (edge case: a device was deactivated while row 0's charge was
+  // still being resumed from a reopened session) it's the resumed row —
+  // deliberately NOT just "!hasActivePointDevices" short-circuiting the whole
+  // check, which would otherwise let a resumed-but-unresolved charge's row
+  // slip through as if Point never applied to it.
+  const pointRowsReady = splitRows.every((row, i) => {
+    const isTrackedPointRow = (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method)
+    return !isTrackedPointRow || pointChargeStatuses[i] === 'processed'
+  })
 
   function setRowPointStatus(index: number, status: PointChargeStatus) {
     setPointChargeStatuses((prev) => ({ ...prev, [index]: status }))
@@ -662,7 +734,10 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   // True once a row's Point charge has actually started or landed — its
   // method/amount must not change underneath a live or completed charge.
   function isRowLocked(index: number, method: string) {
-    if (!hasActivePointDevices || !POINT_ONLY_METHODS.includes(method)) return false
+    // Same reasoning as isPointRow/pointRowsReady above: a resumed row must
+    // stay lockable even if devices were deactivated in the meantime.
+    const isTrackedPointRow = (hasActivePointDevices || (index === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(method)
+    if (!isTrackedPointRow) return false
     const s = pointChargeStatuses[index] ?? 'idle'
     return s === 'creating' || s === 'waiting' || s === 'processed'
   }
@@ -1001,7 +1076,12 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
             {splitRows.map((row, i) => {
               const rowStatus = pointChargeStatuses[i] ?? 'idle'
-              const isPointRow = hasActivePointDevices && POINT_ONLY_METHODS.includes(row.method)
+              // See pointRowsReady above for why this isn't just
+              // hasActivePointDevices && ... — a resumed row (i === 0) must
+              // stay tracked as a Point row even if devices were deactivated
+              // in the meantime, or its still-unresolved charge would
+              // silently stop being gated.
+              const isPointRow = (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method)
               const rowLocked = isRowLocked(i, row.method)
               const deviceLabel = pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null
 
@@ -1062,11 +1142,14 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
                       deviceLabel={deviceLabel}
                       description={buildDescription()}
                       externalReference={`sesion-${appt.id}-${i}`}
+                      appointmentId={appt.id}
+                      paymentMethod={row.method}
                       tenantId={currentTenantId!}
                       userId={user!.id}
                       accessToken={session?.access_token ?? ''}
                       status={rowStatus}
                       onStatusChange={(status) => setRowPointStatus(i, status)}
+                      resumeOrderId={i === 0 ? resumeOrderId : null}
                     />
                   )}
                 </div>
@@ -1408,6 +1491,29 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   const isClosedAppt = appt.status === 'completed' || appt.status === 'cancelled'
   const canRevert = appt.status === 'completed' && profile?.role === 'owner'
 
+  // Defense-in-depth for the duplicate-charge fix (Part 5): blocks the X
+  // button, backdrop click, and Escape key alike, since Radix funnels all
+  // three through this same onOpenChange callback. This alone would NOT be
+  // enough — a crashed tab or force-closed browser bypasses it entirely,
+  // which is exactly what point_charges + the resume logic in
+  // CerrarSesionStep are the real fix for.
+  const [pointCharging, setPointCharging] = useState(false)
+  const [showCloseBlockedMsg, setShowCloseBlockedMsg] = useState(false)
+
+  useEffect(() => {
+    if (!showCloseBlockedMsg) return
+    const t = setTimeout(() => setShowCloseBlockedMsg(false), 4000)
+    return () => clearTimeout(t)
+  }, [showCloseBlockedMsg])
+
+  function handleOpenChange(open: boolean) {
+    if (!open && pointCharging) {
+      setShowCloseBlockedMsg(true)
+      return
+    }
+    if (!open) onClose()
+  }
+
   async function handleRevert() {
     setReverting(true)
     setRevertError(null)
@@ -1557,17 +1663,24 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   }
 
   return (
-    <Dialog open onOpenChange={onClose}>
+    <Dialog open onOpenChange={handleOpenChange}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
           <DialogTitle>{showEdit ? `Editar turno — ${clientName(appt)}` : showPayment ? `Cerrar sesión — ${clientName(appt)}` : 'Detalle del Turno'}</DialogTitle>
           <DialogDescription>{formatDate(appt.scheduled_at)} · {formatTime(appt.scheduled_at)}</DialogDescription>
         </DialogHeader>
 
+        {showCloseBlockedMsg && (
+          <div className="flex items-start gap-2 p-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
+            <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
+            No podés cerrar mientras se espera la confirmación del pago con Point.
+          </div>
+        )}
+
         {showEdit ? (
           <EditarTurnoForm appt={appt} onCancel={() => setShowEdit(false)} onSaved={onClose} />
         ) : showPayment ? (
-          <CerrarSesionStep appt={appt} onClose={onClose} />
+          <CerrarSesionStep appt={appt} onClose={onClose} onChargingChange={setPointCharging} />
         ) : (
           <>
             <div className="grid grid-cols-2 gap-x-4 gap-y-3">
