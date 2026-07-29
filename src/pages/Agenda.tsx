@@ -926,6 +926,35 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
     (paymentType === 'gift_card' && !!gcValid)
   )
 
+  // Critical follow-up to the duplicate-charge fix: point_charges' guard only
+  // blocks a second charge while the prior one is still 'created' (in
+  // flight) — once MP reports 'processed', that guard no longer applies, so
+  // leaving the session unconfirmed at that point (modal closed without
+  // clicking Confirm) means a later reopen could start a genuinely new,
+  // separate charge for money that was already collected. Auto-closing the
+  // instant every Point row is ready removes the unconfirmed window
+  // entirely, instead of just making it harder to hit by accident (Part 5).
+  //
+  // hasTrackedPointRow gates out the case where pointRowsReady flips
+  // false→true for an unrelated reason (e.g. the user switches a row's
+  // method away from debit/credit/qr before ever charging it) — that's not
+  // a completed payment, so it must not auto-submit the form. Reuses
+  // canConfirm itself (the exact gate the button already relies on) as the
+  // final check, so this can never fire in a state the manual button
+  // wouldn't also have allowed.
+  const hasTrackedPointRow = splitRows.some((row, i) =>
+    (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method),
+  )
+  const prevPointRowsReadyRef = useRef(pointRowsReady)
+  useEffect(() => {
+    const wasReady = prevPointRowsReadyRef.current
+    prevPointRowsReadyRef.current = pointRowsReady
+    if (!wasReady && pointRowsReady && hasTrackedPointRow && canConfirm) {
+      void handleConfirm()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pointRowsReady, hasTrackedPointRow, canConfirm])
+
   if (step === 'prompt' || step === 'invoice') {
     const cashTotal = cashTxs.reduce((sum, t) => sum + t.amount, 0)
     const stillProcessing = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
