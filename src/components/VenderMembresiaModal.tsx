@@ -19,7 +19,7 @@ import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import type { MembershipPlan } from '@/types'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
-import { resolveNewTransactions, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
+import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 
 type Props = {
   open: boolean
@@ -46,6 +46,7 @@ export default function VenderMembresiaModal({
   const [phase, setPhase] = useState<'form' | 'confirm' | 'done'>('form')
   const [showInvoice, setShowInvoice] = useState(false)
   const [membershipTx, setMembershipTx] = useState<ResolvedTransaction | null>(null)
+  const [invoiceAnswered, setInvoiceAnswered] = useState(false)
 
   const [titularId, setTitularId] = useState(preSelectedClientId ?? '')
   const [titularSearch, setTitularSearch] = useState('')
@@ -110,8 +111,7 @@ export default function VenderMembresiaModal({
     if (!selectedPlan || !titularId || !user) return
     setError(null)
     try {
-      const beforeIso = new Date().toISOString()
-      const membershipId = await sellMembership.mutateAsync({
+      const { membershipId, transactionId } = await sellMembership.mutateAsync({
         clientId: titularId,
         planId: selectedPlan.id,
         planName: selectedPlan.name,
@@ -126,31 +126,34 @@ export default function VenderMembresiaModal({
         clientName: titularName || undefined,
       })
 
-      // sell_membership only inserts a transaction row when amount > 0 —
-      // nothing to invoice otherwise.
-      const amountNum = Number(amount)
-      if (amountNum > 0 && tenantId) {
-        const newTxs = await resolveNewTransactions({
-          tenantId,
-          createdAfter: beforeIso,
-          filters: { client_id: titularId, category: 'membership', amount: amountNum },
-        })
-        const tx = newTxs[newTxs.length - 1] ?? null
-        setMembershipTx(tx)
-        if (tx && hasCajaAccess && isElectronicPayment(tx.payment_method)) {
-          void invoiceQueue.startQueue([{
-            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
-            clientName: titularName || 'Consumidor Final', concept: `Membresía ${selectedPlan?.name ?? ''}`,
-          }])
-        }
-      } else {
-        setMembershipTx(null)
-      }
+      // sell_membership only inserts a transaction row (and returns its id)
+      // when amount > 0 — nothing to invoice otherwise. The id comes straight
+      // from the RPC response, an exact match with no clock-skew race.
+      const tx = transactionId ? await fetchTransactionsByIds([transactionId]) : []
+      setMembershipTx(tx[0] ?? null)
 
       setPhase('done')
       onSuccess?.(membershipId)
     } catch (e) {
       setError((e as Error).message || 'Error al guardar la membresía')
+    }
+  }
+
+  // Only fires once the user explicitly answers "Sí" to "¿Querés emitir
+  // factura?" — electronic payments go through the automatic type-resolution
+  // queue (still pauses for the A/B choice on Responsable Inscripto
+  // tenants), cash/other payment methods open the manual invoice form.
+  function handleWantInvoice() {
+    if (!membershipTx) return
+    setInvoiceAnswered(true)
+    if (isElectronicPayment(membershipTx.payment_method)) {
+      void invoiceQueue.startQueue([{
+        id: membershipTx.id, amount: membershipTx.amount, paymentMethod: membershipTx.payment_method,
+        clientId: membershipTx.client_id, clientName: titularName || 'Consumidor Final',
+        concept: `Membresía ${selectedPlan?.name ?? ''}`,
+      }])
+    } else {
+      setShowInvoice(true)
     }
   }
 
@@ -166,6 +169,7 @@ export default function VenderMembresiaModal({
     setStartDate(today)
     setError(null)
     setMembershipTx(null)
+    setInvoiceAnswered(false)
     onClose()
   }
 
@@ -220,11 +224,11 @@ export default function VenderMembresiaModal({
               </div>
             )}
 
-            {hasCajaAccess && membershipTx && !isElectronicPayment(membershipTx.payment_method) ? (
+            {hasCajaAccess && membershipTx && !invoiceAnswered ? (
               <div className="space-y-3">
-                <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+                <p className="text-sm text-gray-600">¿Querés emitir factura?</p>
                 <div className="flex gap-2 justify-center">
-                  <Button onClick={() => setShowInvoice(true)} className="bg-plum-700 hover:bg-plum-800 text-white gap-1.5">
+                  <Button onClick={handleWantInvoice} className="bg-plum-700 hover:bg-plum-800 text-white gap-1.5">
                     Sí, emitir factura
                   </Button>
                   <Button onClick={handleClose} variant="outline">No, gracias</Button>

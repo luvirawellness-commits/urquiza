@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
-import { isElectronicPayment } from '@/lib/paymentMethods'
 import { useTenantId } from '@/contexts/AuthContext'
 
 // Stage 1 foundation only — not wired into any screen yet. See useTriggerInvoicing
@@ -62,7 +61,6 @@ export type TriggerInvoicingInput = {
 export type TriggerInvoicingResult = {
   auto: boolean
   invoice?: InvoiceResult
-  needsConfirmation?: boolean
   needsInvoiceTypeChoice?: boolean
 }
 
@@ -100,10 +98,11 @@ export function useTriggerInvoicing() {
         throw new Error('CUIT del receptor requerido para Factura A.')
       }
 
-      // 3. Electronic vs cash/other — only electronic payments auto-issue.
-      if (!isElectronicPayment(input.paymentMethod)) {
-        return { auto: false, needsConfirmation: true }
-      }
+      // 3. Electronic-vs-cash branching now happens entirely at the call site
+      // (only electronic transactions are ever queued into this function —
+      // cash/other payment methods go through the manual InvoiceModal instead).
+      // The caller only reaches this point after the user explicitly confirmed
+      // "¿Querés emitir factura?" — no more silent auto-fire.
 
       const { data, error: fnErr } = await supabase.functions.invoke('generate-invoice', {
         body: {
@@ -135,10 +134,10 @@ export function useTriggerInvoicing() {
 // ── Stage 2 additions ─────────────────────────────────────────────────────────
 // The four sale flows (session close, membership, gift card, product cart) all
 // need the same two things: a way to find the transaction row(s) a just-run
-// RPC/insert created (none of those calls return transaction ids directly),
-// and a way to walk a list of transactions through triggerInvoicing one at a
-// time, pausing for the A/B choice modal when needed. Built once here instead
-// of four times to keep that (non-trivial, money-handling) logic consistent.
+// RPC/insert created, and a way to walk a list of transactions through
+// triggerInvoicing one at a time, pausing for the A/B choice modal when
+// needed. Built once here instead of four times to keep that (non-trivial,
+// money-handling) logic consistent.
 
 export type ResolvedTransaction = {
   id: string
@@ -147,26 +146,18 @@ export type ResolvedTransaction = {
   client_id: string | null
 }
 
-// Finds transaction rows created after `createdAfter` (capture this via
-// new Date().toISOString() immediately before calling the RPC/insert) matching
-// the given equality filters. None of close_appointment_with_payment,
-// sell_membership, or create_gift_card return the transaction ids they insert,
-// so callers resolve them with a tight time-bound query instead of changing
-// those RPCs' return types (a bigger, riskier change than Stage 2 needs).
-export async function resolveNewTransactions(params: {
-  tenantId: string
-  createdAfter: string
-  filters: Record<string, string | number>
-}): Promise<ResolvedTransaction[]> {
-  let query = supabase
+// Fetches transaction rows by exact id — close_appointment_with_payment,
+// sell_membership, and create_gift_card all return the id(s) of the
+// transaction(s) they just inserted directly in their RPC response, so
+// there's no time-based guessing involved (previously this queried
+// "created_at >= beforeIso" using a client-captured timestamp, which could
+// silently return zero rows under client/server clock skew).
+export async function fetchTransactionsByIds(ids: string[]): Promise<ResolvedTransaction[]> {
+  if (ids.length === 0) return []
+  const { data, error } = await supabase
     .from('transactions')
     .select('id, amount, payment_method, client_id')
-    .eq('tenant_id', params.tenantId)
-    .gte('created_at', params.createdAfter)
-  for (const [column, value] of Object.entries(params.filters)) {
-    query = query.eq(column, value)
-  }
-  const { data, error } = await query.order('created_at', { ascending: true })
+    .in('id', ids)
   if (error) throw error
   return (data ?? []) as ResolvedTransaction[]
 }

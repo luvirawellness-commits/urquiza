@@ -70,6 +70,8 @@ function CartModal({
 
   const [phase, setPhase] = useState<'form' | 'done'>('form')
   const [cashTxs, setCashTxs] = useState<ResolvedTransaction[]>([])
+  const [electronicTxs, setElectronicTxs] = useState<ResolvedTransaction[]>([])
+  const [invoiceAnswered, setInvoiceAnswered] = useState(false)
   const [showInvoice, setShowInvoice] = useState(false)
   const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
 
@@ -86,6 +88,8 @@ function CartModal({
     setError('')
     setPhase('form')
     setCashTxs([])
+    setElectronicTxs([])
+    setInvoiceAnswered(false)
     setShowInvoice(false)
   }
 
@@ -116,20 +120,12 @@ function CartModal({
       })
 
       if (hasCajaAccess && tenantId) {
-        const electronicTxs = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
+        const electronic = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
         const cash = newTxs.filter((tx) => !isElectronicPayment(tx.payment_method))
+        setElectronicTxs(electronic)
         setCashTxs(cash)
 
-        if (electronicTxs.length > 0) {
-          const concept = cart.map((i) => i.supply.name).join(', ')
-          const clientNameForInvoice = [selectedClient.first_name, selectedClient.last_name].filter(Boolean).join(' ')
-          void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
-            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
-            clientName: clientNameForInvoice, concept,
-          })))
-        }
-
-        if (electronicTxs.length > 0 || cash.length > 0) {
+        if (electronic.length > 0 || cash.length > 0) {
           setPhase('done')
           return
         }
@@ -140,6 +136,27 @@ function CartModal({
       finishSale()
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Error al registrar la venta')
+    }
+  }
+
+  // Only fires once the user explicitly answers "Sí" to "¿Querés emitir
+  // factura?" — electronic transactions go through the automatic
+  // type-resolution queue (still pauses for the A/B choice on Responsable
+  // Inscripto tenants), cash/other transactions open the manual invoice form.
+  function handleWantInvoice() {
+    setInvoiceAnswered(true)
+    if (electronicTxs.length > 0) {
+      const concept = cart.map((i) => i.supply.name).join(', ')
+      const clientNameForInvoice = selectedClient
+        ? [selectedClient.first_name, selectedClient.last_name].filter(Boolean).join(' ')
+        : 'Consumidor Final'
+      void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
+        id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+        clientName: clientNameForInvoice, concept,
+      })))
+    }
+    if (cashTxs.length > 0) {
+      setShowInvoice(true)
     }
   }
 
@@ -189,18 +206,17 @@ function CartModal({
               </div>
             )}
 
-            {cashTxs.length > 0 ? (
+            {!invoiceAnswered ? (
               <>
-                <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+                <p className="text-sm text-gray-600">¿Querés emitir factura?</p>
                 <div className="flex gap-2">
                   <Button
-                    onClick={() => setShowInvoice(true)}
-                    disabled={stillProcessing}
+                    onClick={handleWantInvoice}
                     className="flex-1 bg-plum-700 hover:bg-plum-800 text-white"
                   >
                     Sí, emitir factura
                   </Button>
-                  <Button onClick={finishSale} variant="outline" className="flex-1" disabled={stillProcessing}>
+                  <Button onClick={finishSale} variant="outline" className="flex-1">
                     No, gracias
                   </Button>
                 </div>

@@ -84,7 +84,10 @@ export function useCreateGiftCard() {
         p_message:          input.message || null,
       })
       if (error) throw error
-      return data as { id: string; code: string }
+      // create_gift_card returns the gift card row merged with the id of the
+      // transaction it just created — an exact id, not a time-based query,
+      // so no clock-skew race is possible.
+      return data as { id: string; code: string; transaction_id: string }
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['gift_cards'] })

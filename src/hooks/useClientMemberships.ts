@@ -162,9 +162,13 @@ export function useSellMembership() {
         p_appointment_id:  input.preSelectedAppointmentId ?? null,
       })
       if (error) throw error
-      return (data as { id: string }).id
+      // sell_membership returns the membership row merged with the id of the
+      // transaction it just created (null when amount_paid was 0) — an exact
+      // id, not a time-based query, so no clock-skew race is possible.
+      const result = data as { id: string; transaction_id: string | null }
+      return { membershipId: result.id, transactionId: result.transaction_id }
     },
-    onSuccess: (membershipId, variables) => {
+    onSuccess: ({ membershipId }, variables) => {
       qc.invalidateQueries({ queryKey: ['client-memberships', variables.clientId] })
       qc.invalidateQueries({ queryKey: ['client-active-memberships', variables.clientId] })
       qc.invalidateQueries({ queryKey: ['active-membership'] })

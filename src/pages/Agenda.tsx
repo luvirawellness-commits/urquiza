@@ -30,7 +30,7 @@ import type { Appointment, AppointmentStatus, Client } from '@/types'
 import { getArgentinaDateString } from '../utils/dateUtils'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
-import { resolveNewTransactions, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
+import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -421,6 +421,8 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
   const [step, setStep] = useState<'form' | 'prompt' | 'invoice'>('form')
   const hasCajaAccess = canAccess(profile?.role ?? '', 'caja')
   const [cashTxs, setCashTxs] = useState<ResolvedTransaction[]>([])
+  const [electronicTxs, setElectronicTxs] = useState<ResolvedTransaction[]>([])
+  const [invoiceAnswered, setInvoiceAnswered] = useState(false)
   const invoiceQueue = useElectronicInvoiceQueue({ tenantId: currentTenantId })
 
   const basePrice = appt.price_charged
@@ -533,8 +535,7 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
 
       const giftCardId = paymentType === 'gift_card' && gcValid ? gcValid.id : null
 
-      const beforeIso = new Date().toISOString()
-      const { error } = await supabase.rpc('close_appointment_with_payment', {
+      const { data, error } = await supabase.rpc('close_appointment_with_payment', {
         p_appointment_id:       appt.id,
         p_tenant_id:            currentTenantId!,
         p_date:                 getArgentinaDateString(),
@@ -558,23 +559,17 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
       // payment inserts no transaction at all (see close_appointment_with_payment),
       // so there's nothing to invoice for those regardless of permission.
       if (paymentType === 'efectivo_digital' && amounts.length > 0 && hasCajaAccess && currentTenantId) {
-        const newTxs = await resolveNewTransactions({
-          tenantId: currentTenantId,
-          createdAfter: beforeIso,
-          filters: { appointment_id: appt.id },
-        })
-        const electronicTxs = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
+        // close_appointment_with_payment returns the exact ids of the
+        // transaction rows it just created — no time-based guessing, so no
+        // race condition with the server's clock is possible.
+        const txIds = ((data as { transaction_ids?: string[] } | null)?.transaction_ids) ?? []
+        const newTxs = await fetchTransactionsByIds(txIds)
+        const electronic = newTxs.filter((tx) => isElectronicPayment(tx.payment_method))
         const cash = newTxs.filter((tx) => !isElectronicPayment(tx.payment_method))
+        setElectronicTxs(electronic)
         setCashTxs(cash)
 
-        if (electronicTxs.length > 0) {
-          void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
-            id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
-            clientName: clientName(appt), concept: appt.service?.name ?? 'Servicio',
-          })))
-        }
-
-        if (electronicTxs.length > 0 || cash.length > 0) {
+        if (newTxs.length > 0) {
           setStep('prompt')
         } else {
           onClose()
@@ -585,6 +580,23 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
     } catch (e) {
       setError((e as Error).message || 'Error al cerrar la sesión')
     } finally { setBusy(false) }
+  }
+
+  // Only fires once the user explicitly answers "Sí" to "¿Querés emitir
+  // factura?" — electronic transactions go through the automatic
+  // type-resolution queue (still pauses for the A/B choice on Responsable
+  // Inscripto tenants), cash/other transactions open the manual invoice form.
+  function handleWantInvoice() {
+    setInvoiceAnswered(true)
+    if (electronicTxs.length > 0) {
+      void invoiceQueue.startQueue(electronicTxs.map((tx) => ({
+        id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+        clientName: clientName(appt), concept: appt.service?.name ?? 'Servicio',
+      })))
+    }
+    if (cashTxs.length > 0) {
+      setStep('invoice')
+    }
   }
 
   const canConfirm = !busy && (
@@ -622,19 +634,18 @@ function CerrarSesionStep({ appt, onClose }: { appt: Appointment; onClose: () =>
           </div>
         )}
 
-        {cashTxs.length > 0 ? (
+        {!invoiceAnswered ? (
           <>
-            <p className="text-sm text-gray-600">¿Querés emitir una factura electrónica?</p>
+            <p className="text-sm text-gray-600">¿Querés emitir factura?</p>
             <div className="flex gap-2">
               <Button
-                onClick={() => setStep('invoice')}
-                disabled={stillProcessing}
+                onClick={handleWantInvoice}
                 className="flex-1 bg-plum-700 hover:bg-plum-800 text-white gap-1.5"
               >
                 <FileText className="w-3.5 h-3.5" />
                 Sí, emitir factura
               </Button>
-              <Button onClick={onClose} variant="outline" className="flex-1" disabled={stillProcessing}>
+              <Button onClick={onClose} variant="outline" className="flex-1">
                 No, gracias
               </Button>
             </div>

@@ -17,7 +17,7 @@ import { cn, formatCurrency, formatDate, exportToExcel } from '@/lib/utils'
 import { CARD_BASE64 } from '@/lib/cardBase64'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
-import { resolveNewTransactions, useElectronicInvoiceQueue, type QueuedInvoiceStatus } from '@/hooks/useAutoInvoice'
+import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction, type QueuedInvoiceStatus } from '@/hooks/useAutoInvoice'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
@@ -278,7 +278,9 @@ function GiftCardForm() {
   const [senderName, setSenderName] = useState('')
   const [message, setMessage] = useState('')
   const [generatedGC, setGeneratedGC] = useState<GeneratedGiftCard | null>(null)
-  const [pendingInvoice, setPendingInvoice] = useState<{ amount: number; concept: string; clientName: string; transactionId?: string } | null>(null)
+  const [invoiceCandidate, setInvoiceCandidate] = useState<
+    { tx: ResolvedTransaction; clientName: string; concept: string } | null
+  >(null)
   const [showInvoice, setShowInvoice] = useState(false)
   const [autoInvoiceTxId, setAutoInvoiceTxId] = useState<string | null>(null)
 
@@ -306,7 +308,6 @@ function GiftCardForm() {
     e.preventDefault()
     if (!serviceId || !amount || !recipientName.trim()) return
     try {
-      const beforeIso = new Date().toISOString()
       const result = await createGC.mutateAsync({
         service_id: serviceId,
         service_name: selectedService?.name ?? 'Servicio',
@@ -322,31 +323,17 @@ function GiftCardForm() {
         message: message.trim(),
       })
 
-      // create_gift_card's description is always exactly 'Gift Card #' + code,
-      // which makes the resulting transaction row unambiguous to find.
-      if (tenantId) {
-        const newTxs = await resolveNewTransactions({
-          tenantId,
-          createdAfter: beforeIso,
-          filters: { description: `Gift Card #${result.code}` },
-        })
-        const tx = newTxs[newTxs.length - 1] ?? null
-        const clientNameForInvoice = recipientName.trim() || 'Consumidor Final'
-        if (tx && hasCajaAccess) {
-          if (isElectronicPayment(tx.payment_method)) {
-            setAutoInvoiceTxId(tx.id)
-            void invoiceQueue.startQueue([{
-              id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
-              clientName: clientNameForInvoice, concept: `Gift Card #${result.code}`,
-            }])
-          } else {
-            setPendingInvoice({
-              amount: Number(amount),
-              concept: `Gift Card ${selectedService?.name ?? 'Servicio'} ${duration}min`,
-              clientName: clientNameForInvoice,
-              transactionId: tx.id,
-            })
-          }
+      // create_gift_card returns the id of the transaction it just created —
+      // an exact id, not a time-based query, so no clock-skew race is
+      // possible. Capture clientName/concept now, before the form resets.
+      if (tenantId && hasCajaAccess) {
+        const [tx] = await fetchTransactionsByIds([result.transaction_id])
+        if (tx) {
+          setInvoiceCandidate({
+            tx,
+            clientName: recipientName.trim() || 'Consumidor Final',
+            concept: `Gift Card #${result.code}`,
+          })
         }
       }
 
@@ -386,6 +373,25 @@ function GiftCardForm() {
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
       setRecipientName(''); setSenderName(''); setMessage('')
     } catch (_) { /* error shown below */ }
+  }
+
+  // Only fires once the user explicitly clicks "Emitir factura" — electronic
+  // payments go through the automatic type-resolution queue (still pauses
+  // for the A/B choice on Responsable Inscripto tenants) while the gift card
+  // image stays open; cash/other payment methods open the manual invoice form.
+  function handleInvoiceClick() {
+    if (!invoiceCandidate) return
+    const { tx, clientName, concept } = invoiceCandidate
+    if (isElectronicPayment(tx.payment_method)) {
+      setAutoInvoiceTxId(tx.id)
+      void invoiceQueue.startQueue([{
+        id: tx.id, amount: tx.amount, paymentMethod: tx.payment_method, clientId: tx.client_id,
+        clientName, concept,
+      }])
+    } else {
+      setGeneratedGC(null)
+      setShowInvoice(true)
+    }
   }
 
   return (
@@ -506,21 +512,21 @@ function GiftCardForm() {
       {generatedGC && (
         <GiftCardImageModal
           gc={generatedGC}
-          onClose={() => { setGeneratedGC(null); setAutoInvoiceTxId(null) }}
-          onInvoice={pendingInvoice ? () => { setGeneratedGC(null); setShowInvoice(true) } : undefined}
+          onClose={() => { setGeneratedGC(null); setAutoInvoiceTxId(null); setInvoiceCandidate(null) }}
+          onInvoice={invoiceCandidate && !autoInvoiceTxId ? handleInvoiceClick : undefined}
           invoiceStatus={autoInvoiceTxId ? invoiceQueue.results[autoInvoiceTxId] : null}
         />
       )}
 
-      {pendingInvoice && (
+      {invoiceCandidate && (
         <InvoiceModal
           isOpen={showInvoice}
-          onClose={() => { setShowInvoice(false); setPendingInvoice(null) }}
+          onClose={() => { setShowInvoice(false); setInvoiceCandidate(null) }}
           tenantId={tenantId}
-          clientName={pendingInvoice.clientName}
-          amount={pendingInvoice.amount}
-          concept={pendingInvoice.concept}
-          transactionId={pendingInvoice.transactionId}
+          clientName={invoiceCandidate.clientName}
+          amount={invoiceCandidate.tx.amount}
+          concept={invoiceCandidate.concept}
+          transactionId={invoiceCandidate.tx.id}
         />
       )}
 
