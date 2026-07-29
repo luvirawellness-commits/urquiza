@@ -1,6 +1,6 @@
 import { useState, useEffect, ElementType } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2, CreditCard, Unlink, AlertCircle } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2, CreditCard, Unlink, AlertCircle, Smartphone, Search } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -1998,6 +1998,245 @@ function MpConnectSection({ tenantId }: { tenantId: string }) {
   )
 }
 
+// ── MpPointDevicesSection ────────────────────────────────────────────────────
+// Stage C.1: registration only — no order creation or payment confirmation
+// here (that's C.2/C.3). Lets an owner discover their tenant's paired Point
+// terminals via MP's live terminals list, switch a terminal to PDV mode if
+// needed (required for API-driven orders later), and register it locally so
+// it shows up as a selectable device at checkout time.
+
+type PointDeviceRow = {
+  id: string
+  tenant_id: string
+  terminal_id: string
+  label: string | null
+  store_id: string | null
+  pos_id: number | null
+  operating_mode: string | null
+  is_active: boolean
+}
+
+type MpTerminal = {
+  id: string
+  store_id?: string
+  pos_id?: number
+  operating_mode?: string
+}
+
+function usePointDevices(tenantId: string) {
+  return useQuery({
+    queryKey: ['point-devices', tenantId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('tenant_point_devices')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .order('created_at', { ascending: true })
+      if (error) throw error
+      return data as PointDeviceRow[]
+    },
+    enabled: !!tenantId,
+  })
+}
+
+function MpPointDevicesSection({ tenantId }: { tenantId: string }) {
+  const { user, session } = useAuth()
+  const qc = useQueryClient()
+  const { data: mpConfig, isLoading: loadingMpConfig } = useMpConfig(tenantId)
+  const isMpConnected = !!mpConfig?.access_token
+  const { data: registeredDevices = [], isLoading: loadingRegistered } = usePointDevices(tenantId)
+
+  const [searching, setSearching] = useState(false)
+  const [searchError, setSearchError] = useState('')
+  const [foundTerminals, setFoundTerminals] = useState<MpTerminal[] | null>(null)
+  const [labels, setLabels] = useState<Record<string, string>>({})
+  const [registeringId, setRegisteringId] = useState<string | null>(null)
+  const [registerErrors, setRegisterErrors] = useState<Record<string, string>>({})
+  const [togglingId, setTogglingId] = useState<string | null>(null)
+
+  const registeredTerminalIds = new Set(registeredDevices.map((d) => d.terminal_id))
+  const unregisteredTerminals = (foundTerminals ?? []).filter((t) => !registeredTerminalIds.has(t.id))
+
+  async function handleSearch() {
+    if (!user?.id || !session?.access_token) { setSearchError('Sesión expirada. Recargá la página.'); return }
+    setSearchError('')
+    setSearching(true)
+    setFoundTerminals(null)
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('mp-point-list-devices', {
+        body: { tenant_id: tenantId, user_id: user.id, access_token: session.access_token },
+      })
+      if (fnErr) throw new Error(fnErr.message ?? 'Error al buscar dispositivos')
+      if (data?.error) throw new Error(data.error)
+      setFoundTerminals((data?.terminals ?? []) as MpTerminal[])
+    } catch (e) {
+      setSearchError(e instanceof Error ? e.message : 'Error al buscar dispositivos')
+    } finally {
+      setSearching(false)
+    }
+  }
+
+  async function handleRegister(t: MpTerminal) {
+    if (!user?.id || !session?.access_token) return
+    setRegisterErrors((prev) => ({ ...prev, [t.id]: '' }))
+    setRegisteringId(t.id)
+    try {
+      const { data, error: fnErr } = await supabase.functions.invoke('mp-point-register-device', {
+        body: {
+          tenant_id: tenantId, user_id: user.id, access_token: session.access_token,
+          terminal_id: t.id, label: labels[t.id]?.trim() || null,
+          store_id: t.store_id, pos_id: t.pos_id, operating_mode: t.operating_mode,
+        },
+      })
+      if (fnErr) throw new Error(fnErr.message ?? 'Error al registrar el dispositivo')
+      if (data?.error) throw new Error(data.error)
+      await qc.invalidateQueries({ queryKey: ['point-devices', tenantId] })
+      setFoundTerminals((prev) => prev?.filter((x) => x.id !== t.id) ?? null)
+    } catch (e) {
+      setRegisterErrors((prev) => ({ ...prev, [t.id]: e instanceof Error ? e.message : 'Error al registrar' }))
+    } finally {
+      setRegisteringId(null)
+    }
+  }
+
+  async function handleToggleActive(device: PointDeviceRow) {
+    setTogglingId(device.id)
+    try {
+      const { error } = await supabase
+        .from('tenant_point_devices')
+        .update({ is_active: !device.is_active, updated_at: new Date().toISOString() })
+        .eq('id', device.id)
+      if (error) throw error
+      await qc.invalidateQueries({ queryKey: ['point-devices', tenantId] })
+    } catch {
+      // Toggle failure is rare (just a boolean flip) — the row simply won't
+      // change; no need for a dedicated error banner for this.
+    } finally {
+      setTogglingId(null)
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base text-plum-800 flex items-center gap-2">
+          <Smartphone className="w-4 h-4" />
+          Lectores Point
+        </CardTitle>
+        <p className="text-sm text-muted-foreground">
+          Registrá los lectores de tarjeta (Point) de este local para poder cobrar directamente desde el sistema.
+        </p>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loadingMpConfig ? (
+          <div className="flex justify-center py-6"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+        ) : !isMpConnected ? (
+          <div className="flex items-start gap-2 p-3 rounded-lg text-sm bg-amber-50 border border-amber-200 text-amber-700">
+            <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+            Conectá primero la cuenta de MercadoPago de este local (arriba) para poder registrar sus lectores Point.
+          </div>
+        ) : (
+          <>
+            {/* Registered devices */}
+            {loadingRegistered ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-4 h-4 animate-spin text-gray-400" /></div>
+            ) : registeredDevices.length > 0 ? (
+              <div className="space-y-2">
+                {registeredDevices.map((d) => (
+                  <div key={d.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-plum-800 truncate">
+                        {d.label || 'Sin nombre'}
+                      </p>
+                      <p className="text-xs text-muted-foreground font-mono truncate">{d.terminal_id}</p>
+                    </div>
+                    <div className="flex items-center gap-3 flex-shrink-0">
+                      <Badge variant={d.operating_mode === 'PDV' ? 'success' : 'secondary'} className="text-xs">
+                        {d.operating_mode ?? '—'}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">{d.is_active ? 'Activo' : 'Inactivo'}</span>
+                      <button
+                        type="button"
+                        disabled={togglingId === d.id}
+                        onClick={() => handleToggleActive(d)}
+                        className={cn(
+                          'relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50',
+                          d.is_active ? 'bg-plum-700' : 'bg-gray-300',
+                        )}
+                      >
+                        <span className={cn(
+                          'inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform',
+                          d.is_active ? 'translate-x-5' : 'translate-x-0.5',
+                        )} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">Todavía no registraste ningún lector.</p>
+            )}
+
+            {/* Search + register new devices */}
+            <div className="pt-1">
+              <Button variant="outline" size="sm" onClick={handleSearch} disabled={searching} className="gap-1.5">
+                {searching ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
+                Buscar dispositivos
+              </Button>
+              {searchError && <p className="text-sm text-red-600 mt-2">{searchError}</p>}
+            </div>
+
+            {foundTerminals !== null && (
+              unregisteredTerminals.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No se encontraron lectores nuevos para registrar. Si esperabas ver uno, verificá que esté emparejado con la cuenta de MercadoPago de este local desde la app Point.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {unregisteredTerminals.map((t) => (
+                    <div key={t.id} className="rounded-lg border p-3 space-y-2">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="min-w-0">
+                          <p className="text-xs text-muted-foreground font-mono truncate">{t.id}</p>
+                          <p className="text-xs text-muted-foreground">
+                            Modo: {t.operating_mode ?? 'UNDEFINED'}
+                            {t.store_id ? ` · Sucursal: ${t.store_id}` : ''}
+                            {t.pos_id ? ` · Caja: ${t.pos_id}` : ''}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Nombre (ej: Recepción, Mostrador)"
+                          value={labels[t.id] ?? ''}
+                          onChange={(e) => setLabels((prev) => ({ ...prev, [t.id]: e.target.value }))}
+                          className="flex-1"
+                        />
+                        <Button
+                          size="sm"
+                          onClick={() => handleRegister(t)}
+                          disabled={registeringId === t.id}
+                          className="bg-plum-700 hover:bg-plum-800 text-white gap-1.5 flex-shrink-0"
+                        >
+                          {registeringId === t.id
+                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            : <Plus className="w-3.5 h-3.5" />}
+                          Registrar
+                        </Button>
+                      </div>
+                      {registerErrors[t.id] && <p className="text-sm text-red-600">{registerErrors[t.id]}</p>}
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
 function TabReservasOnline() {
   const { currentTenant, currentTenantId, refreshTenants } = useAuth()
 
@@ -2091,6 +2330,7 @@ function TabReservasOnline() {
       </Card>
 
       <MpConnectSection tenantId={currentTenantId} />
+      <MpPointDevicesSection tenantId={currentTenantId} />
     </div>
   )
 }
