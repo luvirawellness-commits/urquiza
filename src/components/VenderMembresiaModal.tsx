@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { getArgentinaDateString } from '../utils/dateUtils'
 import {
   CreditCard, ChevronDown, ChevronUp, X, CheckCircle, Loader2, Users, AlertCircle,
@@ -21,10 +21,7 @@ import type { MembershipPlan } from '@/types'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
 import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
-import {
-  useActivePointDevices, usePendingPointCharge, usePointSalePersistence,
-  POINT_ONLY_METHODS, type PointChargeStatus,
-} from '@/hooks/useMercadoPagoPoint'
+import { usePointGatedPayment, type PointChargeStatus } from '@/hooks/usePointGatedPayment'
 
 // Fraud prevention: membership sales had the same hole Stage C.2 closed for
 // session closing (Agenda.tsx) — debit/credit/qr could be recorded here with
@@ -104,33 +101,7 @@ export default function VenderMembresiaModal({
     : ''
 
   // ── Point gating ─────────────────────────────────────────────────────────
-  const { data: pointDevices = [] } = useActivePointDevices(tenantId)
-  const hasActivePointDevices = pointDevices.length > 0
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [pointStatus, setPointStatus] = useState<PointChargeStatus>('idle')
-  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
-  const resumeAppliedRef = useRef(false)
-  const [showCloseBlockedMsg, setShowCloseBlockedMsg] = useState(false)
-
-  const { idempotencyKey, resumedPayload, ensureKey, clearKey } =
-    usePointSalePersistence<MembershipSalePayload>('membership', tenantId)
-  const { data: pendingCharge } = usePendingPointCharge({ idempotencyKey })
-
-  useEffect(() => {
-    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
-  }, [pointDevices])
-
-  // Mirrors Agenda.tsx's isTrackedPointRow: a resumed charge must stay
-  // gated even if devices were deactivated in the meantime.
-  const isPointGatedMethod = (hasActivePointDevices || !!resumeOrderId) && POINT_ONLY_METHODS.includes(paymentMethod)
-  const pointCharging = pointStatus === 'creating' || pointStatus === 'waiting'
-  const fieldsLocked = isPointGatedMethod && pointStatus !== 'idle'
-
-  useEffect(() => {
-    if (!showCloseBlockedMsg) return
-    const t = setTimeout(() => setShowCloseBlockedMsg(false), 4000)
-    return () => clearTimeout(t)
-  }, [showCloseBlockedMsg])
 
   function currentPayload(): MembershipSalePayload {
     return {
@@ -145,27 +116,33 @@ export default function VenderMembresiaModal({
     }
   }
 
-  // Resume: restore the charge state and the exact sale details captured
-  // right before it started. Unlike an appointment, this sale doesn't exist
-  // as a DB row yet — after a reload, component state is gone, so without
-  // restoring the payload a resumed charge that reaches 'processed' would
-  // have nothing valid to submit.
-  useEffect(() => {
-    if (resumeAppliedRef.current || !pendingCharge) return
-    resumeAppliedRef.current = true
-    setPaymentMethod(pendingCharge.payment_method)
-    setPointStatus('waiting')
-    setSelectedDeviceId(pendingCharge.terminal_id)
-    setResumeOrderId(pendingCharge.mp_order_id)
-    setAmount(String(pendingCharge.amount))
-    if (resumedPayload) {
-      setTitularId(resumedPayload.titularId)
-      setSelectedPlan(resumedPayload.selectedPlan)
-      setBeneficiaries(resumedPayload.beneficiaries)
-      setStartDate(resumedPayload.startDate)
-      setPhase('confirm')
-    }
-  }, [pendingCharge, resumedPayload])
+  const pointGating = usePointGatedPayment<MembershipSalePayload>({
+    tenantId,
+    dedupKey: { mode: 'idempotency', flow: 'membership' },
+    rows: [{ method: paymentMethod, status: pointStatus }],
+    canSubmit: !sellMembership.isPending,
+    onAllProcessed: () => void handleSave(),
+    // Resume: restore the charge state and the exact sale details captured
+    // right before it started. Unlike an appointment, this sale doesn't
+    // exist as a DB row yet — after a reload, component state is gone, so
+    // without restoring the payload a resumed charge that reaches
+    // 'processed' would have nothing valid to submit.
+    onResume: (charge, payload) => {
+      setPaymentMethod(charge.payment_method)
+      setPointStatus('waiting')
+      setAmount(String(charge.amount))
+      if (payload) {
+        setTitularId(payload.titularId)
+        setSelectedPlan(payload.selectedPlan)
+        setBeneficiaries(payload.beneficiaries)
+        setStartDate(payload.startDate)
+        setPhase('confirm')
+      }
+    },
+  })
+  const isPointGatedMethod = pointGating.isTrackedPointRow(0)
+  const pointCharging = pointGating.anyCharging
+  const fieldsLocked = pointGating.rowLocked(0)
 
   // Mints the idempotency key (freezing the sale payload alongside it) once
   // the user reaches the confirm screen with a Point-gated method — nothing
@@ -174,21 +151,9 @@ export default function VenderMembresiaModal({
   useEffect(() => {
     if (phase !== 'confirm' || !isPointGatedMethod || pointStatus !== 'idle') return
     if (!selectedPlan || !titularId) return
-    if (!idempotencyKey) ensureKey(currentPayload())
+    if (!pointGating.idempotencyKey) pointGating.ensureKey(currentPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, isPointGatedMethod, pointStatus])
-
-  // Best-effort defense-in-depth, same posture as GiftCardForm: the real
-  // guarantee is the point_charges dedup + resume above.
-  useEffect(() => {
-    if (!pointCharging) return
-    function handleBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [pointCharging])
 
   const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
   const stillProcessingInvoice = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
@@ -247,31 +212,12 @@ export default function VenderMembresiaModal({
 
       setPhase('done')
       onSuccess?.(membershipId)
-      clearKey()
+      pointGating.resetPointState()
       setPointStatus('idle')
-      setResumeOrderId(null)
-      resumeAppliedRef.current = false
     } catch (e) {
       setError((e as Error).message || 'Error al guardar la membresía')
     }
   }
-
-  // Auto-fire the sale the instant Point reports processed — mirrors
-  // CerrarSesionStep's pointRowsReady auto-confirm effect (Stage C.2 Part
-  // 5): leaving this unconfirmed after a successful charge would mean the
-  // money is collected but no membership ever recorded, and a later retry
-  // could double-charge since the dedup guard only blocks while a charge is
-  // still 'created'.
-  const prevProcessedRef = useRef(false)
-  useEffect(() => {
-    const wasProcessed = prevProcessedRef.current
-    const isProcessed = pointStatus === 'processed'
-    prevProcessedRef.current = isProcessed
-    if (!wasProcessed && isProcessed && !sellMembership.isPending) {
-      void handleSave()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointStatus])
 
   // Only fires once the user explicitly answers "Sí" to "¿Querés emitir
   // factura?" — electronic payments go through the automatic type-resolution
@@ -304,37 +250,22 @@ export default function VenderMembresiaModal({
     setError(null)
     setMembershipTx(null)
     setInvoiceAnswered(false)
-    clearKey()
-    setSelectedDeviceId(null)
+    pointGating.resetPointState()
+    pointGating.setSelectedDeviceId(null)
     setPointStatus('idle')
-    setResumeOrderId(null)
-    resumeAppliedRef.current = false
     onClose()
-  }
-
-  // Blocks the X button, backdrop click, and Escape alike while a Point
-  // charge is actually in flight — same defense-in-depth pattern as
-  // AppointmentDetailModal for session closing. Not the real guarantee
-  // (that's the point_charges dedup + resume), just discourages losing
-  // track of an in-flight charge by accident.
-  function handleOpenChange(v: boolean) {
-    if (!v && pointCharging) {
-      setShowCloseBlockedMsg(true)
-      return
-    }
-    if (!v) handleClose()
   }
 
   function handleVolver() {
     if (pointCharging) return
-    clearKey()
+    pointGating.clearKey()
     setPointStatus('idle')
     setPhase('form')
   }
 
   return (
     <>
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => pointGating.handleDialogOpenChange(v, handleClose)}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -348,7 +279,7 @@ export default function VenderMembresiaModal({
           </DialogDescription>
         </DialogHeader>
 
-        {showCloseBlockedMsg && (
+        {pointGating.showCloseBlockedMsg && (
           <div className="flex items-start gap-2 p-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
             <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
             No podés cerrar mientras se espera la confirmación del pago con Point.
@@ -441,17 +372,17 @@ export default function VenderMembresiaModal({
                 })}
             </div>
 
-            {isPointGatedMethod && pointDevices.length > 1 && (
+            {isPointGatedMethod && pointGating.pointDevices.length > 1 && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Lector Point</Label>
                 <select
                   className={SELECT_CLS}
-                  value={selectedDeviceId ?? ''}
+                  value={pointGating.selectedDeviceId ?? ''}
                   disabled={fieldsLocked}
-                  onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                  onChange={(e) => pointGating.setSelectedDeviceId(e.target.value || null)}
                 >
                   <option value="">Seleccionar lector...</option>
-                  {pointDevices.map((d) => (
+                  {pointGating.pointDevices.map((d) => (
                     <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
                   ))}
                 </select>
@@ -462,21 +393,21 @@ export default function VenderMembresiaModal({
 
             {isPointGatedMethod ? (
               <div className="space-y-2">
-                {idempotencyKey ? (
+                {pointGating.idempotencyKey ? (
                   <PointChargeControl
                     amount={Number(amount) || 0}
-                    deviceId={selectedDeviceId}
-                    deviceLabel={pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null}
+                    deviceId={pointGating.selectedDeviceId}
+                    deviceLabel={pointGating.pointDevices.find((d) => d.terminal_id === pointGating.selectedDeviceId)?.label ?? null}
                     description={`Membresía ${selectedPlan?.name ?? ''}`}
-                    externalReference={`membresia-${idempotencyKey}`}
-                    idempotencyKey={idempotencyKey}
+                    externalReference={`membresia-${pointGating.idempotencyKey}`}
+                    idempotencyKey={pointGating.idempotencyKey}
                     paymentMethod={paymentMethod}
                     tenantId={tenantId}
                     userId={user!.id}
                     accessToken={session?.access_token ?? ''}
                     status={pointStatus}
                     onStatusChange={setPointStatus}
-                    resumeOrderId={resumeOrderId}
+                    resumeOrderId={pointGating.resumeOrderId}
                   />
                 ) : (
                   <p className="text-xs text-muted-foreground">Preparando el cobro con Point...</p>

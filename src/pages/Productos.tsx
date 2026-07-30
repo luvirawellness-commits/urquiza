@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ShoppingCart, Loader2, Package, Search, Check, CheckCircle, Plus, Minus, Trash2, AlertCircle,
 } from 'lucide-react'
@@ -19,10 +19,7 @@ import { useElectronicInvoiceQueue, type ResolvedTransaction } from '@/hooks/use
 import InvoiceModal from '@/components/InvoiceModal'
 import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import { PointChargeControl } from '@/components/PointChargeControl'
-import {
-  useActivePointDevices, usePendingPointCharge, usePointSalePersistence,
-  POINT_ONLY_METHODS, type PointChargeStatus, type PointDevice,
-} from '@/hooks/useMercadoPagoPoint'
+import { usePointGatedPayment, type PointChargeStatus } from '@/hooks/usePointGatedPayment'
 
 // Fraud prevention: product sales had the same hole Stage C.2 closed for
 // session closing (Agenda.tsx) — debit/credit/qr could be recorded via the
@@ -31,10 +28,16 @@ import {
 // same shape as session closing's split rows. So this mirrors
 // CerrarSesionStep's pattern directly (one shared idempotency key across all
 // of a sale's rows, like appointment_id is shared across a session's split
-// rows) rather than gift cards' single-payment pattern. Point-gating state
-// lives here in the parent (not CartModal) because cart/client already do,
-// and because resuming after a reload needs to reopen the modal with the
-// right cart/client/splits restored — CartModal only exists while open.
+// rows) rather than gift cards' single-payment pattern.
+//
+// CartModal is always mounted by Productos (its visibility is controlled
+// via the Dialog's `open` prop, not conditional rendering), so — unlike a
+// component that only exists while open — it can own the Point-gating
+// machinery (splits, per-row status, usePointGatedPayment) itself, same as
+// GiftCardForm/VenderMembresiaModal. Only cart/selectedClient genuinely
+// need to live in the parent, since the product grid outside the modal
+// mutates them too — restoreCart/onForceOpen are the two small bridges back
+// up for the resume case.
 type ProductSalePayload = {
   items: CartSaleItem[]
   splits: CartPaymentSplit[]
@@ -65,11 +68,7 @@ function SuccessToast({ message, onDone }: { message: string; onDone: () => void
 // ── Cart Modal ────────────────────────────────────────────────────────────────
 function CartModal({
   open, onClose, cart, updateQty, removeFromCart, clearCart,
-  selectedClient, setSelectedClient, onSuccess,
-  splits, setSplits,
-  hasActivePointDevices, pointDevices, selectedDeviceId, setSelectedDeviceId,
-  pointStatuses, setRowPointStatus, isTrackedPointRow, rowLocked, pointRowsReady,
-  resumeOrderId, idempotencyKey, resetPointState,
+  selectedClient, setSelectedClient, onSuccess, restoreCart, onForceOpen,
 }: {
   open: boolean
   onClose: () => void
@@ -80,20 +79,8 @@ function CartModal({
   selectedClient: Client | null
   setSelectedClient: (c: Client | null) => void
   onSuccess: (message: string) => void
-  splits: { paymentMethod: string; amount: string }[]
-  setSplits: React.Dispatch<React.SetStateAction<{ paymentMethod: string; amount: string }[]>>
-  hasActivePointDevices: boolean
-  pointDevices: PointDevice[]
-  selectedDeviceId: string | null
-  setSelectedDeviceId: (id: string | null) => void
-  pointStatuses: Record<number, PointChargeStatus>
-  setRowPointStatus: (index: number, status: PointChargeStatus) => void
-  isTrackedPointRow: (index: number, method: string) => boolean
-  rowLocked: (index: number, method: string) => boolean
-  pointRowsReady: boolean
-  resumeOrderId: string | null
-  idempotencyKey: string | null
-  resetPointState: () => void
+  restoreCart: (items: CartItem[]) => void
+  onForceOpen: () => void
 }) {
   const { user, profile, session } = useAuth()
   const tenantId = useTenantId()
@@ -111,8 +98,12 @@ function CartModal({
   const [electronicTxs, setElectronicTxs] = useState<ResolvedTransaction[]>([])
   const [invoiceAnswered, setInvoiceAnswered] = useState(false)
   const [showInvoice, setShowInvoice] = useState(false)
-  const [showCloseBlockedMsg, setShowCloseBlockedMsg] = useState(false)
   const invoiceQueue = useElectronicInvoiceQueue({ tenantId })
+
+  const [splits, setSplits] = useState<{ paymentMethod: string; amount: string }[]>([
+    { paymentMethod: 'cash', amount: '' },
+  ])
+  const [pointStatuses, setPointStatuses] = useState<Record<number, PointChargeStatus>>({})
 
   const totalItems = cart.reduce((s, i) => s + i.quantity, 0)
   const total = cart.reduce((s, i) => s + (i.supply.sale_price ?? 0) * i.quantity, 0)
@@ -120,14 +111,54 @@ function CartModal({
   const splitsMatch = total > 0 && Math.abs(splitsTotal - total) < 0.01
   const stillProcessing = Object.values(invoiceQueue.results).some((r) => r.status === 'pending')
 
-  const anyPointCharging = Object.values(pointStatuses).some((s) => s === 'creating' || s === 'waiting')
-  const hasTrackedPointRow = splits.some((s, i) => isTrackedPointRow(i, s.paymentMethod))
+  function setRowPointStatus(index: number, status: PointChargeStatus) {
+    setPointStatuses((prev) => ({ ...prev, [index]: status }))
+  }
 
+  const pointGating = usePointGatedPayment<ProductSalePayload>({
+    tenantId,
+    dedupKey: { mode: 'idempotency', flow: 'product' },
+    rows: splits.map((s, i) => ({ method: s.paymentMethod, status: pointStatuses[i] ?? 'idle' })),
+    canSubmit: !sellCart.isPending,
+    onAllProcessed: () => void handleConfirm(),
+    // Resume: restore cart/client/splits captured right before the charge
+    // started, and force the dialog open. After a reload React state is
+    // gone — a resumed charge that reaches 'processed' would otherwise
+    // have nothing valid to submit despite the customer having been
+    // charged.
+    onResume: (charge, payload) => {
+      setSplits([{ paymentMethod: charge.payment_method, amount: String(charge.amount) }])
+      setPointStatuses({ 0: 'waiting' })
+      if (payload) {
+        restoreCart(payload.items.map((i) => ({ supply: i.supply, quantity: i.quantity })))
+        setSelectedClient(payload.client)
+      }
+      onForceOpen()
+    },
+  })
+  const anyPointCharging = pointGating.anyCharging
+  const pointRowsReady = pointGating.pointRowsReady
+
+  // Mints the idempotency key (freezing the sale payload alongside it) the
+  // moment the cart has a Point-gated row with cart+client already filled
+  // in, then keeps the persisted payload in sync with live edits until a
+  // charge actually starts — past that point rows are locked, so the
+  // last-synced snapshot can't go stale relative to what gets submitted.
   useEffect(() => {
-    if (!showCloseBlockedMsg) return
-    const t = setTimeout(() => setShowCloseBlockedMsg(false), 4000)
-    return () => clearTimeout(t)
-  }, [showCloseBlockedMsg])
+    if (!open) return
+    const hasPointRow = splits.some((_s, i) => pointGating.isTrackedPointRow(i))
+    if (!hasPointRow || anyPointCharging) return
+    if (cart.length === 0 || !selectedClient || !user) return
+    const payload: ProductSalePayload = {
+      items: cart.map((i) => ({ supply: i.supply, quantity: i.quantity })),
+      splits: splits.map((s) => ({ paymentMethod: s.paymentMethod, amount: parseFloat(s.amount) || 0 })),
+      client: selectedClient,
+      userId: user.id,
+    }
+    if (!pointGating.idempotencyKey) pointGating.ensureKey(payload)
+    else pointGating.syncPayload(payload)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, splits, cart, selectedClient])
 
   function resetLocalState() {
     setClientSearch('')
@@ -138,23 +169,14 @@ function CartModal({
     setElectronicTxs([])
     setInvoiceAnswered(false)
     setShowInvoice(false)
-    resetPointState()
+    pointGating.resetPointState()
+    setPointStatuses({})
+    setSplits([{ paymentMethod: 'cash', amount: '' }])
   }
 
   function handleClose() {
     resetLocalState()
     onClose()
-  }
-
-  // Blocks the X button, backdrop click, and Escape alike while a Point
-  // charge is actually in flight — same defense-in-depth pattern as
-  // AppointmentDetailModal for session closing.
-  function handleOpenChange(v: boolean) {
-    if (!v && anyPointCharging) {
-      setShowCloseBlockedMsg(true)
-      return
-    }
-    if (!v) handleClose()
   }
 
   function finishSale() {
@@ -226,28 +248,9 @@ function CartModal({
     ? [selectedClient.first_name, selectedClient.last_name].filter(Boolean).join(' ')
     : 'Consumidor Final'
 
-  // Auto-fire the sale the instant every tracked Point row reports
-  // processed — mirrors CerrarSesionStep's pointRowsReady auto-confirm
-  // effect (Stage C.2 Part 5): leaving this unconfirmed after a successful
-  // charge would mean the money is collected but the sale never recorded,
-  // and a later retry could double-charge since the dedup guard only blocks
-  // while a charge is still 'created'. hasTrackedPointRow gates out
-  // pointRowsReady flipping true for an unrelated reason (e.g. no Point rows
-  // at all) — reuses canConfirm itself (the exact gate the button already
-  // relies on) as the final check.
-  const prevPointRowsReadyRef = useRef(pointRowsReady)
-  useEffect(() => {
-    const wasReady = prevPointRowsReadyRef.current
-    prevPointRowsReadyRef.current = pointRowsReady
-    if (!wasReady && pointRowsReady && hasTrackedPointRow && canConfirm) {
-      void handleConfirm()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointRowsReady, hasTrackedPointRow, canConfirm])
-
   return (
     <>
-    <Dialog open={open} onOpenChange={handleOpenChange}>
+    <Dialog open={open} onOpenChange={(v) => pointGating.handleDialogOpenChange(v, handleClose)}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -258,7 +261,7 @@ function CartModal({
           </DialogTitle>
         </DialogHeader>
 
-        {showCloseBlockedMsg && (
+        {pointGating.showCloseBlockedMsg && (
           <div className="flex items-start gap-2 p-2.5 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-xs">
             <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
             No podés cerrar mientras se espera la confirmación del pago con Point.
@@ -420,16 +423,16 @@ function CartModal({
               <div className="space-y-2 border-t pt-3">
                 <Label className="text-sm font-semibold text-plum-800">Medios de pago</Label>
 
-                {hasActivePointDevices && pointDevices.length > 1 && (
+                {pointGating.hasActivePointDevices && pointGating.pointDevices.length > 1 && (
                   <div className="space-y-1">
                     <Label className="text-xs text-muted-foreground">Lector Point</Label>
                     <select
                       className={SELECT_CLS}
-                      value={selectedDeviceId ?? ''}
-                      onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                      value={pointGating.selectedDeviceId ?? ''}
+                      onChange={(e) => pointGating.setSelectedDeviceId(e.target.value || null)}
                     >
                       <option value="">Seleccionar lector...</option>
-                      {pointDevices.map((d) => (
+                      {pointGating.pointDevices.map((d) => (
                         <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
                       ))}
                     </select>
@@ -438,9 +441,9 @@ function CartModal({
 
                 {splits.map((split, idx) => {
                   const rowStatus = pointStatuses[idx] ?? 'idle'
-                  const isPointRow = isTrackedPointRow(idx, split.paymentMethod)
-                  const locked = rowLocked(idx, split.paymentMethod)
-                  const deviceLabel = pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null
+                  const isPointRow = pointGating.isTrackedPointRow(idx)
+                  const locked = pointGating.rowLocked(idx)
+                  const deviceLabel = pointGating.pointDevices.find((d) => d.terminal_id === pointGating.selectedDeviceId)?.label ?? null
 
                   return (
                     <div key={idx} className={cn('space-y-1.5', isPointRow && 'rounded-md border p-2')}>
@@ -472,21 +475,21 @@ function CartModal({
                         )}
                       </div>
                       {isPointRow && (
-                        idempotencyKey ? (
+                        pointGating.idempotencyKey ? (
                           <PointChargeControl
                             amount={parseFloat(split.amount) || 0}
-                            deviceId={selectedDeviceId}
+                            deviceId={pointGating.selectedDeviceId}
                             deviceLabel={deviceLabel}
                             description={`Venta: ${cart.map((i) => i.supply.name).join(', ')}`}
-                            externalReference={`producto-${idempotencyKey}-${idx}`}
-                            idempotencyKey={idempotencyKey}
+                            externalReference={`producto-${pointGating.idempotencyKey}-${idx}`}
+                            idempotencyKey={pointGating.idempotencyKey}
                             paymentMethod={split.paymentMethod}
                             tenantId={tenantId}
                             userId={user!.id}
                             accessToken={session?.access_token ?? ''}
                             status={rowStatus}
                             onStatusChange={(status) => setRowPointStatus(idx, status)}
-                            resumeOrderId={idx === 0 ? resumeOrderId : null}
+                            resumeOrderId={idx === 0 ? pointGating.resumeOrderId : null}
                           />
                         ) : (
                           <p className="text-xs text-muted-foreground">Completá cliente y carrito para cobrar con Point.</p>
@@ -587,114 +590,12 @@ function ProductCard({
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function Productos() {
-  const { user } = useAuth()
-  const tenantId = useTenantId()
   const { data: products = [], isLoading } = useSellableSupplies()
   const [query, setQuery] = useState('')
   const [cart, setCart] = useState<CartItem[]>([])
   const [cartOpen, setCartOpen] = useState(false)
   const [selectedClient, setSelectedClient] = useState<Client | null>(null)
   const [successMessage, setSuccessMessage] = useState('')
-
-  // ── Point gating (fraud prevention) ─────────────────────────────────────────
-  // Lives here, not in CartModal, because cart/client already live here, and
-  // because resuming a charge after a reload needs to reopen the modal with
-  // the right cart/client/splits restored — CartModal only exists while open.
-  const [splits, setSplits] = useState<{ paymentMethod: string; amount: string }[]>([
-    { paymentMethod: 'cash', amount: '' },
-  ])
-  const { data: pointDevices = [] } = useActivePointDevices(tenantId)
-  const hasActivePointDevices = pointDevices.length > 0
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
-  const [pointStatuses, setPointStatuses] = useState<Record<number, PointChargeStatus>>({})
-  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
-  const resumeAppliedRef = useRef(false)
-
-  const { idempotencyKey, resumedPayload, ensureKey, syncPayload, clearKey } =
-    usePointSalePersistence<ProductSalePayload>('product', tenantId)
-  const { data: pendingCharge } = usePendingPointCharge({ idempotencyKey })
-
-  useEffect(() => {
-    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
-  }, [pointDevices])
-
-  function setRowPointStatus(index: number, status: PointChargeStatus) {
-    setPointStatuses((prev) => ({ ...prev, [index]: status }))
-  }
-
-  // A resumed row must stay tracked even if devices were deactivated in the
-  // meantime, mirroring Agenda.tsx's isTrackedPointRow.
-  function isTrackedPointRow(index: number, method: string): boolean {
-    return (hasActivePointDevices || (index === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(method)
-  }
-
-  function rowLocked(index: number, method: string): boolean {
-    if (!isTrackedPointRow(index, method)) return false
-    const s = pointStatuses[index] ?? 'idle'
-    return s === 'creating' || s === 'waiting' || s === 'processed'
-  }
-
-  const pointRowsReady = splits.every((s, i) => !isTrackedPointRow(i, s.paymentMethod) || pointStatuses[i] === 'processed')
-
-  function resetPointState() {
-    clearKey()
-    setPointStatuses({})
-    setResumeOrderId(null)
-    resumeAppliedRef.current = false
-    setSplits([{ paymentMethod: 'cash', amount: '' }])
-  }
-
-  // Resume: restore cart/client/splits captured right before the charge
-  // started, and reopen the modal. After a reload React state is gone — a
-  // resumed charge that reaches 'processed' would otherwise have nothing
-  // valid to submit despite the customer having been charged.
-  useEffect(() => {
-    if (resumeAppliedRef.current || !pendingCharge) return
-    resumeAppliedRef.current = true
-    setSplits([{ paymentMethod: pendingCharge.payment_method, amount: String(pendingCharge.amount) }])
-    setPointStatuses({ 0: 'waiting' })
-    setSelectedDeviceId(pendingCharge.terminal_id)
-    setResumeOrderId(pendingCharge.mp_order_id)
-    if (resumedPayload) {
-      setCart(resumedPayload.items.map((i) => ({ supply: i.supply, quantity: i.quantity })))
-      setSelectedClient(resumedPayload.client)
-    }
-    setCartOpen(true)
-  }, [pendingCharge, resumedPayload])
-
-  // Mints the idempotency key (freezing the sale payload alongside it) the
-  // moment the cart has a Point-gated row with cart+client already filled
-  // in, then keeps the persisted payload in sync with live edits until a
-  // charge actually starts — past that point rows are locked, so the
-  // last-synced snapshot can't go stale relative to what gets submitted.
-  useEffect(() => {
-    if (!cartOpen) return
-    const hasPointRow = splits.some((s, i) => isTrackedPointRow(i, s.paymentMethod))
-    const anyCharging = Object.values(pointStatuses).some((s) => s === 'creating' || s === 'waiting')
-    if (!hasPointRow || anyCharging) return
-    if (cart.length === 0 || !selectedClient || !user) return
-    const payload: ProductSalePayload = {
-      items: cart.map((i) => ({ supply: i.supply, quantity: i.quantity })),
-      splits: splits.map((s) => ({ paymentMethod: s.paymentMethod, amount: parseFloat(s.amount) || 0 })),
-      client: selectedClient,
-      userId: user.id,
-    }
-    if (!idempotencyKey) ensureKey(payload)
-    else syncPayload(payload)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cartOpen, splits, cart, selectedClient])
-
-  // Best-effort defense-in-depth, same posture as GiftCardForm/VenderMembresiaModal.
-  useEffect(() => {
-    const anyCharging = Object.values(pointStatuses).some((s) => s === 'creating' || s === 'waiting')
-    if (!anyCharging) return
-    function handleBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [pointStatuses])
 
   function addToCart(supply: Supply) {
     setCart((prev) => {
@@ -806,20 +707,8 @@ export default function Productos() {
         selectedClient={selectedClient}
         setSelectedClient={setSelectedClient}
         onSuccess={setSuccessMessage}
-        splits={splits}
-        setSplits={setSplits}
-        hasActivePointDevices={hasActivePointDevices}
-        pointDevices={pointDevices}
-        selectedDeviceId={selectedDeviceId}
-        setSelectedDeviceId={setSelectedDeviceId}
-        pointStatuses={pointStatuses}
-        setRowPointStatus={setRowPointStatus}
-        isTrackedPointRow={isTrackedPointRow}
-        rowLocked={rowLocked}
-        pointRowsReady={pointRowsReady}
-        resumeOrderId={resumeOrderId}
-        idempotencyKey={idempotencyKey}
-        resetPointState={resetPointState}
+        restoreCart={setCart}
+        onForceOpen={() => setCartOpen(true)}
       />
 
       {successMessage && (

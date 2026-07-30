@@ -31,10 +31,8 @@ import { getArgentinaDateString } from '../utils/dateUtils'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
 import { fetchTransactionsByIds, useElectronicInvoiceQueue, useExistingInvoiceForAppointment, type ResolvedTransaction } from '@/hooks/useAutoInvoice'
-import {
-  useActivePointDevices, usePendingPointCharge,
-  POINT_ONLY_METHODS, type PointChargeStatus,
-} from '@/hooks/useMercadoPagoPoint'
+import { POINT_ONLY_METHODS } from '@/hooks/useMercadoPagoPoint'
+import { usePointGatedPayment, type PointChargeStatus } from '@/hooks/usePointGatedPayment'
 import { PointChargeControl } from '@/components/PointChargeControl'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -449,42 +447,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
 
   // Stage C.2: if this tenant has active Point readers, debit/credit/qr must
   // be charged through one of them — see POINT_ONLY_METHODS.
-  const { data: pointDevices = [] } = useActivePointDevices(currentTenantId)
-  const hasActivePointDevices = pointDevices.length > 0
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [pointChargeStatuses, setPointChargeStatuses] = useState<Record<number, PointChargeStatus>>({})
-  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
-  }, [pointDevices])
-
-  const anyPointCharging = Object.values(pointChargeStatuses).some((s) => s === 'creating' || s === 'waiting')
-
-  useEffect(() => {
-    onChargingChange?.(anyPointCharging)
-    // Make sure the parent isn't left thinking a charge is still in flight
-    // if this step unmounts while one was active.
-    return () => onChargingChange?.(false)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [anyPointCharging])
-
-  // Duplicate-charge fix, frontend half: if point_charges already has an
-  // unresolved order for this appointment (the modal was closed mid-charge
-  // last time, or a teammate has it open elsewhere), resume tracking it
-  // instead of ever offering a fresh "Cobrar con Point" button. Applied once
-  // per mount, guarded by resumeAppliedRef — this only seeds initial state,
-  // it must never re-run and stomp on the user's own edits afterward.
-  const { data: pendingCharge } = usePendingPointCharge({ appointmentId: appt.id })
-  const resumeAppliedRef = useRef(false)
-  useEffect(() => {
-    if (resumeAppliedRef.current || !pendingCharge) return
-    resumeAppliedRef.current = true
-    setSplitRows([{ method: pendingCharge.payment_method, amount: String(pendingCharge.amount) }])
-    setPointChargeStatuses({ 0: 'waiting' })
-    setSelectedDeviceId(pendingCharge.terminal_id)
-    setResumeOrderId(pendingCharge.mp_order_id)
-  }, [pendingCharge])
 
   const basePrice = appt.price_charged
     ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
@@ -506,32 +469,8 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
   const splitBalanced = Math.abs(splitTotal - totalConDescuento) < 0.01
   const paymentMethodMissing = paymentType === 'efectivo_digital' && splitRows.some(r => !r.method)
 
-  // Every row currently tracked as a Point charge must have actually cleared
-  // before the session can close — this is the fraud-prevention gate: no
-  // manual fallback exists for these. A row counts as tracked if devices are
-  // active OR (edge case: a device was deactivated while row 0's charge was
-  // still being resumed from a reopened session) it's the resumed row —
-  // deliberately NOT just "!hasActivePointDevices" short-circuiting the whole
-  // check, which would otherwise let a resumed-but-unresolved charge's row
-  // slip through as if Point never applied to it.
-  const pointRowsReady = splitRows.every((row, i) => {
-    const isTrackedPointRow = (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method)
-    return !isTrackedPointRow || pointChargeStatuses[i] === 'processed'
-  })
-
   function setRowPointStatus(index: number, status: PointChargeStatus) {
     setPointChargeStatuses((prev) => ({ ...prev, [index]: status }))
-  }
-
-  // True once a row's Point charge has actually started or landed — its
-  // method/amount must not change underneath a live or completed charge.
-  function isRowLocked(index: number, method: string) {
-    // Same reasoning as isPointRow/pointRowsReady above: a resumed row must
-    // stay lockable even if devices were deactivated in the meantime.
-    const isTrackedPointRow = (hasActivePointDevices || (index === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(method)
-    if (!isTrackedPointRow) return false
-    const s = pointChargeStatuses[index] ?? 'idle'
-    return s === 'creating' || s === 'waiting' || s === 'processed'
   }
 
   const { data: activeMemberships } = useClientActiveMemberships(appt.client_id ?? null)
@@ -549,7 +488,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
     // Never overwrite a row whose Point charge is live or already processed —
     // that amount is now tied to real money already sent to/through the
     // reader, editing the base price afterward must not silently change it.
-    setSplitRows(prev => (prev.length === 1 && !isRowLocked(0, prev[0].method))
+    setSplitRows(prev => (prev.length === 1 && !pointGating.rowLocked(0))
       ? [{ ...prev[0], amount: String(totalConDescuento) }]
       : prev)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -615,7 +554,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
     // Defense-in-depth alongside the disabled Confirm button: never let a
     // debit/credit/qr row through without an actually-processed Point charge
     // when devices are active — this is the fraud-prevention requirement.
-    if (!pointRowsReady) {
+    if (!pointGating.pointRowsReady) {
       setError('Todavía hay un cobro con Point pendiente de confirmar.')
       return
     }
@@ -634,7 +573,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
             // stays the real one the customer paid with, this flag just tags
             // which of those actually went through the physical reader.
             collectedViaPoint.push(
-              hasActivePointDevices && POINT_ONLY_METHODS.includes(row.method) && pointChargeStatuses[i] === 'processed',
+              pointGating.hasActivePointDevices && POINT_ONLY_METHODS.includes(row.method) && pointChargeStatuses[i] === 'processed',
             )
           }
         })
@@ -712,8 +651,12 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
     }
   }
 
-  const canConfirm = !busy && (
-    (paymentType === 'efectivo_digital' && splitBalanced && !paymentMethodMissing && pointRowsReady) ||
+  // canConfirmBase is canConfirm minus the Point-readiness term — computed
+  // first so it can be passed into usePointGatedPayment's canSubmit (the
+  // hook itself is what determines pointRowsReady, so canConfirm can't be
+  // computed before calling it without a circular reference).
+  const canConfirmBase = !busy && (
+    (paymentType === 'efectivo_digital' && splitBalanced && !paymentMethodMissing) ||
     (paymentType === 'membresia' && membershipSubOpt === 'use_existing' && !!selectedMembershipId && !membershipServiceBlocked) ||
     (paymentType === 'gift_card' && !!gcValid)
   )
@@ -723,29 +666,40 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
   // flight) — once MP reports 'processed', that guard no longer applies, so
   // leaving the session unconfirmed at that point (modal closed without
   // clicking Confirm) means a later reopen could start a genuinely new,
-  // separate charge for money that was already collected. Auto-closing the
-  // instant every Point row is ready removes the unconfirmed window
-  // entirely, instead of just making it harder to hit by accident (Part 5).
-  //
-  // hasTrackedPointRow gates out the case where pointRowsReady flips
-  // false→true for an unrelated reason (e.g. the user switches a row's
-  // method away from debit/credit/qr before ever charging it) — that's not
-  // a completed payment, so it must not auto-submit the form. Reuses
-  // canConfirm itself (the exact gate the button already relies on) as the
-  // final check, so this can never fire in a state the manual button
-  // wouldn't also have allowed.
-  const hasTrackedPointRow = splitRows.some((row, i) =>
-    (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method),
-  )
-  const prevPointRowsReadyRef = useRef(pointRowsReady)
+  // separate charge for money that was already collected. usePointGatedPayment's
+  // onAllProcessed auto-closes the instant every Point row is ready, removing
+  // the unconfirmed window entirely, instead of just making it harder to hit
+  // by accident (Part 5) — internally gated the same way this was by hand
+  // before: only fires on a false→true transition, only when a row was
+  // actually tracked, and only when canSubmit (canConfirmBase here) agrees.
+  const pointGating = usePointGatedPayment<never>({
+    tenantId: currentTenantId,
+    dedupKey: { mode: 'appointment', appointmentId: appt.id },
+    rows: splitRows.map((row, i) => ({ method: row.method, status: pointChargeStatuses[i] ?? 'idle' })),
+    canSubmit: canConfirmBase,
+    onAllProcessed: () => void handleConfirm(),
+    // Resume: only the charge state needs restoring — the rest of the
+    // session's data (client, service, amount) already lives durably on
+    // `appt` itself, fetched fresh, unlike gift cards/memberships which
+    // don't exist as a DB row until the charge succeeds.
+    onResume: (charge) => {
+      setSplitRows([{ method: charge.payment_method, amount: String(charge.amount) }])
+      setPointChargeStatuses({ 0: 'waiting' })
+    },
+    // Agenda never had a beforeunload guard (only the parent Dialog's
+    // onOpenChange block, via onChargingChange below) — preserved as-is.
+    beforeUnloadGuard: false,
+  })
+
   useEffect(() => {
-    const wasReady = prevPointRowsReadyRef.current
-    prevPointRowsReadyRef.current = pointRowsReady
-    if (!wasReady && pointRowsReady && hasTrackedPointRow && canConfirm) {
-      void handleConfirm()
-    }
+    onChargingChange?.(pointGating.anyCharging)
+    // Make sure the parent isn't left thinking a charge is still in flight
+    // if this step unmounts while one was active.
+    return () => onChargingChange?.(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointRowsReady, hasTrackedPointRow, canConfirm])
+  }, [pointGating.anyCharging])
+
+  const canConfirm = canConfirmBase && (paymentType !== 'efectivo_digital' || pointGating.pointRowsReady)
 
   if (step === 'prompt' || step === 'invoice') {
     const cashTotal = cashTxs.reduce((sum, t) => sum + t.amount, 0)
@@ -841,14 +795,14 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
               paymentType === opt.value ? 'border-plum-800 bg-plum-50' : 'border-gray-200 hover:border-gray-300',
             )}>
               <input type="radio" name="paymentType" value={opt.value}
-                checked={paymentType === opt.value} disabled={!opt.enabled || anyPointCharging}
+                checked={paymentType === opt.value} disabled={!opt.enabled || pointGating.anyCharging}
                 onChange={() => { if (opt.enabled) setPaymentType(opt.value) }}
                 className="accent-plum-800" />
               <span className="text-sm">{opt.label}</span>
             </label>
           ))}
         </div>
-        {anyPointCharging && (
+        {pointGating.anyCharging && (
           <p className="text-xs text-amber-600">Hay un cobro con Point en curso — esperá a que termine antes de cambiar el tipo de cobro.</p>
         )}
       </div>
@@ -879,16 +833,16 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
           <div className="space-y-2">
             <Label className="text-xs">Métodos de pago</Label>
 
-            {hasActivePointDevices && pointDevices.length > 1 && (
+            {pointGating.hasActivePointDevices && pointGating.pointDevices.length > 1 && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Lector Point</Label>
                 <select
                   className={SELECT_CLS}
-                  value={selectedDeviceId ?? ''}
-                  onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                  value={pointGating.selectedDeviceId ?? ''}
+                  onChange={(e) => pointGating.setSelectedDeviceId(e.target.value || null)}
                 >
                   <option value="">Seleccionar lector...</option>
-                  {pointDevices.map((d) => (
+                  {pointGating.pointDevices.map((d) => (
                     <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
                   ))}
                 </select>
@@ -902,9 +856,9 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
               // stay tracked as a Point row even if devices were deactivated
               // in the meantime, or its still-unresolved charge would
               // silently stop being gated.
-              const isPointRow = (hasActivePointDevices || (i === 0 && !!resumeOrderId)) && POINT_ONLY_METHODS.includes(row.method)
-              const rowLocked = isRowLocked(i, row.method)
-              const deviceLabel = pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null
+              const isPointRow = pointGating.isTrackedPointRow(i)
+              const rowLocked = pointGating.rowLocked(i)
+              const deviceLabel = pointGating.pointDevices.find((d) => d.terminal_id === pointGating.selectedDeviceId)?.label ?? null
 
               function updateMethod(method: string) {
                 setSplitRows(prev => prev.map((r, j) => j === i ? { ...r, method } : r))
@@ -959,7 +913,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
                   {isPointRow && (
                     <PointChargeControl
                       amount={Number(row.amount) || 0}
-                      deviceId={selectedDeviceId}
+                      deviceId={pointGating.selectedDeviceId}
                       deviceLabel={deviceLabel}
                       description={buildDescription()}
                       externalReference={`sesion-${appt.id}-${i}`}
@@ -970,7 +924,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
                       accessToken={session?.access_token ?? ''}
                       status={rowStatus}
                       onStatusChange={(status) => setRowPointStatus(i, status)}
-                      resumeOrderId={i === 0 ? resumeOrderId : null}
+                      resumeOrderId={i === 0 ? pointGating.resumeOrderId : null}
                     />
                   )}
                 </div>

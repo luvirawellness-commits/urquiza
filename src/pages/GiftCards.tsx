@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from 'react'
+﻿import { useState, useEffect } from 'react'
 import { getArgentinaDateString } from '../utils/dateUtils'
 import { Gift, Loader2, Download, FileText } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
@@ -19,10 +19,7 @@ import { CARD_BASE64 } from '@/lib/cardBase64'
 import { PAYMENT_METHODS, isElectronicPayment } from '@/lib/paymentMethods'
 import { canAccess } from '@/lib/permissions'
 import { fetchTransactionsByIds, useElectronicInvoiceQueue, type ResolvedTransaction, type QueuedInvoiceStatus } from '@/hooks/useAutoInvoice'
-import {
-  useActivePointDevices, usePendingPointCharge, usePointSalePersistence,
-  POINT_ONLY_METHODS, type PointChargeStatus,
-} from '@/hooks/useMercadoPagoPoint'
+import { usePointGatedPayment, type PointChargeStatus } from '@/hooks/usePointGatedPayment'
 const selectCls =
   'flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring'
 
@@ -317,26 +314,7 @@ function GiftCardForm() {
   const selectedService = services?.find((s) => s.id === serviceId)
 
   // ── Point gating ─────────────────────────────────────────────────────────
-  const { data: pointDevices = [] } = useActivePointDevices(tenantId)
-  const hasActivePointDevices = pointDevices.length > 0
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [pointStatus, setPointStatus] = useState<PointChargeStatus>('idle')
-  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
-  const resumeAppliedRef = useRef(false)
-
-  const { idempotencyKey, resumedPayload, ensureKey, syncPayload, clearKey } =
-    usePointSalePersistence<GiftCardSalePayload>('gift_card', tenantId)
-  const { data: pendingCharge } = usePendingPointCharge({ idempotencyKey })
-
-  useEffect(() => {
-    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
-  }, [pointDevices])
-
-  // A resumed row must stay tracked even if devices were deactivated in the
-  // meantime, mirroring Agenda.tsx's isTrackedPointRow — same reasoning: an
-  // in-flight charge from before must never silently stop being gated.
-  const isPointGatedMethod = (hasActivePointDevices || !!resumeOrderId) && POINT_ONLY_METHODS.includes(paymentMethod)
-  const fieldsLocked = isPointGatedMethod && pointStatus !== 'idle'
 
   function currentPayload(): GiftCardSalePayload {
     return {
@@ -354,29 +332,34 @@ function GiftCardForm() {
     }
   }
 
-  // Resume: restore both the charge state and the exact form values
-  // captured right before the charge started. After a reload, React state
-  // is gone — without restoring the payload too, a resumed charge that
-  // reaches 'processed' would have nothing valid to submit.
-  useEffect(() => {
-    if (resumeAppliedRef.current || !pendingCharge) return
-    resumeAppliedRef.current = true
-    setPaymentMethod(pendingCharge.payment_method)
-    setPointStatus('waiting')
-    setSelectedDeviceId(pendingCharge.terminal_id)
-    setResumeOrderId(pendingCharge.mp_order_id)
-    if (resumedPayload) {
-      setServiceId(resumedPayload.service_id)
-      setDuration(resumedPayload.duration_minutes)
-      setAmount(String(resumedPayload.amount))
-      setSoldBy(resumedPayload.sold_by)
-      setExpiresAt(resumedPayload.expires_at)
-      setNotes(resumedPayload.notes)
-      setRecipientName(resumedPayload.recipient_name)
-      setSenderName(resumedPayload.sender_name)
-      setMessage(resumedPayload.message)
-    }
-  }, [pendingCharge, resumedPayload])
+  const pointGating = usePointGatedPayment<GiftCardSalePayload>({
+    tenantId,
+    dedupKey: { mode: 'idempotency', flow: 'gift_card' },
+    rows: [{ method: paymentMethod, status: pointStatus }],
+    canSubmit: !createGC.isPending,
+    onAllProcessed: () => void submitGiftCard(),
+    // Resume: restore both the charge state and the exact form values
+    // captured right before the charge started. After a reload, React
+    // state is gone — without restoring the payload too, a resumed charge
+    // that reaches 'processed' would have nothing valid to submit.
+    onResume: (charge, payload) => {
+      setPaymentMethod(charge.payment_method)
+      setPointStatus('waiting')
+      if (payload) {
+        setServiceId(payload.service_id)
+        setDuration(payload.duration_minutes)
+        setAmount(String(payload.amount))
+        setSoldBy(payload.sold_by)
+        setExpiresAt(payload.expires_at)
+        setNotes(payload.notes)
+        setRecipientName(payload.recipient_name)
+        setSenderName(payload.sender_name)
+        setMessage(payload.message)
+      }
+    },
+  })
+  const isPointGatedMethod = pointGating.isTrackedPointRow(0)
+  const fieldsLocked = pointGating.rowLocked(0)
 
   // Mints the idempotency key (freezing the sale payload alongside it) the
   // moment the form becomes Point-gated, then keeps the persisted payload in
@@ -386,25 +369,10 @@ function GiftCardForm() {
   useEffect(() => {
     if (!isPointGatedMethod || pointStatus !== 'idle') return
     if (!serviceId || !amount || !recipientName.trim()) return
-    if (!idempotencyKey) ensureKey(currentPayload())
-    else syncPayload(currentPayload())
+    if (!pointGating.idempotencyKey) pointGating.ensureKey(currentPayload())
+    else pointGating.syncPayload(currentPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPointGatedMethod, pointStatus, serviceId, duration, amount, soldBy, expiresAt, notes, recipientName, senderName, message])
-
-  // Best-effort defense-in-depth: GiftCardForm is a page, not a Dialog, so
-  // there's no onOpenChange to block navigation through the way
-  // AppointmentDetailModal does for session closing — the real guarantee is
-  // still the point_charges dedup + resume above, this just discourages an
-  // accidental tab close while a charge is actually in flight.
-  useEffect(() => {
-    if (pointStatus !== 'creating' && pointStatus !== 'waiting') return
-    function handleBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [pointStatus])
 
   function applyServicePrice(sid: string, dur: 60 | 90) {
     const svc = services?.find((s) => s.id === sid)
@@ -489,37 +457,19 @@ function GiftCardForm() {
       setServiceId(''); setAmount(''); setPaymentMethod('cash'); setSoldBy('')
       setNotes(''); setDuration(60); setExpiresAt(defaultExpiry())
       setRecipientName(''); setSenderName(''); setMessage('')
-      clearKey()
+      pointGating.resetPointState()
       setPointStatus('idle')
-      setResumeOrderId(null)
-      resumeAppliedRef.current = false
     } catch (_) { /* error shown below */ }
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    // Point-gated submission is driven by the auto-confirm effect below,
-    // once the charge itself reports 'processed' — not by this click.
+    // Point-gated submission is driven by usePointGatedPayment's
+    // onAllProcessed, once the charge itself reports 'processed' — not by
+    // this click.
     if (isPointGatedMethod) return
     void submitGiftCard()
   }
-
-  // Auto-fire the sale the instant Point reports processed — mirrors
-  // CerrarSesionStep's pointRowsReady auto-confirm effect (Stage C.2 Part
-  // 5): leaving this unconfirmed after a successful charge would mean the
-  // money is collected but no gift card ever recorded, and a later retry
-  // could double-charge since the dedup guard only blocks while a charge is
-  // still 'created'.
-  const prevProcessedRef = useRef(false)
-  useEffect(() => {
-    const wasProcessed = prevProcessedRef.current
-    const isProcessed = pointStatus === 'processed'
-    prevProcessedRef.current = isProcessed
-    if (!wasProcessed && isProcessed && !createGC.isPending) {
-      void submitGiftCard()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointStatus])
 
   // Only fires once the user explicitly clicks "Emitir factura" — electronic
   // payments go through the automatic type-resolution queue (still pauses
@@ -642,17 +592,17 @@ function GiftCardForm() {
               </div>
             </div>
 
-            {isPointGatedMethod && pointDevices.length > 1 && (
+            {isPointGatedMethod && pointGating.pointDevices.length > 1 && (
               <div className="space-y-1">
                 <Label className="text-xs text-muted-foreground">Lector Point</Label>
                 <select
                   className={selectCls}
-                  value={selectedDeviceId ?? ''}
+                  value={pointGating.selectedDeviceId ?? ''}
                   disabled={fieldsLocked}
-                  onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                  onChange={(e) => pointGating.setSelectedDeviceId(e.target.value || null)}
                 >
                   <option value="">Seleccionar lector...</option>
-                  {pointDevices.map((d) => (
+                  {pointGating.pointDevices.map((d) => (
                     <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
                   ))}
                 </select>
@@ -660,21 +610,21 @@ function GiftCardForm() {
             )}
 
             {isPointGatedMethod ? (
-              idempotencyKey ? (
+              pointGating.idempotencyKey ? (
                 <PointChargeControl
                   amount={Number(amount) || 0}
-                  deviceId={selectedDeviceId}
-                  deviceLabel={pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null}
+                  deviceId={pointGating.selectedDeviceId}
+                  deviceLabel={pointGating.pointDevices.find((d) => d.terminal_id === pointGating.selectedDeviceId)?.label ?? null}
                   description={`Gift Card${selectedService ? ` — ${selectedService.name}` : ''}`}
-                  externalReference={`giftcard-${idempotencyKey}`}
-                  idempotencyKey={idempotencyKey}
+                  externalReference={`giftcard-${pointGating.idempotencyKey}`}
+                  idempotencyKey={pointGating.idempotencyKey}
                   paymentMethod={paymentMethod}
                   tenantId={tenantId}
                   userId={user!.id}
                   accessToken={session?.access_token ?? ''}
                   status={pointStatus}
                   onStatusChange={setPointStatus}
-                  resumeOrderId={resumeOrderId}
+                  resumeOrderId={pointGating.resumeOrderId}
                 />
               ) : (
                 <p className="text-xs text-muted-foreground">Completá los datos de la venta para cobrar con Point.</p>

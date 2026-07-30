@@ -1,4 +1,4 @@
-﻿import { useState, useMemo, useEffect, useRef, Fragment } from 'react'
+﻿import { useState, useMemo, useEffect, Fragment } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -10,10 +10,7 @@ import InvoiceModal from '@/components/InvoiceModal'
 import InvoiceTypeChoiceModal from '@/components/InvoiceTypeChoiceModal'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
 import { PointChargeControl } from '@/components/PointChargeControl'
-import {
-  useActivePointDevices, usePendingPointCharge, usePointSalePersistence,
-  POINT_ONLY_METHODS, type PointChargeStatus,
-} from '@/hooks/useMercadoPagoPoint'
+import { usePointGatedPayment, type PointChargeStatus } from '@/hooks/usePointGatedPayment'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
 import { useToast } from '@/hooks/useToast'
 import { useClients, useClient } from '@/hooks/useClients'
@@ -236,25 +233,7 @@ function SectionRegistrarCobro() {
   const selectedService = services?.find((s) => s.id === serviceId)
 
   // ── Point gating ─────────────────────────────────────────────────────────
-  const { data: pointDevices = [] } = useActivePointDevices(tenantId)
-  const hasActivePointDevices = pointDevices.length > 0
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [pointStatus, setPointStatus] = useState<PointChargeStatus>('idle')
-  const [resumeOrderId, setResumeOrderId] = useState<string | null>(null)
-  const resumeAppliedRef = useRef(false)
-
-  const { idempotencyKey, resumedPayload, ensureKey, syncPayload, clearKey } =
-    usePointSalePersistence<RegistrarCobroPayload>('registrar_cobro', tenantId)
-  const { data: pendingCharge } = usePendingPointCharge({ idempotencyKey })
-
-  useEffect(() => {
-    if (pointDevices.length === 1) setSelectedDeviceId(pointDevices[0].terminal_id)
-  }, [pointDevices])
-
-  // Mirrors Agenda.tsx's isTrackedPointRow: a resumed charge must stay
-  // gated even if devices were deactivated in the meantime.
-  const isPointGatedMethod = (hasActivePointDevices || !!resumeOrderId) && POINT_ONLY_METHODS.includes(paymentMethod)
-  const fieldsLocked = isPointGatedMethod && pointStatus !== 'idle'
 
   function currentPayload(): RegistrarCobroPayload {
     return {
@@ -267,24 +246,29 @@ function SectionRegistrarCobro() {
     }
   }
 
-  // Resume: restore both the charge state and the exact cobro details
-  // captured right before it started. After a reload React state is gone —
-  // without restoring the payload too, a resumed charge that reaches
-  // 'processed' would have nothing valid to submit.
-  useEffect(() => {
-    if (resumeAppliedRef.current || !pendingCharge) return
-    resumeAppliedRef.current = true
-    setPaymentMethod(pendingCharge.payment_method)
-    setPointStatus('waiting')
-    setSelectedDeviceId(pendingCharge.terminal_id)
-    setResumeOrderId(pendingCharge.mp_order_id)
-    setAmount(String(pendingCharge.amount))
-    if (resumedPayload) {
-      setClientId(resumedPayload.clientId)
-      setServiceId(resumedPayload.serviceId)
-      setNotes(resumedPayload.notes)
-    }
-  }, [pendingCharge, resumedPayload])
+  const pointGating = usePointGatedPayment<RegistrarCobroPayload>({
+    tenantId,
+    dedupKey: { mode: 'idempotency', flow: 'registrar_cobro' },
+    rows: [{ method: paymentMethod, status: pointStatus }],
+    canSubmit: !insertTx.isPending,
+    onAllProcessed: () => void submitCobro(),
+    // Resume: restore both the charge state and the exact cobro details
+    // captured right before it started. After a reload React state is
+    // gone — without restoring the payload too, a resumed charge that
+    // reaches 'processed' would have nothing valid to submit.
+    onResume: (charge, payload) => {
+      setPaymentMethod(charge.payment_method)
+      setPointStatus('waiting')
+      setAmount(String(charge.amount))
+      if (payload) {
+        setClientId(payload.clientId)
+        setServiceId(payload.serviceId)
+        setNotes(payload.notes)
+      }
+    },
+  })
+  const isPointGatedMethod = pointGating.isTrackedPointRow(0)
+  const fieldsLocked = pointGating.rowLocked(0)
 
   // Mints the idempotency key (freezing the cobro payload alongside it) the
   // moment the form becomes Point-gated, then keeps the persisted payload in
@@ -294,21 +278,10 @@ function SectionRegistrarCobro() {
   useEffect(() => {
     if (!isPointGatedMethod || pointStatus !== 'idle') return
     if (!clientId || !serviceId || !amount) return
-    if (!idempotencyKey) ensureKey(currentPayload())
-    else syncPayload(currentPayload())
+    if (!pointGating.idempotencyKey) pointGating.ensureKey(currentPayload())
+    else pointGating.syncPayload(currentPayload())
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPointGatedMethod, pointStatus, clientId, serviceId, amount, notes])
-
-  // Best-effort defense-in-depth, same posture as the other Point-gated flows.
-  useEffect(() => {
-    if (pointStatus !== 'creating' && pointStatus !== 'waiting') return
-    function handleBeforeUnload(e: BeforeUnloadEvent) {
-      e.preventDefault()
-      e.returnValue = ''
-    }
-    window.addEventListener('beforeunload', handleBeforeUnload)
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
-  }, [pointStatus])
 
   function handleServiceChange(sid: string) {
     setServiceId(sid)
@@ -334,37 +307,19 @@ function SectionRegistrarCobro() {
       setClientId(''); setSearch(''); setServiceId(''); setAmount('')
       setUseMembership(false); setNotes('')
       setPaymentMethod('cash')
-      clearKey()
+      pointGating.resetPointState()
       setPointStatus('idle')
-      setResumeOrderId(null)
-      resumeAppliedRef.current = false
     } catch (_) { /* error shown below */ }
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    // Point-gated submission is driven by the auto-confirm effect below,
-    // once the charge itself reports 'processed' — not by this click.
+    // Point-gated submission is driven by usePointGatedPayment's
+    // onAllProcessed, once the charge itself reports 'processed' — not by
+    // this click.
     if (isPointGatedMethod) return
     void submitCobro()
   }
-
-  // Auto-fire the cobro the instant Point reports processed — mirrors
-  // CerrarSesionStep's pointRowsReady auto-confirm effect (Stage C.2 Part
-  // 5): leaving this unconfirmed after a successful charge would mean the
-  // money is collected but no cobro ever recorded, and a later retry could
-  // double-charge since the dedup guard only blocks while a charge is still
-  // 'created'.
-  const prevProcessedRef = useRef(false)
-  useEffect(() => {
-    const wasProcessed = prevProcessedRef.current
-    const isProcessed = pointStatus === 'processed'
-    prevProcessedRef.current = isProcessed
-    if (!wasProcessed && isProcessed && !insertTx.isPending) {
-      void submitCobro()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pointStatus])
 
   return (
     <Card>
@@ -445,17 +400,17 @@ function SectionRegistrarCobro() {
             </div>
           </div>
 
-          {isPointGatedMethod && pointDevices.length > 1 && (
+          {isPointGatedMethod && pointGating.pointDevices.length > 1 && (
             <div className="space-y-1">
               <Label className="text-xs text-muted-foreground">Lector Point</Label>
               <select
                 className={selectCls}
-                value={selectedDeviceId ?? ''}
+                value={pointGating.selectedDeviceId ?? ''}
                 disabled={fieldsLocked}
-                onChange={(e) => setSelectedDeviceId(e.target.value || null)}
+                onChange={(e) => pointGating.setSelectedDeviceId(e.target.value || null)}
               >
                 <option value="">Seleccionar lector...</option>
-                {pointDevices.map((d) => (
+                {pointGating.pointDevices.map((d) => (
                   <option key={d.id} value={d.terminal_id}>{d.label || d.terminal_id}</option>
                 ))}
               </select>
@@ -481,21 +436,21 @@ function SectionRegistrarCobro() {
           </div>
 
           {isPointGatedMethod ? (
-            idempotencyKey ? (
+            pointGating.idempotencyKey ? (
               <PointChargeControl
                 amount={Number(amount) || 0}
-                deviceId={selectedDeviceId}
-                deviceLabel={pointDevices.find((d) => d.terminal_id === selectedDeviceId)?.label ?? null}
+                deviceId={pointGating.selectedDeviceId}
+                deviceLabel={pointGating.pointDevices.find((d) => d.terminal_id === pointGating.selectedDeviceId)?.label ?? null}
                 description={`Sesión: ${selectedService?.name ?? 'Servicio'}`}
-                externalReference={`cobro-${idempotencyKey}`}
-                idempotencyKey={idempotencyKey}
+                externalReference={`cobro-${pointGating.idempotencyKey}`}
+                idempotencyKey={pointGating.idempotencyKey}
                 paymentMethod={paymentMethod}
                 tenantId={tenantId}
                 userId={user!.id}
                 accessToken={session?.access_token ?? ''}
                 status={pointStatus}
                 onStatusChange={setPointStatus}
-                resumeOrderId={resumeOrderId}
+                resumeOrderId={pointGating.resumeOrderId}
               />
             ) : (
               <p className="text-xs text-muted-foreground">Completá cliente, servicio y monto para cobrar con Point.</p>
