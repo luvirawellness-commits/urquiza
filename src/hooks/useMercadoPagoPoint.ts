@@ -173,7 +173,7 @@ function pendingSaleStorageKey(flow: string, tenantId: string): string {
 // charged. Cleared once the charge reaches a terminal state or the sale
 // completes — nothing left to resume either way past that point.
 export function usePointSalePersistence<T>(
-  flow: 'gift_card' | 'membership' | 'product' | 'registrar_cobro',
+  flow: 'gift_card' | 'membership' | 'product' | 'registrar_cobro' | 'combined_checkout',
   tenantId: string | null | undefined,
 ) {
   const [idempotencyKey, setIdempotencyKeyState] = useState<string | null>(null)

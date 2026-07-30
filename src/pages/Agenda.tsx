@@ -9,6 +9,7 @@ import {
 } from '@/hooks/useAppointments'
 import { useClientActiveMemberships, useTenantActiveMemberships } from '@/hooks/useClientMemberships'
 import VenderMembresiaModal from '@/components/VenderMembresiaModal'
+import CombinedCheckoutModal from '@/components/CombinedCheckoutModal'
 import { useValidateGiftCard, type ValidatedGiftCard } from '@/hooks/useGiftCards'
 import { useClients, useCreateClient, useClient, useUpdateClient } from '@/hooks/useClients'
 import { useAuth } from '@/contexts/AuthContext'
@@ -212,6 +213,16 @@ function clientName(appt: Appointment): string {
   return [appt.client.first_name, appt.client.last_name].filter(Boolean).join(' ') || 'Cliente'
 }
 
+// Shared by CerrarSesionStep (single-appointment close) and the combined
+// multi-appointment checkout selection bar/modal — same fallback chain both
+// need: the price actually charged if set, else the service's price for
+// this appointment's duration, else 0.
+function appointmentBasePrice(appt: Appointment): number {
+  return appt.price_charged
+    ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
+    ?? 0
+}
+
 // ── Status config ─────────────────────────────────────────────────────────────
 
 const STATUS_LABELS: Record<AppointmentStatus, string> = {
@@ -355,15 +366,21 @@ function MiniCalendar({ currentDate, onSelect, onClose }: {
 // ── DayApptBlock ──────────────────────────────────────────────────────────────
 
 function DayApptBlock({
-  appt, color, onClick, hasMembership = false,
+  appt, color, onClick, hasMembership = false, selectMode = false, selected = false,
 }: {
   appt: Appointment; color: string; onClick: () => void; hasMembership?: boolean
+  // Combined checkout selection — off by default, only DayView ever passes
+  // these. When selectMode is on, a completed/cancelled appointment can't be
+  // picked (matches close_appointments_combined's own server-side check).
+  selectMode?: boolean; selected?: boolean
 }) {
   const top = timeToY(new Date(appt.scheduled_at).getHours(), new Date(appt.scheduled_at).getMinutes())
   const height = Math.max(appt.duration_minutes * (HOUR_PX / 60), 22)
   const isBlock = appt.status === 'blocked'
   const isCancelled = appt.status === 'cancelled' || appt.status === 'no_show'
   const isCompleted = appt.status === 'completed'
+  const isSelectable = selectMode && !isBlock
+    && appt.status !== 'completed' && appt.status !== 'cancelled'
 
   const bloqueoTipo = isBlock ? parseBloqueoTipo(appt.notes) : null
   const bloqueoStyle = bloqueoTipo
@@ -376,16 +393,27 @@ function DayApptBlock({
 
   return (
     <div
-      className="absolute left-1 right-1 rounded overflow-hidden cursor-pointer z-10 select-none transition-opacity hover:opacity-90"
+      className={cn(
+        'absolute left-1 right-1 rounded overflow-hidden z-10 select-none transition-opacity',
+        selectMode && !isSelectable ? 'cursor-not-allowed' : 'cursor-pointer hover:opacity-90',
+      )}
       style={{
         top,
         height,
-        opacity: isCancelled ? 0.5 : 1,
+        opacity: selectMode && !isSelectable ? 0.35 : isCancelled ? 0.5 : 1,
         backgroundColor: isCancelled ? '#f3f4f6' : isBlock ? bloqueoStyle.bg : isCompleted ? '#2563EB26' : `${color}26`,
-        borderLeft: `3px solid ${isCancelled ? '#9ca3af' : isBlock ? bloqueoStyle.border : isCompleted ? '#2563EB' : color}`,
+        borderLeft: `3px solid ${selected ? '#C9A227' : isCancelled ? '#9ca3af' : isBlock ? bloqueoStyle.border : isCompleted ? '#2563EB' : color}`,
+        outline: selected ? '2px solid #C9A227' : undefined,
+        outlineOffset: selected ? '-2px' : undefined,
       }}
-      onClick={(e) => { e.stopPropagation(); onClick() }}
+      onClick={(e) => { e.stopPropagation(); if (selectMode && !isSelectable) return; onClick() }}
     >
+      {selectMode && isSelectable && (
+        <div className="absolute top-0.5 left-0.5 z-20 pointer-events-none">
+          <input type="checkbox" checked={selected} readOnly
+            className="w-3.5 h-3.5 accent-plum-800 bg-white" />
+        </div>
+      )}
       {hasMembership && !isBlock && !isCancelled && (
         <div className="absolute top-0.5 right-0.5 z-10 pointer-events-none">
           <span className="text-[8px] font-bold px-1 py-px rounded bg-gold-400 text-plum-900 leading-none">
@@ -449,9 +477,7 @@ function CerrarSesionStep({ appt, onClose, onChargingChange }: {
   // be charged through one of them — see POINT_ONLY_METHODS.
   const [pointChargeStatuses, setPointChargeStatuses] = useState<Record<number, PointChargeStatus>>({})
 
-  const basePrice = appt.price_charged
-    ?? (appt.duration_minutes === 90 ? appt.service?.price_90 ?? appt.service?.price_60 : appt.service?.price_60 ?? appt.service?.price_90)
-    ?? 0
+  const basePrice = appointmentBasePrice(appt)
   const depositoPagado = appt.deposit_paid && (appt.deposit_amount ?? 0) > 0
     ? appt.deposit_amount ?? 0
     : 0
@@ -2440,11 +2466,17 @@ const HOURS = Array.from({ length: END_HOUR - START_HOUR }, (_, i) => START_HOUR
 
 function DayView({
   date, therapists, appointments, showCancelled, membershipClientSet, onSlotClick, onAppointmentClick,
+  selectMode = false, selectedIds, onToggleSelect,
 }: {
   date: Date; therapists: Therapist[]; appointments: Appointment[]
   showCancelled: boolean
   membershipClientSet: Set<string>
   onSlotClick: (t: SlotTarget) => void; onAppointmentClick: (a: Appointment) => void
+  // Combined checkout selection — only Agenda()'s day view ever passes
+  // these; WeekView and DayView outside select-mode are unaffected.
+  selectMode?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (a: Appointment) => void
 }) {
   const scrollRef = useRef<HTMLDivElement>(null)
   const [nowY, setNowY] = useState<number | null>(null)
@@ -2600,7 +2632,9 @@ function DayView({
                   {colAppts.map(appt => (
                     <DayApptBlock key={appt.id} appt={appt} color={color}
                       hasMembership={!!appt.client_id && membershipClientSet.has(appt.client_id)}
-                      onClick={() => onAppointmentClick(appt)} />
+                      selectMode={selectMode}
+                      selected={!!selectedIds?.has(appt.id)}
+                      onClick={() => (selectMode ? onToggleSelect?.(appt) : onAppointmentClick(appt))} />
                   ))}
                 </div>
               )
@@ -2725,6 +2759,42 @@ export default function Agenda() {
   const [prefill, setPrefill] = useState<TurnoPrefill | null>(null)
   const [showCancelled, setShowCancelled] = useState(false)
   const [showDatePicker, setShowDatePicker] = useState(false)
+
+  // ── Combined checkout selection (DayView only — see DayApptBlock/DayView) ──
+  const [combinedMode, setCombinedMode] = useState(false)
+  const [selectedForCombined, setSelectedForCombined] = useState<Appointment[]>([])
+  const [combinedCheckoutOpen, setCombinedCheckoutOpen] = useState(false)
+  const selectedForCombinedIds = useMemo(
+    () => new Set(selectedForCombined.map((a) => a.id)),
+    [selectedForCombined],
+  )
+
+  function toggleCombinedMode() {
+    setCombinedMode((v) => !v)
+    setSelectedForCombined([])
+  }
+
+  function toggleAppointmentSelection(appt: Appointment) {
+    setSelectedForCombined((prev) =>
+      prev.some((a) => a.id === appt.id)
+        ? prev.filter((a) => a.id !== appt.id)
+        : [...prev, appt],
+    )
+  }
+
+  const combinedTotal = selectedForCombined.reduce((sum, a) => sum + appointmentBasePrice(a), 0)
+
+  // Combined checkout is DayView-only (see design note on DayApptBlock) —
+  // leaving select-mode on while switching to WeekView would show stale
+  // checkboxes nowhere, since WeekView never receives these props at all.
+  // Navigating to a different day also clears the selection — nothing here
+  // should ever let a stale cross-day mix reach the checkout modal, even
+  // though close_appointments_combined would itself reject it server-side.
+  useEffect(() => {
+    if (view !== 'day') setCombinedMode(false)
+    setSelectedForCombined([])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, currentDate])
 
   const { user, profile } = useAuth()
   const isTherapist = profile?.role === 'therapist'
@@ -2870,6 +2940,20 @@ export default function Agenda() {
           >
             {showCancelled ? 'Ocultar cancelados' : 'Ver cancelados'}
           </button>
+          {!isTherapist && view === 'day' && (
+            <button
+              type="button"
+              onClick={toggleCombinedMode}
+              className={cn(
+                'text-xs px-2.5 py-1.5 rounded-md border font-medium transition-colors',
+                combinedMode
+                  ? 'bg-plum-800 text-white border-plum-800'
+                  : 'bg-white text-muted-foreground border-input hover:bg-gray-50',
+              )}
+            >
+              {combinedMode ? 'Cancelar cobro combinado' : 'Cobro combinado'}
+            </button>
+          )}
           {!isTherapist && (
             <Button size="sm" onClick={() => { setPrefill(null); setIsSobreTurno(false); setNewTurnoOpen(true) }}>
               <Plus className="w-4 h-4 mr-1.5" />
@@ -2911,6 +2995,9 @@ export default function Agenda() {
             membershipClientSet={membershipClientSet}
             onSlotClick={isTherapist ? () => {} : setSlotTarget}
             onAppointmentClick={setSelectedAppt}
+            selectMode={combinedMode}
+            selectedIds={selectedForCombinedIds}
+            onToggleSelect={toggleAppointmentSelection}
           />
         ) : (
           <WeekView
@@ -2953,6 +3040,43 @@ export default function Agenda() {
       )}
       {selectedAppt && (
         <AppointmentDetailModal appt={selectedAppt} onClose={() => setSelectedAppt(null)} readOnly={isTherapist} />
+      )}
+
+      {/* Combined checkout: sticky bar appears once 2+ appointments are picked in select-mode */}
+      {combinedMode && selectedForCombined.length >= 2 && (
+        <div className="fixed bottom-0 left-0 right-0 z-30 bg-plum-800 text-white px-6 py-3 shadow-lg flex items-center justify-between">
+          <span className="text-sm font-medium">
+            {selectedForCombined.length} seleccionados · {formatCurrency(combinedTotal)}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setSelectedForCombined([])}
+              className="text-xs text-plum-200 hover:text-white underline"
+            >
+              Limpiar selección
+            </button>
+            <Button
+              size="sm"
+              className="bg-gold-500 hover:bg-gold-600 text-plum-900 font-semibold"
+              onClick={() => setCombinedCheckoutOpen(true)}
+            >
+              Cobrar
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {combinedCheckoutOpen && selectedForCombined.length >= 2 && (
+        <CombinedCheckoutModal
+          appointments={selectedForCombined}
+          onClose={() => setCombinedCheckoutOpen(false)}
+          onSuccess={() => {
+            setCombinedCheckoutOpen(false)
+            setCombinedMode(false)
+            setSelectedForCombined([])
+          }}
+        />
       )}
     </div>
   )

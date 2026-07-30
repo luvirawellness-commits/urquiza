@@ -23,7 +23,7 @@ import {
 
 export type PointDedupKey =
   | { mode: 'appointment'; appointmentId: string | undefined }
-  | { mode: 'idempotency'; flow: 'gift_card' | 'membership' | 'product' | 'registrar_cobro' }
+  | { mode: 'idempotency'; flow: 'gift_card' | 'membership' | 'product' | 'registrar_cobro' | 'combined_checkout' }
 
 export type PointGatedRow = { method: string; status: PointChargeStatus }
 
