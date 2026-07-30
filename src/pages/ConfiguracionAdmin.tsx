@@ -1,6 +1,6 @@
 import { useState, useEffect, ElementType } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2, CreditCard, Unlink, AlertCircle, Smartphone, Search } from 'lucide-react'
+import { Plus, Pencil, Trash2, Loader2, Building2, Users, Shield, Check, Layers, MessageCircle, KeyRound, Link2, CreditCard, Unlink, AlertCircle, Smartphone, Search, Wallet } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { supabase } from '@/lib/supabase'
 import { useAuth, useTenantId } from '@/contexts/AuthContext'
@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import ResetPasswordModal from '@/components/ResetPasswordModal'
-import { cn } from '@/lib/utils'
+import { cn, MONTHS_ES } from '@/lib/utils'
 import type { Tenant, UserProfile } from '@/types'
 import {
   useAdminServices, useCreateService, useUpdateService, useDeleteService,
@@ -19,8 +19,14 @@ import {
   type ServiceRow, type ServiceForm,
 } from '@/hooks/useServices'
 import { DEFAULT_REMINDER_MESSAGE, DEFAULT_REVIEW_MESSAGE } from '@/utils/whatsappTemplates'
+import {
+  useTenantPaymentSettings,
+  useUpdatePaymentSettings,
+  useMonthlyBalances,
+  useUpsertMonthlyBalance,
+} from '@/hooks/useTreasury'
 
-type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios' | 'whatsapp' | 'reservas'
+type AdminTab = 'locales' | 'usuarios' | 'roles' | 'servicios' | 'whatsapp' | 'reservas' | 'tesoreria'
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
@@ -2335,6 +2341,298 @@ function TabReservasOnline() {
   )
 }
 
+// ── Tab Tesorería ─────────────────────────────────────────────────────────────
+function TabTesoreria() {
+  const { profile } = useAuth()
+  const now = new Date()
+
+  const { data: settings, isLoading: settingsLoading } = useTenantPaymentSettings()
+  const updateSettings = useUpdatePaymentSettings()
+  const [settingsForm, setSettingsForm] = useState({
+    qr_settlement_days: 0,
+    qr_settlement_type: 'corridos' as 'corridos' | 'habiles',
+    debit_settlement_days: 1,
+    debit_settlement_type: 'habiles' as 'corridos' | 'habiles',
+    credit_settlement_days: 10,
+    credit_settlement_type: 'corridos' as 'corridos' | 'habiles',
+  })
+  const [settingsSaved, setSettingsSaved] = useState(false)
+  const [settingsError, setSettingsError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (settings) {
+      setSettingsForm({
+        qr_settlement_days: settings.qr_settlement_days,
+        qr_settlement_type: settings.qr_settlement_type,
+        debit_settlement_days: settings.debit_settlement_days,
+        debit_settlement_type: settings.debit_settlement_type,
+        credit_settlement_days: settings.credit_settlement_days,
+        credit_settlement_type: settings.credit_settlement_type,
+      })
+    }
+  }, [settings])
+
+  const [year, setYear] = useState(now.getFullYear())
+  const [monthNum, setMonthNum] = useState(now.getMonth() + 1)
+  const { data: balance, isLoading: balanceLoading } = useMonthlyBalances(year, monthNum)
+  const upsertBalance = useUpsertMonthlyBalance()
+  const [balanceForm, setBalanceForm] = useState({
+    opening_cash: '',
+    opening_safe: '',
+    opening_bank_transfer: '',
+    opening_bank_cards: '',
+    notes: '',
+  })
+  const [balanceSaved, setBalanceSaved] = useState(false)
+  const [balanceError, setBalanceError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (balance) {
+      setBalanceForm({
+        opening_cash: String(balance.opening_cash),
+        opening_safe: String(balance.opening_safe),
+        opening_bank_transfer: String(balance.opening_bank_transfer),
+        opening_bank_cards: String(balance.opening_bank_cards),
+        notes: balance.notes ?? '',
+      })
+    } else if (!balanceLoading) {
+      setBalanceForm({ opening_cash: '', opening_safe: '', opening_bank_transfer: '', opening_bank_cards: '', notes: '' })
+    }
+  }, [balance, balanceLoading])
+
+  async function handleSaveSettings() {
+    setSettingsError(null)
+    setSettingsSaved(false)
+    try {
+      await updateSettings.mutateAsync(settingsForm)
+      setSettingsSaved(true)
+      setTimeout(() => setSettingsSaved(false), 3000)
+    } catch (e: unknown) {
+      setSettingsError(e instanceof Error ? e.message : 'Error al guardar.')
+    }
+  }
+
+  async function handleSaveBalance() {
+    setBalanceError(null)
+    setBalanceSaved(false)
+    try {
+      await upsertBalance.mutateAsync({
+        year,
+        month: monthNum,
+        opening_cash: Number(balanceForm.opening_cash) || 0,
+        opening_safe: Number(balanceForm.opening_safe) || 0,
+        opening_bank_transfer: Number(balanceForm.opening_bank_transfer) || 0,
+        opening_bank_cards: Number(balanceForm.opening_bank_cards) || 0,
+        declared_by: profile?.id ?? '',
+        notes: balanceForm.notes.trim() || undefined,
+      })
+      setBalanceSaved(true)
+      setTimeout(() => setBalanceSaved(false), 3000)
+    } catch (e: unknown) {
+      setBalanceError(e instanceof Error ? e.message : 'Error al guardar.')
+    }
+  }
+
+  const settlementRows = [
+    {
+      label: 'QR / MercadoPago',
+      days: settingsForm.qr_settlement_days,
+      type: settingsForm.qr_settlement_type,
+      setDays: (v: number) => setSettingsForm((p) => ({ ...p, qr_settlement_days: v })),
+      setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, qr_settlement_type: v })),
+    },
+    {
+      label: 'Débito',
+      days: settingsForm.debit_settlement_days,
+      type: settingsForm.debit_settlement_type,
+      setDays: (v: number) => setSettingsForm((p) => ({ ...p, debit_settlement_days: v })),
+      setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, debit_settlement_type: v })),
+    },
+    {
+      label: 'Crédito',
+      days: settingsForm.credit_settlement_days,
+      type: settingsForm.credit_settlement_type,
+      setDays: (v: number) => setSettingsForm((p) => ({ ...p, credit_settlement_days: v })),
+      setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, credit_settlement_type: v })),
+    },
+  ]
+
+  const balanceFields = [
+    { key: 'opening_cash' as const,          icon: '💵', label: 'Cajón',               detail: 'Efectivo disponible en caja diaria' },
+    { key: 'opening_safe' as const,          icon: '🔒', label: 'Caja fuerte',          detail: 'Efectivo acumulado depositado' },
+    { key: 'opening_bank_transfer' as const, icon: '🏦', label: 'Cuenta transferencias', detail: '' },
+    { key: 'opening_bank_cards' as const,    icon: '💳', label: 'Cuenta QR / tarjetas', detail: '' },
+  ]
+
+  return (
+    <div className="space-y-6 max-w-2xl">
+      {/* Card 1: Plazos de liquidación */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Plazos de liquidación</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Configurá cuántos días tarda en acreditarse cada medio de pago en tu cuenta.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {settingsLoading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <>
+              <div className="space-y-3">
+                {settlementRows.map((row) => (
+                  <div key={row.label} className="flex items-center gap-3 flex-wrap">
+                    <span className="w-36 text-sm font-medium text-plum-800 shrink-0">{row.label}</span>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="60"
+                      className="w-20 h-8 text-sm text-center"
+                      value={row.days}
+                      onChange={(e) => row.setDays(Number(e.target.value))}
+                    />
+                    <select
+                      className="border border-input rounded-md px-2 py-1.5 text-sm bg-background h-8 focus:outline-none focus:ring-2 focus:ring-plum-800 focus:ring-offset-0"
+                      value={row.type}
+                      onChange={(e) => row.setType(e.target.value as 'corridos' | 'habiles')}
+                    >
+                      <option value="corridos">días corridos</option>
+                      <option value="habiles">días hábiles</option>
+                    </select>
+                  </div>
+                ))}
+              </div>
+              {settingsError && <p className="text-sm text-red-600">{settingsError}</p>}
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  size="sm"
+                  className="bg-plum-700 hover:bg-plum-800 text-white"
+                  onClick={handleSaveSettings}
+                  disabled={updateSettings.isPending}
+                >
+                  {updateSettings.isPending
+                    ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                    : 'Guardar plazos'}
+                </Button>
+                {settingsSaved && (
+                  <span className="flex items-center gap-1 text-sm text-green-700">
+                    <Check className="w-4 h-4" /> Guardado
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Card 2: Saldos iniciales del mes */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base text-plum-800">Saldos de tesorería</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Declarás el saldo real de cada cuenta al inicio de cada mes para que el sistema calcule correctamente el cash flow.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* Month / year selector */}
+          <div className="flex items-center gap-3">
+            <select
+              className="border border-input rounded-md px-2 py-1.5 text-sm bg-background h-8 focus:outline-none focus:ring-2 focus:ring-plum-800 focus:ring-offset-0"
+              value={monthNum}
+              onChange={(e) => setMonthNum(Number(e.target.value))}
+            >
+              {MONTHS_ES.map((name, i) => (
+                <option key={i + 1} value={i + 1}>{name}</option>
+              ))}
+            </select>
+            <Input
+              type="number"
+              className="w-24 h-8 text-sm"
+              value={year}
+              min="2020"
+              max="2099"
+              onChange={(e) => setYear(Number(e.target.value))}
+            />
+          </div>
+
+          {balanceLoading ? (
+            <div className="flex justify-center py-4">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          ) : (
+            <>
+              <div className="space-y-3">
+                {balanceFields.map(({ key, icon, label, detail }) => (
+                  <div key={key} className="space-y-1">
+                    <Label className="text-sm flex items-center gap-1.5">
+                      <span>{icon}</span>
+                      <span>{label}</span>
+                      {detail && <span className="text-xs text-muted-foreground">({detail})</span>}
+                    </Label>
+                    <Input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      className="h-9"
+                      value={balanceForm[key]}
+                      onChange={(e) => setBalanceForm({ ...balanceForm, [key]: e.target.value })}
+                      placeholder="0,00"
+                    />
+                  </div>
+                ))}
+                <div className="space-y-1">
+                  <Label className="text-sm text-muted-foreground">Notas (opcional)</Label>
+                  <Input
+                    value={balanceForm.notes}
+                    onChange={(e) => setBalanceForm({ ...balanceForm, notes: e.target.value })}
+                    placeholder="Ej: Saldo declarado manualmente al inicio del mes"
+                  />
+                </div>
+              </div>
+
+              {balance?.declared_at && (
+                <p className="text-xs text-muted-foreground">
+                  Último guardado:{' '}
+                  {new Date(balance.declared_at).toLocaleString('es-AR', {
+                    timeZone: 'America/Argentina/Buenos_Aires',
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
+                  {balance.declared_by === profile?.id ? ' (por vos)' : ''}
+                </p>
+              )}
+
+              {balanceError && <p className="text-sm text-red-600">{balanceError}</p>}
+              <div className="flex items-center gap-3 pt-1">
+                <Button
+                  size="sm"
+                  className="bg-plum-700 hover:bg-plum-800 text-white"
+                  onClick={handleSaveBalance}
+                  disabled={upsertBalance.isPending}
+                >
+                  {upsertBalance.isPending
+                    ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Guardando...</>
+                    : 'Guardar saldos'}
+                </Button>
+                {balanceSaved && (
+                  <span className="flex items-center gap-1 text-sm text-green-700">
+                    <Check className="w-4 h-4" /> Guardado
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  )
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function ConfiguracionAdmin({
@@ -2378,6 +2676,7 @@ export default function ConfiguracionAdmin({
     { key: 'roles',     label: 'Roles y Permisos',  icon: Shield,       show: canSeeRoles },
     { key: 'whatsapp',  label: 'WhatsApp',          icon: MessageCircle, show: isOwner },
     { key: 'reservas',  label: 'Reservas Online',   icon: Link2,        show: isOwner },
+    { key: 'tesoreria', label: 'Tesorería',         icon: Wallet,       show: profile?.role === 'owner' },
   ]
 
   const tabs = allTabs.filter((t) => t.show)
@@ -2418,6 +2717,7 @@ export default function ConfiguracionAdmin({
       {activeTab === 'roles'     && <TabRoles canEdit={isOwner} />}
       {activeTab === 'whatsapp'  && isOwner && <TabWhatsApp />}
       {activeTab === 'reservas' && isOwner && <TabReservasOnline />}
+      {activeTab === 'tesoreria' && profile?.role === 'owner' && <TabTesoreria />}
     </div>
   )
 }
