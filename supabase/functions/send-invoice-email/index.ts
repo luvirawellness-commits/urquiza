@@ -226,7 +226,7 @@ async function buildInvoicePdf(data: InvoicePDFData): Promise<Uint8Array> {
   // ── Footer ────────────────────────────────────────────────────────────────────
   doc.setTextColor(180, 180, 180)
   doc.setFontSize(7)
-  doc.text('Comprobante generado por Luvira OS  ·  luvirawellness.com', W / 2, y, { align: 'center' })
+  doc.text('Comprobante generado por Luvira OS  ·  luviraos.com', W / 2, y, { align: 'center' })
 
   return new Uint8Array(doc.output('arraybuffer'))
 }
