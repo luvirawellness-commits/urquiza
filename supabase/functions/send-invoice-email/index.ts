@@ -314,7 +314,7 @@ serve(async (req: Request) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        from: 'Luvira OS <onboarding@resend.dev>',
+        from: 'Luvira OS <facturas@luviraos.com>',
         to: [client_email],
         subject: `Tu factura ${invoice.invoice_type} de ${arcaConfig.razon_social}`,
         html: `
