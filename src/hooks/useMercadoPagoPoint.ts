@@ -146,7 +146,8 @@ export const POINT_STATUS_LABELS: Record<string, string> = {
 // Payment methods that must go through a physical Point charge instead of
 // manual entry whenever the tenant has an active device — the fraud hole
 // Stage C.2 closed for session closing, now shared with any flow that takes
-// a debit/credit/qr payment (gift cards, memberships).
+// a debit/credit/qr payment (gift cards, memberships, product sales,
+// Finanzas' Registrar cobro card).
 export const POINT_ONLY_METHODS = ['debit', 'credit', 'qr']
 
 export type PointChargeStatus = 'idle' | 'creating' | 'waiting' | 'processed' | 'failed' | 'canceled' | 'expired'
@@ -171,7 +172,10 @@ function pendingSaleStorageKey(flow: string, tenantId: string): string {
 // to submit and would silently no-op despite the customer having been
 // charged. Cleared once the charge reaches a terminal state or the sale
 // completes — nothing left to resume either way past that point.
-export function usePointSalePersistence<T>(flow: 'gift_card' | 'membership', tenantId: string | null | undefined) {
+export function usePointSalePersistence<T>(
+  flow: 'gift_card' | 'membership' | 'product' | 'registrar_cobro',
+  tenantId: string | null | undefined,
+) {
   const [idempotencyKey, setIdempotencyKeyState] = useState<string | null>(null)
   const [resumedPayload, setResumedPayload] = useState<T | null>(null)
   const initializedRef = useRef<string | null>(null)
