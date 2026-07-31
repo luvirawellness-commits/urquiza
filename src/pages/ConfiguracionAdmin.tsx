@@ -2355,6 +2355,10 @@ function TabTesoreria() {
     debit_settlement_type: 'habiles' as 'corridos' | 'habiles',
     credit_settlement_days: 10,
     credit_settlement_type: 'corridos' as 'corridos' | 'habiles',
+    debit_commission_pct: 0,
+    credit_commission_pct: 0,
+    qr_commission_pct: 0,
+    iibb_pct: 0,
   })
   const [settingsSaved, setSettingsSaved] = useState(false)
   const [settingsError, setSettingsError] = useState<string | null>(null)
@@ -2368,6 +2372,10 @@ function TabTesoreria() {
         debit_settlement_type: settings.debit_settlement_type,
         credit_settlement_days: settings.credit_settlement_days,
         credit_settlement_type: settings.credit_settlement_type,
+        debit_commission_pct: settings.debit_commission_pct,
+        credit_commission_pct: settings.credit_commission_pct,
+        qr_commission_pct: settings.qr_commission_pct,
+        iibb_pct: settings.iibb_pct,
       })
     }
   }, [settings])
@@ -2438,22 +2446,28 @@ function TabTesoreria() {
       label: 'QR / MercadoPago',
       days: settingsForm.qr_settlement_days,
       type: settingsForm.qr_settlement_type,
+      commissionPct: settingsForm.qr_commission_pct,
       setDays: (v: number) => setSettingsForm((p) => ({ ...p, qr_settlement_days: v })),
       setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, qr_settlement_type: v })),
+      setCommissionPct: (v: number) => setSettingsForm((p) => ({ ...p, qr_commission_pct: v })),
     },
     {
       label: 'Débito',
       days: settingsForm.debit_settlement_days,
       type: settingsForm.debit_settlement_type,
+      commissionPct: settingsForm.debit_commission_pct,
       setDays: (v: number) => setSettingsForm((p) => ({ ...p, debit_settlement_days: v })),
       setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, debit_settlement_type: v })),
+      setCommissionPct: (v: number) => setSettingsForm((p) => ({ ...p, debit_commission_pct: v })),
     },
     {
       label: 'Crédito',
       days: settingsForm.credit_settlement_days,
       type: settingsForm.credit_settlement_type,
+      commissionPct: settingsForm.credit_commission_pct,
       setDays: (v: number) => setSettingsForm((p) => ({ ...p, credit_settlement_days: v })),
       setType: (v: 'corridos' | 'habiles') => setSettingsForm((p) => ({ ...p, credit_settlement_type: v })),
+      setCommissionPct: (v: number) => setSettingsForm((p) => ({ ...p, credit_commission_pct: v })),
     },
   ]
 
@@ -2501,8 +2515,36 @@ function TabTesoreria() {
                       <option value="corridos">días corridos</option>
                       <option value="habiles">días hábiles</option>
                     </select>
+                    <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                      Comisión
+                      <Input
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.01"
+                        className="w-20 h-8 text-sm text-center"
+                        value={row.commissionPct}
+                        onChange={(e) => row.setCommissionPct(Number(e.target.value))}
+                      />
+                      %
+                    </span>
                   </div>
                 ))}
+                <div className="flex items-center gap-3 flex-wrap pt-1 border-t border-gray-100">
+                  <span className="w-36 text-sm font-medium text-plum-800 shrink-0 pt-3">IIBB</span>
+                  <span className="flex items-center gap-1.5 text-sm text-muted-foreground pt-3">
+                    <Input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="0.01"
+                      className="w-20 h-8 text-sm text-center"
+                      value={settingsForm.iibb_pct}
+                      onChange={(e) => setSettingsForm((p) => ({ ...p, iibb_pct: Number(e.target.value) }))}
+                    />
+                    % sobre el monto bruto de cada venta con tarjeta/QR
+                  </span>
+                </div>
               </div>
               {settingsError && <p className="text-sm text-red-600">{settingsError}</p>}
               <div className="flex items-center gap-3 pt-1">

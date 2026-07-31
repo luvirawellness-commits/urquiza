@@ -15,6 +15,10 @@ export type PaymentSettings = {
   debit_settlement_type: 'corridos' | 'habiles'
   credit_settlement_days: number
   credit_settlement_type: 'corridos' | 'habiles'
+  debit_commission_pct: number
+  credit_commission_pct: number
+  qr_commission_pct: number
+  iibb_pct: number
   created_at: string
   updated_at: string
 }
@@ -117,6 +121,10 @@ export function useUpdatePaymentSettings() {
       debit_settlement_type: 'corridos' | 'habiles'
       credit_settlement_days: number
       credit_settlement_type: 'corridos' | 'habiles'
+      debit_commission_pct: number
+      credit_commission_pct: number
+      qr_commission_pct: number
+      iibb_pct: number
     }) => {
       const { data, error } = await supabase
         .from('tenant_payment_settings')

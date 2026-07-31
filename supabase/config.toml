@@ -35,3 +35,11 @@ verify_jwt = false
 # MercadoPago API calls on every connected tenant's behalf.
 [functions.mp-token-refresh-cron]
 verify_jwt = false
+
+# settlement-expenses-cron is called by a Supabase Cron job (no JWT available) —
+# same reasoning as mp-token-refresh-cron. Guarded internally by a shared
+# secret (SETTLEMENT_CRON_SECRET, checked against the x-cron-secret header)
+# since it writes real commission/IIBB expense transactions across every
+# tenant via generate_settlement_expenses().
+[functions.settlement-expenses-cron]
+verify_jwt = false
