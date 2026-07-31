@@ -578,9 +578,9 @@ function ProductCard({
           <span className="text-lg font-bold text-plum-800">
             {product.sale_price ? formatCurrency(product.sale_price) : '—'}
           </span>
-          <Button size="sm" onClick={onAdd} disabled={!product.sale_price}>
-            <ShoppingCart className="w-3.5 h-3.5 mr-1.5" />
-            Agregar al carrito
+          <Button size="sm" className="px-2.5 gap-1" onClick={onAdd} disabled={!product.sale_price}>
+            <Plus className="w-3.5 h-3.5" />
+            <ShoppingCart className="w-3.5 h-3.5" />
           </Button>
         </div>
       </CardContent>
