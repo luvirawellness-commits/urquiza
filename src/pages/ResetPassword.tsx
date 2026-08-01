@@ -15,6 +15,7 @@ export default function ResetPassword() {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
+  const [isClientAccount, setIsClientAccount] = useState(false)
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -36,10 +37,20 @@ export default function ResetPassword() {
     }
     setSaving(true)
     try {
-      const { error } = await supabase.auth.updateUser({ password })
+      const { data, error } = await supabase.auth.updateUser({ password })
       if (error) throw error
       setDone(true)
-      setTimeout(() => navigate('/dashboard', { replace: true }), 2000)
+      // Client accounts (Stage D.1) have no destination in this app yet —
+      // the real client portal lives on a separate site (Stage D.4). Only
+      // redirect staff into the dashboard; for a client, just confirm
+      // success and stop here rather than sending them into a staff-only
+      // protected route they have no access to.
+      const role = data.user?.app_metadata?.role as string | undefined
+      if (role === 'client') {
+        setIsClientAccount(true)
+      } else {
+        setTimeout(() => navigate('/dashboard', { replace: true }), 2000)
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Error al actualizar la contraseña')
     } finally {
@@ -62,7 +73,9 @@ export default function ResetPassword() {
           </p>
         ) : done ? (
           <p className="text-sm text-green-700">
-            Contraseña actualizada correctamente. Redirigiendo...
+            {isClientAccount
+              ? 'Contraseña actualizada correctamente. Ya podés iniciar sesión con tu nueva contraseña.'
+              : 'Contraseña actualizada correctamente. Redirigiendo...'}
           </p>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-3">

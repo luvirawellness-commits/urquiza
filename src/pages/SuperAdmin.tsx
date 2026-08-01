@@ -1,6 +1,6 @@
 import { useState, Fragment } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Building2, ChevronDown, ChevronUp, Users, Eye, EyeOff, Copy, Wrench, KeyRound } from 'lucide-react'
+import { Loader2, Building2, ChevronDown, ChevronUp, Users, Eye, EyeOff, Copy, Wrench, KeyRound, Search, UserRound } from 'lucide-react'
 import { supabase } from '@/lib/supabase'
 import { Tenant } from '@/types'
 import { Button } from '@/components/ui/button'
@@ -369,6 +369,331 @@ function SoporteModal({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+// ── Clientes globales (Layer 1 client_profiles) ─────────────────────────────────
+// Stage D.1 addition — super_admin-only view/manage of the global client
+// identity layer, reachable regardless of tenant since it isn't tenant data.
+// Reads client_profiles directly via the client SDK (RLS's is_super_admin()
+// bypass, added alongside this section, allows it) — no edge function needed
+// for read access, matching how every other section on this page queries
+// tenants/users directly. Only the password-set action needs an edge
+// function, since that requires the service-role admin API.
+
+type ClientProfileRow = {
+  id: string
+  email: string
+  phone: string
+  first_name: string
+  last_name: string
+  birth_date: string | null
+  referral_channel: string | null
+  marketing_consent: boolean
+  phone_verified: boolean
+  created_at: string
+}
+
+const REFERRAL_LABELS: Record<string, string> = {
+  instagram: 'Instagram', google: 'Google', referral: 'Referido',
+  whatsapp: 'WhatsApp', in_person: 'En persona', other: 'Otro',
+}
+
+function SetClientPasswordModal({
+  clientProfile,
+  onClose,
+}: {
+  clientProfile: ClientProfileRow
+  onClose: () => void
+}) {
+  const [password, setPassword] = useState(() => generatePassword())
+  const [showPw, setShowPw] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+  const [done, setDone] = useState(false)
+  const [copied, setCopied] = useState(false)
+
+  async function handleSubmit() {
+    setSaving(true)
+    setError('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session?.access_token) throw new Error('Sin sesión activa')
+
+      const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/admin-set-client-password`
+      const resp = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({ client_user_id: clientProfile.id, new_password: password }),
+      })
+      const json = await resp.json()
+      if (!resp.ok || json.error) throw new Error(json.error ?? 'Error al establecer la contraseña')
+      setDone(true)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Error desconocido')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function handleCopy() {
+    navigator.clipboard.writeText(`Email: ${clientProfile.email}\nContraseña: ${password}`)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+        <div className="px-6 py-4 border-b">
+          <h2 className="text-base font-semibold text-gray-900">Establecer nueva contraseña</h2>
+          <p className="text-sm text-muted-foreground">{clientProfile.email}</p>
+        </div>
+
+        {done ? (
+          <div className="p-6 space-y-4">
+            <div className="rounded-lg bg-green-50 border border-green-200 p-4 space-y-2">
+              <p className="text-sm font-semibold text-green-800">Contraseña actualizada</p>
+              <p className="text-xs text-green-700 font-mono break-all">Email: {clientProfile.email}</p>
+              <p className="text-xs text-green-700 font-mono">Contraseña: {password}</p>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleCopy}
+                className="h-7 text-xs gap-1.5 mt-1 border-green-300 text-green-700 hover:bg-green-100"
+              >
+                {copied ? '✓ Copiado' : <><Copy className="w-3 h-3" /> Copiar credenciales</>}
+              </Button>
+            </div>
+            <Button className="w-full" onClick={onClose}>Cerrar</Button>
+          </div>
+        ) : (
+          <div className="p-6 space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-xs font-medium text-gray-700">Nueva contraseña</label>
+              <div className="flex gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    type={showPw ? 'text' : 'password'}
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    className="text-sm pr-9 font-mono"
+                    disabled={saving}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPw(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-gray-700"
+                  >
+                    {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setPassword(generatePassword())}
+                  disabled={saving}
+                  className="text-xs px-3 whitespace-nowrap"
+                >
+                  Nueva
+                </Button>
+              </div>
+            </div>
+
+            {error && (
+              <p className="text-xs text-red-600 bg-red-50 px-3 py-2 rounded-md">{error}</p>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <Button variant="outline" className="flex-1" onClick={onClose} disabled={saving}>
+                Cancelar
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleSubmit}
+                disabled={saving || password.length < 8}
+              >
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Guardar'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function ClientProfileModal({
+  clientProfile,
+  onClose,
+}: {
+  clientProfile: ClientProfileRow
+  onClose: () => void
+}) {
+  const [showPasswordModal, setShowPasswordModal] = useState(false)
+
+  return (
+    <>
+      <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4">
+        <div className="bg-white rounded-xl shadow-xl w-full max-w-md">
+          <div className="px-6 py-4 border-b flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full bg-plum-100 flex items-center justify-center flex-shrink-0">
+              <UserRound className="w-4 h-4 text-plum-700" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-gray-900">
+                {clientProfile.first_name} {clientProfile.last_name}
+              </h2>
+              <p className="text-xs text-muted-foreground">{clientProfile.email}</p>
+            </div>
+          </div>
+
+          <div className="p-6 space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <p className="text-xs text-muted-foreground">Teléfono</p>
+                <p className="font-medium text-gray-900">{clientProfile.phone}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Tel. verificado</p>
+                <p className="font-medium text-gray-900">{clientProfile.phone_verified ? 'Sí' : 'No (Stage D.3)'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Fecha de nacimiento</p>
+                <p className="font-medium text-gray-900">{clientProfile.birth_date ? fmtDate(clientProfile.birth_date) : '—'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Cómo nos conoció</p>
+                <p className="font-medium text-gray-900">
+                  {clientProfile.referral_channel ? REFERRAL_LABELS[clientProfile.referral_channel] ?? clientProfile.referral_channel : '—'}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Consentimiento marketing</p>
+                <p className="font-medium text-gray-900">{clientProfile.marketing_consent ? 'Sí' : 'No'}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">Registrado</p>
+                <p className="font-medium text-gray-900">{fmtDate(clientProfile.created_at)}</p>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-3 border-t">
+              <Button variant="outline" className="flex-1" onClick={onClose}>Cerrar</Button>
+              <Button
+                variant="outline"
+                className="flex-1 gap-1.5 text-plum-700 border-plum-200 hover:bg-plum-50"
+                onClick={() => setShowPasswordModal(true)}
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                Nueva contraseña
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {showPasswordModal && (
+        <SetClientPasswordModal clientProfile={clientProfile} onClose={() => setShowPasswordModal(false)} />
+      )}
+    </>
+  )
+}
+
+function ClientProfilesSection() {
+  const [search, setSearch] = useState('')
+  const [selected, setSelected] = useState<ClientProfileRow | null>(null)
+
+  const { data: profiles = [], isLoading } = useQuery({
+    queryKey: ['sa-client-profiles', search],
+    queryFn: async () => {
+      let query = supabase
+        .from('client_profiles')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(50)
+
+      const term = search.trim()
+      if (term) {
+        query = query.or(`email.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`)
+      }
+
+      const { data, error } = await query
+      if (error) throw error
+      return data as ClientProfileRow[]
+    },
+  })
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden mt-8">
+      <div className="px-4 py-3 border-b flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900">Clientes globales</h2>
+          <p className="text-xs text-muted-foreground">Identidad Layer 1 (client_profiles) — acceso exclusivo de super_admin</p>
+        </div>
+        <div className="relative w-64">
+          <Search className="w-3.5 h-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+          <Input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Buscar por email o nombre..."
+            className="h-8 text-sm pl-8"
+          />
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : profiles.length === 0 ? (
+        <p className="text-center text-muted-foreground py-16 text-sm">
+          {search.trim() ? 'Sin resultados.' : 'Sin clientes registrados todavía.'}
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b bg-gray-50 text-xs text-muted-foreground uppercase tracking-wide">
+                <th className="text-left px-4 py-3 font-medium">Nombre</th>
+                <th className="text-left px-4 py-3 font-medium">Email</th>
+                <th className="text-left px-4 py-3 font-medium">Teléfono</th>
+                <th className="text-center px-4 py-3 font-medium">Tel. verificado</th>
+                <th className="text-left px-4 py-3 font-medium">Registrado</th>
+                <th className="px-4 py-3 font-medium" />
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {profiles.map((p) => (
+                <tr key={p.id} className="hover:bg-gray-50 transition-colors">
+                  <td className="px-4 py-3 font-medium text-gray-900">{p.first_name} {p.last_name}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{p.email}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{p.phone}</td>
+                  <td className="px-4 py-3 text-center">
+                    {p.phone_verified
+                      ? <span className="text-xs font-semibold text-green-600">✓</span>
+                      : <span className="text-xs text-gray-400">—</span>}
+                  </td>
+                  <td className="px-4 py-3 text-muted-foreground">{fmtDate(p.created_at)}</td>
+                  <td className="px-4 py-3 text-right">
+                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelected(p)}>
+                      Ver / gestionar
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {selected && (
+        <ClientProfileModal clientProfile={selected} onClose={() => setSelected(null)} />
+      )}
     </div>
   )
 }
@@ -851,6 +1176,8 @@ export default function SuperAdmin() {
           </div>
         )}
       </div>
+
+      <ClientProfilesSection />
 
       {soporteTenant && (
         <SoporteModal
