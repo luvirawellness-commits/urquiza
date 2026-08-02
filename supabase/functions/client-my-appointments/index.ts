@@ -1,24 +1,23 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// Stage D.1 — a logged-in client's appointment history for ONE specific
-// tenant. Uses the service-role key deliberately (unlike client-profile-get/
-// update): a client's JWT carries no app_metadata.tenant_id, so it can never
-// satisfy any tenant-scoped RLS policy on `clients`/`appointments` — the
-// forwarded-JWT approach those two endpoints use simply wouldn't return
-// anything here. Isolation is instead enforced in code: every query below is
-// explicitly scoped to the one tenant_id the caller asked for, mirroring why
-// public-booking already uses the service-role key for its own cross-tenant-
-// unaware, code-enforced isolation.
+// Stage D.2 — a logged-in client's appointment history for ONE specific
+// tenant, resolved via the REAL client_profiles ↔ clients link
+// (clients.client_profile_id, set by client-link-tenant) rather than Stage
+// D.1's placeholder email-matching. Uses the service-role key deliberately
+// (unlike client-profile-get/update): a client's JWT carries no
+// app_metadata.tenant_id, so it can never satisfy any tenant-scoped RLS
+// policy on `clients`/`appointments` — the forwarded-JWT approach those two
+// endpoints use simply wouldn't return anything here. Isolation is instead
+// enforced in code: every query below is explicitly scoped to the one
+// tenant_id the caller asked for, mirroring why public-booking already uses
+// the service-role key for its own cross-tenant-unaware, code-enforced
+// isolation.
 //
-// Placeholder matching strategy (Stage D.2 will replace this): a client is
-// "linked" to a tenant's clients row by matching client_profiles.email
-// against clients.email, case-insensitively, within that tenant only. If
-// duplicate clients rows share that email in this tenant (a known, pre-
-// existing data-quality gap — see client_profiles' own design notes), this
-// returns the UNION of all matching rows' appointments rather than guessing
-// which one is "the" match — safe for a read, since no data is written or
-// merged. Zero matches returns an empty list, never an error.
+// This does NOT trigger linking itself — if the caller was never linked
+// into this tenant (client-link-tenant was never called for it), this
+// simply returns an empty list, not an error. Linking only happens when the
+// client actually initiates something with that tenant (Stage D.4).
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -65,33 +64,20 @@ serve(async (req: Request) => {
     const { tenant_id } = await req.json()
     if (!tenant_id) return err('tenant_id es requerido')
 
-    const { data: clientProfile, error: profileErr } = await supabaseAdmin
-      .from('client_profiles')
-      .select('email')
-      .eq('id', callerData.user.id)
-      .maybeSingle()
-    if (profileErr) throw profileErr
-    if (!clientProfile) return err('Perfil no encontrado', 404)
-
-    // Placeholder linking: every clients row in THIS tenant whose email
-    // matches, case-insensitively. Explicit .eq('tenant_id', ...) here is
-    // the hard isolation boundary — never widened to search other tenants.
-    const { data: matchingClients, error: clientsErr } = await supabaseAdmin
+    // The real link — a unique index guarantees at most one row per
+    // (tenant_id, client_profile_id), so .maybeSingle() is safe here.
+    const { data: linkedClient, error: linkErr } = await supabaseAdmin
       .from('clients')
       .select('id')
       .eq('tenant_id', tenant_id)
-      .ilike('email', clientProfile.email)
-    if (clientsErr) throw clientsErr
+      .eq('client_profile_id', callerData.user.id)
+      .maybeSingle()
+    if (linkErr) throw linkErr
+    if (!linkedClient) return json({ appointments: [] })
 
-    const clientIds = (matchingClients ?? []).map((c) => c.id)
-    if (clientIds.length === 0) {
-      return json({ appointments: [] })
-    }
-
-    // Belt-and-suspenders: tenant_id filtered again here even though every
-    // matched client_id already belongs to this tenant by construction —
-    // an appointment for a client outside `tenant_id` must never leak
-    // through regardless of how clientIds was derived.
+    // Belt-and-suspenders: tenant_id filtered again here even though the
+    // matched client_id already belongs to this tenant by construction — an
+    // appointment for a client outside `tenant_id` must never leak through.
     const { data: appointments, error: apptErr } = await supabaseAdmin
       .from('appointments')
       .select(`
@@ -105,7 +91,7 @@ serve(async (req: Request) => {
         service:services!fk_apt_service (id, name, emoji)
       `)
       .eq('tenant_id', tenant_id)
-      .in('client_id', clientIds)
+      .eq('client_id', linkedClient.id)
       .order('scheduled_at', { ascending: false })
     if (apptErr) throw apptErr
 

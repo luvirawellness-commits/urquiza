@@ -1,18 +1,21 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// Stage D.1 — lists every tenant where the logged-in client has ANY
-// matching clients row, so a future portal UI can show "you have activity
-// at: X" and let them pick which tenant's history to view (client-my-
-// appointments). Same service-role + code-enforced-isolation reasoning as
-// client-my-appointments — a client's JWT can never pass tenant-scoped RLS
-// on `clients`, so this has to run as service role and do its own scoping,
-// which here is deliberately NOT tenant-scoped (that's the whole point:
-// this is the one endpoint in Stage D.1 that intentionally searches across
-// every tenant, to discover which ones apply).
+// Stage D.2 — lists every tenant where the logged-in client has a REAL link
+// (clients.client_profile_id, set by client-link-tenant), so a future
+// portal UI can show "you have activity at: X" and let them pick which
+// tenant's history to view (client-my-appointments). Same service-role +
+// code-enforced-isolation reasoning as client-my-appointments — a client's
+// JWT can never pass tenant-scoped RLS on `clients`, so this has to run as
+// service role, deliberately searching across every tenant (that's the
+// whole point of this one endpoint: discover which tenants apply).
 //
-// Same placeholder email-matching strategy as client-my-appointments —
-// replaced by Stage D.2's real linking mechanism once it lands.
+// Behavior change from Stage D.1's placeholder: this now reflects only
+// CONFIRMED links, not every tenant where the client's email happens to
+// match a clients row. A tenant the client has activity at but has never
+// actually interacted with as a logged-in client (i.e., client-link-tenant
+// was never called for it) won't appear here until they do — which is the
+// intended, more correct behavior now that a real link exists to check.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -53,32 +56,17 @@ serve(async (req: Request) => {
     const callerRole = callerData.user.app_metadata?.role as string | undefined
     if (callerRole !== 'client') return err('Esta cuenta no es una cuenta de cliente.', 403)
 
-    const { data: clientProfile, error: profileErr } = await supabaseAdmin
-      .from('client_profiles')
-      .select('email')
-      .eq('id', callerData.user.id)
-      .maybeSingle()
-    if (profileErr) throw profileErr
-    if (!clientProfile) return err('Perfil no encontrado', 404)
-
-    const { data: matches, error: matchesErr } = await supabaseAdmin
+    // The unique index on (tenant_id, client_profile_id) guarantees at most
+    // one linked row per tenant, so no dedup step is needed here anymore.
+    const { data: links, error: linksErr } = await supabaseAdmin
       .from('clients')
       .select('tenant:tenants!fk_clients_tenant (id, name, slug)')
-      .ilike('email', clientProfile.email)
-    if (matchesErr) throw matchesErr
+      .eq('client_profile_id', callerData.user.id)
+    if (linksErr) throw linksErr
 
-    // A client can have more than one clients row in the same tenant (a
-    // known pre-existing duplicate-email case) — dedupe so each tenant
-    // appears once regardless of how many rows matched inside it.
-    const seen = new Set<string>()
-    // deno-lint-ignore no-explicit-any
-    const tenants = (matches ?? [])
-      .map((m) => m.tenant as { id: string; name: string; slug: string } | null)
-      .filter((t): t is { id: string; name: string; slug: string } => {
-        if (!t || seen.has(t.id)) return false
-        seen.add(t.id)
-        return true
-      })
+    const tenants = (links ?? [])
+      .map((l) => l.tenant as { id: string; name: string; slug: string } | null)
+      .filter((t): t is { id: string; name: string; slug: string } => !!t)
 
     return json({ tenants })
   } catch (e) {
