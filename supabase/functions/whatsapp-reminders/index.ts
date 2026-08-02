@@ -64,7 +64,11 @@ async function sendTemplate(
       type: 'template',
       template: {
         name: 'recordatorio_turno_luvira',
-        language: { code: 'es' },
+        // Must match the template's registered language on Meta exactly —
+        // it's registered as "Spanish (ARG)" (es_AR), not generic "es".
+        // Sending 'es' fails every call with "template name does not exist
+        // in the translation" even though the template itself is approved.
+        language: { code: 'es_AR' },
         components: [{
           type: 'body',
           parameters: [
