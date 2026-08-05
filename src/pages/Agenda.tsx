@@ -1289,6 +1289,7 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
   const [showRevertConfirm, setShowRevertConfirm] = useState(false)
   const [reverting, setReverting] = useState(false)
   const [revertError, setRevertError] = useState<string | null>(null)
+  const [deletingBloqueo, setDeletingBloqueo] = useState(false)
   const isClosedAppt = appt.status === 'completed' || appt.status === 'cancelled'
   const canRevert = appt.status === 'completed' && profile?.role === 'owner'
 
@@ -1457,6 +1458,36 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
     onClose()
   }
 
+  async function deleteBloqueo() {
+    // Real delete, not a status change — a removed block has no audit value
+    // worth preserving (unlike a cancelled client appointment). Falls back
+    // to the old soft-cancel if the block is linked to an employee_absences
+    // row (ausencia type, appointment_id ON DELETE NO ACTION) — that record
+    // carries a payroll deduction and must survive; deleting it is a
+    // separate, deliberate action from RRHH, not a side effect of this button.
+    setDeletingBloqueo(true)
+    try {
+      const { error } = await supabase
+        .from('appointments')
+        .delete()
+        .eq('id', appt.id)
+        .eq('tenant_id', currentTenantId)
+      if (error) {
+        if (error.code === '23503') {
+          await changeStatus('cancelled')
+          return
+        }
+        throw error
+      }
+      qc.invalidateQueries({ queryKey: ['appointments'] })
+      onClose()
+    } catch (e) {
+      toast({ description: e instanceof Error ? e.message : 'Error al eliminar el bloqueo', variant: 'destructive' })
+    } finally {
+      setDeletingBloqueo(false)
+    }
+  }
+
   if (appt.status === 'blocked') {
     return (
       <Dialog open onOpenChange={onClose}>
@@ -1475,8 +1506,8 @@ function AppointmentDetailModal({ appt, onClose, readOnly = false }: { appt: App
               <Button variant="outline" size="sm" onClick={onClose}>Cerrar</Button>
               {!readOnly && (
                 <Button variant="destructive" size="sm"
-                  onClick={() => changeStatus('cancelled')} disabled={updateStatus.isPending}>
-                  {updateStatus.isPending && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
+                  onClick={deleteBloqueo} disabled={deletingBloqueo}>
+                  {deletingBloqueo && <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />}
                   Eliminar bloqueo
                 </Button>
               )}

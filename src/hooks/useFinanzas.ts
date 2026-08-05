@@ -369,6 +369,7 @@ export function useReservasOnline(dateFrom: string, dateTo: string) {
         `)
         .eq('tenant_id', tenantId)
         .neq('status', 'blocked')
+        .not('client_id', 'is', null)
         .gte('created_at', `${dateFrom}T00:00:00`)
         .lte('created_at', `${dateTo}T23:59:59`)
         .order('created_at', { ascending: true })
