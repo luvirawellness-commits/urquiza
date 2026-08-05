@@ -559,10 +559,6 @@ function ClientProfileModal({
                 <p className="font-medium text-gray-900">{clientProfile.phone}</p>
               </div>
               <div>
-                <p className="text-xs text-muted-foreground">Tel. verificado</p>
-                <p className="font-medium text-gray-900">{clientProfile.phone_verified ? 'Sí' : 'No (Stage D.3)'}</p>
-              </div>
-              <div>
                 <p className="text-xs text-muted-foreground">Fecha de nacimiento</p>
                 <p className="font-medium text-gray-900">{clientProfile.birth_date ? fmtDate(clientProfile.birth_date) : '—'}</p>
               </div>
@@ -662,7 +658,6 @@ function ClientProfilesSection() {
                 <th className="text-left px-4 py-3 font-medium">Nombre</th>
                 <th className="text-left px-4 py-3 font-medium">Email</th>
                 <th className="text-left px-4 py-3 font-medium">Teléfono</th>
-                <th className="text-center px-4 py-3 font-medium">Tel. verificado</th>
                 <th className="text-left px-4 py-3 font-medium">Registrado</th>
                 <th className="px-4 py-3 font-medium" />
               </tr>
@@ -673,11 +668,6 @@ function ClientProfilesSection() {
                   <td className="px-4 py-3 font-medium text-gray-900">{p.first_name} {p.last_name}</td>
                   <td className="px-4 py-3 text-muted-foreground">{p.email}</td>
                   <td className="px-4 py-3 text-muted-foreground">{p.phone}</td>
-                  <td className="px-4 py-3 text-center">
-                    {p.phone_verified
-                      ? <span className="text-xs font-semibold text-green-600">✓</span>
-                      : <span className="text-xs text-gray-400">—</span>}
-                  </td>
                   <td className="px-4 py-3 text-muted-foreground">{fmtDate(p.created_at)}</td>
                   <td className="px-4 py-3 text-right">
                     <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setSelected(p)}>

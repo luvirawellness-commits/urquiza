@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { validateArgentinePhone } from '../_shared/phoneValidation.ts'
 
 // Stage D.1 — Layer 1 global client identity registration. Standalone,
 // not wired into the real booking flow yet (that's Stage D.4) and does not
@@ -73,6 +74,9 @@ serve(async (req: Request) => {
     const cleanFirstName = String(first_name).trim()
     const cleanLastName = String(last_name).trim()
     const cleanPhone = String(phone).trim()
+
+    const phoneError = validateArgentinePhone(cleanPhone)
+    if (phoneError) return err(phoneError)
 
     let userId: string
     let userEmail: string

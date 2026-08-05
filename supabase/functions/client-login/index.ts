@@ -8,6 +8,13 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 // the frontend could call directly) for two reasons: reject a staff account
 // that mistakenly hits the client login form, and return the client_profiles
 // row in the same round trip instead of a separate profile-get call.
+//
+// `identifier` accepts either the account's email or its phone (exactly 10
+// digits, per validateArgentinePhone's format — same detection rule used
+// here). Supabase Auth only knows email, so a digits-only identifier is
+// first resolved to its email via a service-role client_profiles lookup
+// (pre-auth, so RLS would otherwise hide every row) before the actual
+// sign-in — which still runs through the anon client, same as before.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -35,8 +42,34 @@ serve(async (req: Request) => {
   }
 
   try {
-    const { email, password } = await req.json()
-    if (!email || !password) return err('email y password son requeridos')
+    const { identifier, password } = await req.json()
+    if (!identifier || !password) return err('identifier y password son requeridos')
+
+    const trimmedIdentifier = String(identifier).trim()
+    const isPhone = /^\d+$/.test(trimmedIdentifier)
+
+    let resolvedEmail: string
+    if (isPhone) {
+      // Pre-auth lookup — client_profiles' RLS (auth.uid() = id) would hide
+      // every row from an unauthenticated caller, so this one step needs
+      // the service-role key. Same generic error as bad credentials below,
+      // so a nonexistent phone isn't distinguishable from a wrong password.
+      const supabaseAdmin = createClient(
+        Deno.env.get('SUPABASE_URL') ?? '',
+        Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
+        { auth: { autoRefreshToken: false, persistSession: false } },
+      )
+      const { data: profile, error: lookupErr } = await supabaseAdmin
+        .from('client_profiles')
+        .select('email')
+        .eq('phone', trimmedIdentifier)
+        .maybeSingle()
+      if (lookupErr) throw lookupErr
+      if (!profile) return err('Email/teléfono o contraseña incorrectos.', 401)
+      resolvedEmail = profile.email
+    } else {
+      resolvedEmail = trimmedIdentifier.toLowerCase()
+    }
 
     // A real (non-admin) client, exactly like a browser would use — the
     // resulting session is the same one the frontend would get calling
@@ -48,11 +81,11 @@ serve(async (req: Request) => {
     )
 
     const { data: signInData, error: signInError } = await supabase.auth.signInWithPassword({
-      email: String(email).trim().toLowerCase(),
+      email: resolvedEmail,
       password: String(password),
     })
     if (signInError || !signInData.session) {
-      return err('Email o contraseña incorrectos.', 401)
+      return err('Email/teléfono o contraseña incorrectos.', 401)
     }
 
     const role = signInData.user.app_metadata?.role as string | undefined

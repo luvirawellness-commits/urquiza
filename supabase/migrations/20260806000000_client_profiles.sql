@@ -27,8 +27,10 @@ CREATE TABLE client_profiles (
                          'instagram', 'google', 'referral', 'whatsapp', 'in_person', 'other'
                        ])),
   marketing_consent   BOOLEAN NOT NULL DEFAULT false,
-  -- Set true only by the Stage D.3 WhatsApp OTP flow — never by
-  -- client-profile-update directly.
+  -- Always false — the WhatsApp OTP verification flow once planned as
+  -- Stage D.3 was cancelled in favor of trusting user-entered phone
+  -- numbers, same as the existing anonymous booking form already does.
+  -- Column kept rather than migrated out since nothing reads it as true.
   phone_verified      BOOLEAN NOT NULL DEFAULT false,
   created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),

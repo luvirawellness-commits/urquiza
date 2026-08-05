@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { validateArgentinePhone } from '../_shared/phoneValidation.ts'
 
 // Stage D.1 — update the logged-in client's own global profile. Same
 // caller-JWT-forwarding approach as client-profile-get, relying on RLS
@@ -7,10 +8,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 //
 // email is intentionally not editable here — it's tied to the auth.users
 // identity itself and belongs to Supabase Auth's own email-change flow, not
-// this stage. phone_verified is intentionally not client-settable — only
-// the Stage D.3 WhatsApp OTP flow may set it. Changing phone always resets
-// phone_verified to false, since a verification of the old number no longer
-// applies to a new one.
+// this stage. phone_verified is never client-settable and always false —
+// the WhatsApp OTP verification flow once planned as Stage D.3 was
+// cancelled, so the column is permanently dead weight. Left in place rather
+// than migrated out since nothing reads it as true.
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -64,7 +65,7 @@ serve(async (req: Request) => {
 
     const { data: current, error: currentErr } = await supabase
       .from('client_profiles')
-      .select('phone')
+      .select('id')
       .eq('id', userData.user.id)
       .maybeSingle()
     if (currentErr) throw currentErr
@@ -80,8 +81,9 @@ serve(async (req: Request) => {
 
     if (phone !== undefined) {
       const cleanPhone = String(phone).trim()
+      const phoneError = validateArgentinePhone(cleanPhone)
+      if (phoneError) return err(phoneError)
       updates.phone = cleanPhone
-      if (cleanPhone !== current.phone) updates.phone_verified = false
     }
 
     if (Object.keys(updates).length === 0) {
