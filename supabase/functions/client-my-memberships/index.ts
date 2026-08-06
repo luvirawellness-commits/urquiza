@@ -70,7 +70,7 @@ serve(async (req: Request) => {
 
         const { data: memberships, error: memErr } = await supabaseAdmin
           .from('client_memberships')
-          .select('id, plan:memberships(id, name), sessions_total, sessions_used, expires_at')
+          .select('id, plan:memberships!fk_cm_membership_id(id, name), sessions_total, sessions_used, expires_at')
           .eq('tenant_id', tenant.id)
           .eq('client_id', link.id)
           .eq('status', 'active')
