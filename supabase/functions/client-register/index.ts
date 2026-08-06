@@ -38,6 +38,24 @@ function err(message: string, status = 400): Response {
 
 const REFERRAL_CHANNELS = ['instagram', 'google', 'referral', 'whatsapp', 'in_person', 'other']
 
+// One person can't hold both a staff role and a client identity under the
+// same email — auth.users.email is globally unique regardless of role, and
+// app_metadata.role is a single value. When Supabase Auth rejects a signup
+// as already-registered, distinguish "that email is a staff login" (a
+// deliberate collision the person needs a different email to work around)
+// from "that email is already a client account" (the ordinary generic
+// case — e.g. someone re-registering by mistake instead of logging in).
+const STAFF_ROLES = ['owner', 'partner_admin', 'receptionist', 'super_admin', 'therapist']
+
+// deno-lint-ignore no-explicit-any
+async function emailCollisionMessage(supabaseAdmin: any, email: string): Promise<string> {
+  const { data: existingRole } = await supabaseAdmin.rpc('get_auth_user_role_by_email', { p_email: email })
+  if (existingRole && STAFF_ROLES.includes(existingRole)) {
+    return 'Este email ya está registrado como personal de un local. Para reservar como cliente, usá un email diferente.'
+  }
+  return 'Ya existe una cuenta con ese email.'
+}
+
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -97,7 +115,7 @@ serve(async (req: Request) => {
       })
       if (authError) {
         if (authError.message?.toLowerCase().includes('already been registered')) {
-          return err('Ya existe una cuenta con ese email.')
+          return err(await emailCollisionMessage(supabaseAdmin, userEmail))
         }
         throw authError
       }
